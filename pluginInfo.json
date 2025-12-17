@@ -1,0 +1,9 @@
+{
+  "name": "Google Calendar Scheduler",
+  "shortName": "GoogleCalendarScheduler",
+  "description": "Test",
+  "author": "Test",
+  "version": "0.0.1",
+  "pluginType": "media",
+  "requires": []
+}
