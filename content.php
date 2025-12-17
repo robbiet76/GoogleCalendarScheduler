@@ -1,17 +1,23 @@
 <?php
 /**
  * GoogleCalendarScheduler
- * Single-page FPP plugin entry point.
+ * FPP plugin content entry point
  *
- * Handles POST actions and always renders UI.
- * This avoids FPP post-redirect / page routing issues.
+ * IMPORTANT:
+ * content.php MUST only render when $menu === 'content'
  */
+
+if (!isset($menu) || $menu !== 'content') {
+    return;
+}
 
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 require_once __DIR__ . '/src/SchedulerSync.php';
 
-// Handle POST actions first
+/*
+ * Handle POST actions first
+ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
@@ -44,5 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Always render UI
+/*
+ * Always render UI when menu === content
+ */
 require_once __DIR__ . '/src/content_main.php';
