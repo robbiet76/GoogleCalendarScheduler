@@ -39,8 +39,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             GcsLog::info('Using FPP scheduler horizon', ['days' => $horizonDays]);
 
             // --- Fetch ICS ---
-            $fetcher = new IcsFetcher($cfg['calendar']['ics_url']);
-            $ics = $fetcher->fetch();
+            $fetcher = new IcsFetcher();
+            $ics = $fetcher->fetch($cfg['calendar']['ics_url']);
 
             // --- Parse ICS ---
             $parser = new IcsParser();
