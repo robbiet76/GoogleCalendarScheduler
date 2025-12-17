@@ -1,10 +1,12 @@
 <?php
 /**
- * UI rendering only.
- * POST actions are handled in content.php.
+ * Render-only UI.
+ * content.php handles POST and provides $cfg.
  */
 
-$cfg = GcsConfig::load();
+if (!isset($cfg) || !is_array($cfg)) {
+    $cfg = GcsConfig::load();
+}
 ?>
 
 <h1>Google Calendar Scheduler</h1>
@@ -17,7 +19,7 @@ $cfg = GcsConfig::load();
 <hr/>
 
 <form method="post"
-      action="plugin.php?plugin=GoogleCalendarScheduler">
+      action="plugin.php?plugin=GoogleCalendarScheduler&page=content.php">
 
     <input type="hidden" name="action" value="save"/>
 
