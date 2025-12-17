@@ -1,7 +1,7 @@
 <?php
-/*
+/**
  * UI rendering only.
- * NO actions, NO POST handling.
+ * POST actions are handled in content.php.
  */
 
 $cfg = GcsConfig::load();
@@ -17,7 +17,7 @@ $cfg = GcsConfig::load();
 <hr/>
 
 <form method="post"
-      action="plugin.php?plugin=GoogleCalendarScheduler&page=src/api_main.php">
+      action="plugin.php?plugin=GoogleCalendarScheduler&page=content.php">
 
     <input type="hidden" name="action" value="save"/>
 
@@ -45,7 +45,7 @@ $cfg = GcsConfig::load();
 <hr/>
 
 <form method="post"
-      action="plugin.php?plugin=GoogleCalendarScheduler&page=src/api_main.php">
+      action="plugin.php?plugin=GoogleCalendarScheduler&page=content.php">
 
     <input type="hidden" name="action" value="sync"/>
     <button type="submit">Sync Now (Dry-run)</button>
