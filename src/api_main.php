@@ -15,8 +15,8 @@ class GcsApiMain
         }
 
         // IMPORTANT:
-        // Redirect back to the plugin content page explicitly
-        header('Location: plugin.php?plugin=GoogleCalendarScheduler&page=content.php');
+        // FPP requires redirect directly to the content page
+        header('Location: plugin.php?plugin=GoogleCalendarScheduler&page=src/content_main.php');
         exit;
     }
 
