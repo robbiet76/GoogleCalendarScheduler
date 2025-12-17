@@ -4,11 +4,12 @@
  * content.php
  *
  * Handles POST actions and renders UI.
- * Sync execution is protected to prevent blank page.
  */
 
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
+require_once __DIR__ . '/src/IcsFetcher.php';
+require_once __DIR__ . '/src/IcsParser.php';
 require_once __DIR__ . '/src/SchedulerSync.php';
 
 $cfg = GcsConfig::load();
@@ -37,14 +38,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $horizonDays = FppSchedulerHorizon::getDays();
             GcsLog::info('Using FPP scheduler horizon', ['days' => $horizonDays]);
 
+            // --- Fetch ICS ---
+            $fetcher = new IcsFetcher($cfg['calendar']['ics_url']);
+            $ics = $fetcher->fetch();
+
+            // --- Parse ICS ---
+            $parser = new IcsParser();
+            $events = $parser->parse($ics);
+
+            GcsLog::info('Parser returned', [
+                'eventCount' => count($events),
+            ]);
+
+            // --- Sync ---
             $sync = new SchedulerSync(
                 $dryRun,
                 $horizonDays,
                 $cfg
             );
 
-            // ✅ FIX: correct method name
-            $result = $sync->sync();
+            $result = $sync->sync($events);
 
             GcsLog::info('Sync completed', $result);
 
