@@ -9,29 +9,61 @@ final class SchedulerSync
         $this->dryRun = $dryRun;
     }
 
-    /**
-     * Sync desired mapped schedule entries against existing FPP scheduler state.
-     *
-     * @param array<int,array<string,mixed>> $desiredMapped
-     * @return array<string,mixed>
-     */
-    public function sync(array $desiredMapped): array
+    public function sync(array $desired): array
     {
-        // Phase 8.1: load existing (read-only)
-        $existing = SchedulerState::loadExisting();
+        // Load existing scheduler state
+        $state = SchedulerState::load();
+        GcsLog::info('SchedulerState loaded (stub)', [
+            'count' => count($state),
+        ]);
 
-        // Phase 8.2: diff (read-only)
-        $diff = SchedulerDiff::diff($desiredMapped, $existing);
+        // DIFF (FIXED: instance call)
+        $diffEngine = new SchedulerDiff();
+        $diff = $diffEngine->diff($state, $desired);
 
-        // Phase 8.3: apply plan (dry-run guarded; still no writes in this phase)
-        $counts = SchedulerApply::apply($diff, $this->dryRun);
+        GcsLog::info(
+            $this->dryRun
+                ? 'SchedulerDiff summary (dry-run)'
+                : 'SchedulerDiff summary',
+            [
+                'adds'    => count($diff['adds']),
+                'updates' => count($diff['updates']),
+                'deletes' => count($diff['deletes']),
+            ]
+        );
+
+        // APPLY
+        $apply = new SchedulerApply($this->dryRun);
+        $result = $apply->apply($state, $diff);
+
+        if (!$this->dryRun && isset($result['state'])) {
+            $this->writeSchedule($result['state']);
+        }
 
         return [
-            'adds'         => (int)($counts['adds'] ?? 0),
-            'updates'      => (int)($counts['updates'] ?? 0),
-            'deletes'      => (int)($counts['deletes'] ?? 0),
+            'adds'         => count($diff['adds']),
+            'updates'      => count($diff['updates']),
+            'deletes'      => count($diff['deletes']),
             'dryRun'       => $this->dryRun,
-            'intents_seen' => count($desiredMapped),
+            'intents_seen' => count($desired),
         ];
+    }
+
+    private function writeSchedule(array $state): void
+    {
+        $path = '/home/fpp/media/config/schedule.json';
+
+        if (file_exists($path)) {
+            $bak = $path . '.bak-' . date('Ymd-His');
+            copy($path, $bak);
+            GcsLog::info('SchedulerApply backup created', [
+                'path' => $bak,
+            ]);
+        }
+
+        file_put_contents(
+            $path,
+            json_encode(array_values($state), JSON_PRETTY_PRINT)
+        );
     }
 }

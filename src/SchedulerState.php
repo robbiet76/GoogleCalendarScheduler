@@ -2,19 +2,29 @@
 
 final class SchedulerState
 {
-    /**
-     * Load existing FPP scheduler entries owned by GCS.
-     *
-     * @return ExistingScheduleEntry[]
-     */
-    public static function loadExisting(): array
-    {
-        // Phase 8.1 will implement this against FPP scheduler JSON.
-        // For now, return empty so diff produces CREATE only.
-        GcsLog::info('SchedulerState loaded (stub)', [
-            'count' => 0,
-        ]);
+    private const SCHEDULE_PATH = '/home/fpp/media/config/schedule.json';
 
-        return [];
+    /**
+     * Load current FPP scheduler state.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public static function load(): array
+    {
+        if (!file_exists(self::SCHEDULE_PATH)) {
+            return [];
+        }
+
+        $raw = file_get_contents(self::SCHEDULE_PATH);
+        if ($raw === false || trim($raw) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($raw, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return $decoded;
     }
 }
