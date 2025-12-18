@@ -32,8 +32,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         if ($action === 'sync') {
-            // IMPORTANT: dry_run explicitly passed by the sync form
-            $dryRun = isset($_POST['dry_run']);
+            // IMPORTANT: dry-run comes ONLY from persisted config
+            $dryRun = !empty($cfg['runtime']['dry_run']);
 
             GcsLog::info('Starting sync', [
                 'dryRun' => $dryRun,
@@ -94,15 +94,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     <!-- SYNC -->
     <form method="post">
         <input type="hidden" name="action" value="sync">
-
-        <!-- carry dry_run explicitly -->
-        <input
-            type="hidden"
-            name="dry_run"
-            value="1"
-            <?php if (empty($cfg['runtime']['dry_run'])) echo 'disabled'; ?>
-        >
-
         <button type="submit" class="buttons">Sync Calendar</button>
     </form>
 </div>
