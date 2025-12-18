@@ -1,58 +1,53 @@
 <?php
 
-/**
- * SchedulerDiff
- *
- * Computes add / update / delete sets between
- * existing and desired scheduler entries.
- */
 class SchedulerDiff
 {
     /**
-     * @param array<int,array<string,mixed>> $existing
-     * @param array<int,array<string,mixed>> $desired
-     * @return array<string,array>
+     * @param ComparableScheduleEntry[] $desired
+     * @param ExistingScheduleEntry[]   $existing
      */
-    public static function diff(array $existing, array $desired): array
+    public static function compute(array $desired, array $existing): SchedulerDiffResult
     {
-        $adds = [];
-        $updates = [];
-        $deletes = [];
+        $result = new SchedulerDiffResult();
 
-        $existingByKey = [];
-        foreach ($existing as $item) {
-            if (isset($item['playlist'])) {
-                $existingByKey[$item['playlist']] = $item;
-            }
+        $existingByUid = [];
+        foreach ($existing as $entry) {
+            $existingByUid[$entry->uid] = $entry;
         }
 
-        $desiredByKey = [];
-        foreach ($desired as $item) {
-            if (isset($item['playlist'])) {
-                $desiredByKey[$item['playlist']] = $item;
+        foreach ($desired as $desiredEntry) {
+            if (!isset($existingByUid[$desiredEntry->uid])) {
+                $result->create[] = $desiredEntry;
+                continue;
             }
+
+            $existingEntry = $existingByUid[$desiredEntry->uid];
+            $existingComparable = $existingEntry->toComparable();
+
+            if ($existingComparable->equals($desiredEntry)) {
+                $result->noop[] = $desiredEntry;
+            } else {
+                $result->update[$desiredEntry->uid] = [
+                    'existing' => $existingEntry,
+                    'desired'  => $desiredEntry
+                ];
+            }
+
+            unset($existingByUid[$desiredEntry->uid]);
         }
 
-        // Adds & updates
-        foreach ($desiredByKey as $key => $item) {
-            if (!isset($existingByKey[$key])) {
-                $adds[] = $item;
-            } elseif ($existingByKey[$key] != $item) {
-                $updates[] = $item;
-            }
+        // Remaining existing entries are deletes
+        foreach ($existingByUid as $entry) {
+            $result->delete[] = $entry;
         }
 
-        // Deletes
-        foreach ($existingByKey as $key => $item) {
-            if (!isset($desiredByKey[$key])) {
-                $deletes[] = $item;
-            }
-        }
+        Logger::info('Scheduler diff computed', [
+            'create' => count($result->create),
+            'update' => count($result->update),
+            'delete' => count($result->delete),
+            'noop'   => count($result->noop),
+        ]);
 
-        return [
-            'add'    => $adds,
-            'update' => $updates,
-            'delete' => $deletes,
-        ];
+        return $result;
     }
 }
