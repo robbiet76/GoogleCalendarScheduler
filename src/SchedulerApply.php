@@ -19,7 +19,6 @@ final class SchedulerApply
      */
     public function apply(SchedulerDiffResult $diff): void
     {
-        // Load current schedule
         $schedule = $this->loadSchedule();
 
         // ------------------------------------------------------------
@@ -27,14 +26,7 @@ final class SchedulerApply
         // ------------------------------------------------------------
         foreach ($diff->adds as $entry) {
             if ($this->dryRun) {
-                GcsLog::info('[DRY-RUN] ADD', [
-                    'playlist' => $entry['playlist'] ?? '',
-                    'days'     => $entry['dayMask'] ?? 0,
-                    'start'    => $entry['startTime'] ?? '',
-                    'end'      => $entry['endTime'] ?? '',
-                    'from'     => $entry['startDate'] ?? '',
-                    'to'       => $entry['endDate'] ?? '',
-                ]);
+                GcsLog::info('[DRY-RUN] ADD', $this->logShape($entry));
                 continue;
             }
 
@@ -59,34 +51,42 @@ final class SchedulerApply
         }
 
         // ------------------------------------------------------------
-        // DELETEs (Phase 8.6 – noop for now)
+        // DELETEs  (Phase 8.6)
         // ------------------------------------------------------------
         foreach ($diff->deletes as $entry) {
             if ($this->dryRun) {
-                GcsLog::info('[DRY-RUN] DELETE', $entry);
+                GcsLog::info('[DRY-RUN] DELETE', [
+                    'playlist' => $entry['playlist'] ?? '',
+                ]);
                 continue;
             }
 
-            // Delete logic added in Phase 8.6
+            foreach ($schedule as $idx => $existing) {
+                if (($existing['playlist'] ?? null) === ($entry['playlist'] ?? null)) {
+                    unset($schedule[$idx]);
+                    break;
+                }
+            }
         }
 
         // ------------------------------------------------------------
-        // Persist schedule
+        // Persist
         // ------------------------------------------------------------
         if (!$this->dryRun) {
+            // Re-index array to keep JSON clean
+            $schedule = array_values($schedule);
             $this->saveSchedule($schedule);
 
-            GcsLog::info('SchedulerApply live add/update complete', [
+            GcsLog::info('SchedulerApply live complete', [
                 'added'   => count($diff->adds),
                 'updated' => count($diff->updates),
                 'deleted' => count($diff->deletes),
+                'final'   => count($schedule),
             ]);
         }
     }
 
     /**
-     * Load scheduler.json safely.
-     *
      * @return array<int,array<string,mixed>>
      */
     private function loadSchedule(): array
@@ -101,16 +101,10 @@ final class SchedulerApply
         }
 
         $decoded = json_decode($raw, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        return $decoded;
+        return is_array($decoded) ? $decoded : [];
     }
 
     /**
-     * Save scheduler.json safely.
-     *
      * @param array<int,array<string,mixed>> $schedule
      */
     private function saveSchedule(array $schedule): void
@@ -119,5 +113,20 @@ final class SchedulerApply
             self::SCHEDULE_PATH,
             json_encode($schedule, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
         );
+    }
+
+    /**
+     * Normalize log output for schedule entries.
+     */
+    private function logShape(array $entry): array
+    {
+        return [
+            'playlist' => $entry['playlist'] ?? '',
+            'days'     => $entry['dayMask'] ?? 0,
+            'start'    => $entry['startTime'] ?? '',
+            'end'      => $entry['endTime'] ?? '',
+            'from'     => $entry['startDate'] ?? '',
+            'to'       => $entry['endDate'] ?? '',
+        ];
     }
 }
