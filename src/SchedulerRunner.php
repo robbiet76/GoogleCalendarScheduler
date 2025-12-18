@@ -161,7 +161,39 @@ final class SchedulerRunner
         }
 
         // ------------------------------------------------------------
-        // Still dry-run only
+        // Phase 8 (NEW): Diff desired vs existing + dry-run log actions
+        // ------------------------------------------------------------
+        try {
+            $existing = SchedulerState::loadExisting(); // ExistingScheduleEntry[]
+            $desiredComparable = [];
+
+            foreach ($mapped as $entry) {
+                $ce = $this->mappedEntryToComparable($entry);
+                if ($ce) {
+                    $desiredComparable[] = $ce;
+                }
+            }
+
+            $diff = SchedulerDiff::compute($desiredComparable, $existing);
+
+            // Extra summary log (helpful when tailing)
+            GcsLogger::instance()->info('Phase 8 diff summary (dry-run)', [
+                'create' => count($diff->create),
+                'update' => count($diff->update),
+                'delete' => count($diff->delete),
+                'noop'   => count($diff->noop),
+            ]);
+
+            SchedulerApply::dryRun($diff);
+        } catch (Throwable $t) {
+            // Never break the runner due to Phase 8 wiring problems
+            GcsLogger::instance()->warn('Phase 8 diff wiring failed (continuing)', [
+                'error' => $t->getMessage(),
+            ]);
+        }
+
+        // ------------------------------------------------------------
+        // Still dry-run only (existing behavior)
         // ------------------------------------------------------------
         $sync = new SchedulerSync($this->dryRun);
         return $sync->sync($mapped);
@@ -199,55 +231,20 @@ final class SchedulerRunner
         ];
     }
 
-    private function expandOccurrences(array $event, DateTime $now, DateTime $horizonEnd): array
+    /**
+     * Convert a mapped FPP schedule entry (array) into a ComparableScheduleEntry.
+     * This keeps Phase 8 independent from mapper internals while still matching
+     * existing scheduler entries by UID.
+     */
+    private function mappedEntryToComparable(array $entry): ?ComparableScheduleEntry
     {
-        $start = new DateTime($event['start']);
-        $end   = new DateTime($event['end']);
-        $duration = $end->getTimestamp() - $start->getTimestamp();
-
-        $exSet = [];
-        foreach (($event['exDates'] ?? []) as $ex) {
-            $exSet[(string)$ex] = true;
+        $playlist = (string)($entry['playlist'] ?? '');
+        $uid = $this->extractUidFromPlaylist($playlist);
+        if (!$uid) {
+            return null;
         }
 
-        $rrule = $event['rrule'] ?? null;
-
-        if (!$rrule || empty($rrule['FREQ'])) {
-            $s = $start->format('Y-m-d H:i:s');
-            if (isset($exSet[$s])) {
-                return [];
-            }
-            return [[
-                'start' => $s,
-                'end'   => (clone $start)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
-            ]];
-        }
-
-        $out = [];
-        $count = isset($rrule['COUNT']) ? (int)$rrule['COUNT'] : null;
-        $interval = isset($rrule['INTERVAL']) ? max(1, (int)$rrule['INTERVAL']) : 1;
-
-        if (strtoupper((string)$rrule['FREQ']) === 'DAILY') {
-            $i = 0;
-            $cur = clone $start;
-
-            while (true) {
-                $i++;
-                if ($count !== null && $i > $count) break;
-                if ($cur > $horizonEnd) break;
-
-                $s = $cur->format('Y-m-d H:i:s');
-                if (!isset($exSet[$s])) {
-                    $out[] = [
-                        'start' => $s,
-                        'end'   => (clone $cur)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
-                    ];
-                }
-
-                $cur->modify("+{$interval} day");
-            }
-        }
-
-        return $out;
-    }
-}
+        $startDate = (string)($entry['startDate'] ?? '');
+        $endDate   = (string)($entry['endDate'] ?? '');
+        $startTime = (string)($entry['startTime'] ?? '00:00:00');
+        $endTime   = (string)($entry[']()
