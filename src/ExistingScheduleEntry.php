@@ -1,9 +1,9 @@
 <?php
 
-class ExistingScheduleEntry
+final class ExistingScheduleEntry
 {
-    public string $schedulerId; // FPP internal ID
-    public string $uid;         // Google UID
+    public string $schedulerId;
+    public string $uid;
     public string $start;
     public string $end;
     public string $target;
@@ -22,13 +22,13 @@ class ExistingScheduleEntry
         bool $enabled
     ) {
         $this->schedulerId = $schedulerId;
-        $this->uid         = $uid;
-        $this->start       = $start;
-        $this->end         = $end;
-        $this->target      = $target;
-        $this->stopType    = $stopType;
-        $this->repeat      = $repeat;
-        $this->enabled     = $enabled;
+        $this->uid = $uid;
+        $this->start = $start;
+        $this->end = $end;
+        $this->target = $target;
+        $this->stopType = $stopType;
+        $this->repeat = $repeat;
+        $this->enabled = $enabled;
     }
 
     public function toComparable(): ComparableScheduleEntry

@@ -1,11 +1,11 @@
 <?php
 
-class SchedulerDiffResult
+final class SchedulerDiffResult
 {
     /** @var ComparableScheduleEntry[] */
     public array $create = [];
 
-    /** @var array<string, array{existing: ExistingScheduleEntry, desired: ComparableScheduleEntry}> */
+    /** @var array<string,array{existing:ExistingScheduleEntry,desired:ComparableScheduleEntry}> */
     public array $update = [];
 
     /** @var ExistingScheduleEntry[] */

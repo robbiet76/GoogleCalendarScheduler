@@ -1,6 +1,6 @@
 <?php
 
-class SchedulerDiff
+final class SchedulerDiff
 {
     /**
      * @param ComparableScheduleEntry[] $desired
@@ -11,37 +11,34 @@ class SchedulerDiff
         $result = new SchedulerDiffResult();
 
         $existingByUid = [];
-        foreach ($existing as $entry) {
-            $existingByUid[$entry->uid] = $entry;
+        foreach ($existing as $e) {
+            $existingByUid[$e->uid] = $e;
         }
 
-        foreach ($desired as $desiredEntry) {
-            if (!isset($existingByUid[$desiredEntry->uid])) {
-                $result->create[] = $desiredEntry;
+        foreach ($desired as $d) {
+            if (!isset($existingByUid[$d->uid])) {
+                $result->create[] = $d;
                 continue;
             }
 
-            $existingEntry = $existingByUid[$desiredEntry->uid];
-            $existingComparable = $existingEntry->toComparable();
-
-            if ($existingComparable->equals($desiredEntry)) {
-                $result->noop[] = $desiredEntry;
+            $ex = $existingByUid[$d->uid];
+            if ($ex->toComparable()->equals($d)) {
+                $result->noop[] = $d;
             } else {
-                $result->update[$desiredEntry->uid] = [
-                    'existing' => $existingEntry,
-                    'desired'  => $desiredEntry
+                $result->update[$d->uid] = [
+                    'existing' => $ex,
+                    'desired' => $d,
                 ];
             }
 
-            unset($existingByUid[$desiredEntry->uid]);
+            unset($existingByUid[$d->uid]);
         }
 
-        // Remaining existing entries are deletes
-        foreach ($existingByUid as $entry) {
-            $result->delete[] = $entry;
+        foreach ($existingByUid as $leftover) {
+            $result->delete[] = $leftover;
         }
 
-        Logger::info('Scheduler diff computed', [
+        GcsLog::info('Scheduler diff computed', [
             'create' => count($result->create),
             'update' => count($result->update),
             'delete' => count($result->delete),

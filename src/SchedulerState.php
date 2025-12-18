@@ -1,26 +1,20 @@
 <?php
 
-class SchedulerState
+final class SchedulerState
 {
     /**
-     * Load existing FPP scheduler entries owned by GoogleCalendarScheduler
+     * Load existing FPP scheduler entries owned by GCS.
      *
      * @return ExistingScheduleEntry[]
      */
     public static function loadExisting(): array
     {
-        $entries = [];
-
-        // TODO:
-        // 1. Load scheduler JSON from FPP
-        // 2. Filter entries containing "GCS:v1|"
-        // 3. Extract UID, date range, metadata
-        // 4. Instantiate ExistingScheduleEntry objects
-
-        Logger::info('Loaded existing GCS scheduler entries', [
-            'count' => count($entries)
+        // Phase 8.1 will implement this against FPP scheduler JSON.
+        // For now, return empty so diff produces CREATE only.
+        GcsLog::info('SchedulerState loaded (stub)', [
+            'count' => 0,
         ]);
 
-        return $entries;
+        return [];
     }
 }
