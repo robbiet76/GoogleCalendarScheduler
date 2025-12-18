@@ -43,79 +43,52 @@ final class SchedulerRunner
         ]);
 
         if (!$events) {
-            $sync = new SchedulerSync($this->dryRun);
-            return $sync->sync([]);
+            return (new SchedulerSync($this->dryRun))->sync([]);
         }
 
         // ------------------------------------------------------------
-        // Split base events vs overrides
-        // ------------------------------------------------------------
-        $baseEvents = [];
-        $overridesByKey = [];
-
-        foreach ($events as $e) {
-            if (!empty($e['isOverride']) && !empty($e['uid']) && !empty($e['recurrenceId'])) {
-                $overridesByKey[$e['uid'] . '|' . $e['recurrenceId']] = $e;
-            } else {
-                $baseEvents[] = $e;
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Expand to per-occurrence intents
+        // Expand to intents
         // ------------------------------------------------------------
         $intents = [];
 
-        foreach ($baseEvents as $event) {
+        foreach ($events as $event) {
             $summary = (string)($event['summary'] ?? '');
 
-            // ✅ FIX: correct resolver class name
             $resolved = GcsTargetResolver::resolve($summary);
             if (!$resolved) {
                 continue;
             }
 
-            $uid = $event['uid'] ?? null;
-            $occurrences = $this->expandOccurrences($event, $now, $horizonEnd);
+            $start = new DateTime($event['start']);
+            $end   = new DateTime($event['end']);
 
-            foreach ($occurrences as $occ) {
-                $intents[] = [
-                    'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => $resolved['type'],
-                    'target'     => $resolved['target'],
-                    'start'      => $occ['start'],
-                    'end'        => $occ['end'],
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
-                    'isOverride' => false,
-                    'isAllDay'   => !empty($event['isAllDay']),
-                ];
-            }
+            $intents[] = [
+                'uid'      => $event['uid'] ?? null,
+                'type'     => $resolved['type'],
+                'target'   => $resolved['target'],
+                'start'    => $start->format('Y-m-d H:i:s'),
+                'end'      => $end->format('Y-m-d H:i:s'),
+                'stopType' => 'graceful',
+                'repeat'   => 'none',
+            ];
         }
 
         // ------------------------------------------------------------
-        // Consolidate intents into ranges
+        // Consolidate
         // ------------------------------------------------------------
         $consolidator = new IntentConsolidator();
         $ranges = $consolidator->consolidate($intents);
 
-        GcsLog::info('Intent consolidation', [
-            'inputIntents' => count($intents),
-            'outputRanges' => count($ranges),
-            'skipped'      => $consolidator->getSkippedCount(),
-            'rangeCount'   => $consolidator->getRangeCount(),
-        ]);
-
         // ------------------------------------------------------------
-        // Map ranges → FPP schedule entries
+        // Map to FPP schedule entries
         // ------------------------------------------------------------
         $mapped = [];
 
         foreach ($ranges as $ri) {
-            $entry = FppScheduleMapper::mapRangeIntentToSchedule(
+            $entry = GcsFppScheduleMapper::mapRangeIntentToSchedule(
                 $this->hydrateRangeIntent($ri)
             );
+
             if ($entry) {
                 $mapped[] = $entry;
                 GcsLog::info('Mapped FPP schedule (dry-run)', $entry);
@@ -125,13 +98,12 @@ final class SchedulerRunner
         // ------------------------------------------------------------
         // Phase 8 sync
         // ------------------------------------------------------------
-        $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($mapped);
+        return (new SchedulerSync($this->dryRun))->sync($mapped);
     }
 
-    // ============================================================
+    // ------------------------------------------------------------
     // Helpers
-    // ============================================================
+    // ------------------------------------------------------------
 
     private function hydrateRangeIntent(array $ri): array
     {
@@ -162,22 +134,5 @@ final class SchedulerRunner
             'dryRun'       => $this->dryRun,
             'intents_seen' => 0,
         ];
-    }
-
-    private function expandOccurrences(array $event, DateTime $now, DateTime $horizonEnd): array
-    {
-        $start = new DateTime($event['start']);
-        $end   = new DateTime($event['end']);
-        $duration = $end->getTimestamp() - $start->getTimestamp();
-
-        $out = [];
-
-        $s = $start->format('Y-m-d H:i:s');
-        $out[] = [
-            'start' => $s,
-            'end'   => (clone $start)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
-        ];
-
-        return $out;
     }
 }
