@@ -3,48 +3,122 @@
 final class SchedulerDiff
 {
     /**
-     * @param ComparableScheduleEntry[] $desired
-     * @param ExistingScheduleEntry[]   $existing
+     * Compute diff between desired and existing schedules.
+     *
+     * @param array<int,array<string,mixed>> $desired
+     * @param array<int,array<string,mixed>> $existing
+     * @return array{adds:array,updates:array,deletes:array}
      */
-    public static function compute(array $desired, array $existing): SchedulerDiffResult
+    public static function diff(array $desired, array $existing): array
     {
-        $result = new SchedulerDiffResult();
+        $adds = [];
+        $updates = [];
+        $deletes = [];
 
-        $existingByUid = [];
+        // Index existing by stable comparison key
+        $existingByKey = [];
         foreach ($existing as $e) {
-            $existingByUid[$e->uid] = $e;
+            $key = self::keyFor($e);
+            if ($key !== null) {
+                $existingByKey[$key] = $e;
+            }
         }
 
+        // Track which existing entries are matched
+        $matchedExistingKeys = [];
+
+        // Walk desired entries
         foreach ($desired as $d) {
-            if (!isset($existingByUid[$d->uid])) {
-                $result->create[] = $d;
+            $key = self::keyFor($d);
+            if ($key === null) {
                 continue;
             }
 
-            $ex = $existingByUid[$d->uid];
-            if ($ex->toComparable()->equals($d)) {
-                $result->noop[] = $d;
-            } else {
-                $result->update[$d->uid] = [
-                    'existing' => $ex,
-                    'desired' => $d,
-                ];
+            if (!isset($existingByKey[$key])) {
+                // Not present → add
+                $adds[] = $d;
+                continue;
             }
 
-            unset($existingByUid[$d->uid]);
+            $existingEntry = $existingByKey[$key];
+            $matchedExistingKeys[$key] = true;
+
+            if (!self::entriesEqual($d, $existingEntry)) {
+                $updates[] = [
+                    'from' => $existingEntry,
+                    'to'   => $d,
+                ];
+            }
         }
 
-        foreach ($existingByUid as $leftover) {
-            $result->delete[] = $leftover;
+        // Any existing entries not matched are deletes
+        foreach ($existingByKey as $key => $e) {
+            if (!isset($matchedExistingKeys[$key])) {
+                $deletes[] = $e;
+            }
         }
 
-        GcsLog::info('Scheduler diff computed', [
-            'create' => count($result->create),
-            'update' => count($result->update),
-            'delete' => count($result->delete),
-            'noop'   => count($result->noop),
+        GcsLog::info('SchedulerDiff summary (dry-run)', [
+            'adds'    => count($adds),
+            'updates' => count($updates),
+            'deletes' => count($deletes),
         ]);
 
-        return $result;
+        return [
+            'adds'    => $adds,
+            'updates' => $updates,
+            'deletes' => $deletes,
+        ];
+    }
+
+    /**
+     * Build a stable comparison key.
+     * This intentionally ignores sequence numbers and raw indexes.
+     */
+    private static function keyFor(array $e): ?string
+    {
+        if (
+            empty($e['playlist']) ||
+            empty($e['startTime']) ||
+            empty($e['endTime']) ||
+            !isset($e['dayMask'])
+        ) {
+            return null;
+        }
+
+        return implode('|', [
+            (string)$e['playlist'],
+            (string)$e['startTime'],
+            (string)$e['endTime'],
+            (string)($e['startDate'] ?? ''),
+            (string)($e['endDate'] ?? ''),
+            (string)$e['dayMask'],
+        ]);
+    }
+
+    /**
+     * Deep comparison of two normalized scheduler entries.
+     */
+    private static function entriesEqual(array $a, array $b): bool
+    {
+        $fields = [
+            'enabled',
+            'playlist',
+            'dayMask',
+            'startTime',
+            'endTime',
+            'startDate',
+            'endDate',
+            'repeat',
+            'stopType',
+        ];
+
+        foreach ($fields as $f) {
+            if ((string)($a[$f] ?? '') !== (string)($b[$f] ?? '')) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
