@@ -68,7 +68,9 @@ final class SchedulerRunner
 
         foreach ($baseEvents as $event) {
             $summary = (string)($event['summary'] ?? '');
-            $resolved = TargetResolver::resolve($summary);
+
+            // ✅ FIX: correct resolver class name
+            $resolved = GcsTargetResolver::resolve($summary);
             if (!$resolved) {
                 continue;
             }
@@ -121,7 +123,7 @@ final class SchedulerRunner
         }
 
         // ------------------------------------------------------------
-        // Sync (still dry-run)
+        // Phase 8 sync
         // ------------------------------------------------------------
         $sync = new SchedulerSync($this->dryRun);
         return $sync->sync($mapped);
