@@ -4,12 +4,6 @@
  * content.php
  *
  * Handles POST actions and renders UI.
- *
- * IMPORTANT FPP RULES:
- * - UI rendering MUST always complete
- * - No redirects
- * - No echo during POST handling
- * - Exceptions must never break UI rendering
  */
 
 require_once __DIR__ . '/src/bootstrap.php';
@@ -19,7 +13,7 @@ $cfg = GcsConfig::load();
 
 /*
  * --------------------------------------------------------------------
- * POST handling (save / sync)
+ * POST handling
  * --------------------------------------------------------------------
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -27,25 +21,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     try {
 
-        /*
-         * Save settings
-         */
         if ($action === 'save') {
             $cfg['calendar']['ics_url'] = trim($_POST['ics_url'] ?? '');
-            $cfg['runtime']['dry_run']  = !empty($_POST['dry_run']);
+            $cfg['runtime']['dry_run']  = isset($_POST['dry_run']) ? true : false;
 
             GcsConfig::save($cfg);
             $cfg = GcsConfig::load();
 
             GcsLog::info('Settings saved', [
-                'dryRun' => !empty($cfg['runtime']['dry_run']),
+                'dryRun' => $cfg['runtime']['dry_run'],
             ]);
         }
 
-        /*
-         * Sync calendar → scheduler (dry-run or live)
-         */
         if ($action === 'sync') {
+            // IMPORTANT: use persisted config ONLY
             $dryRun = !empty($cfg['runtime']['dry_run']);
 
             GcsLog::info('Starting sync', [
@@ -64,7 +53,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
     } catch (Throwable $e) {
-        // NEVER let exceptions break UI rendering
         GcsLog::error('GoogleCalendarScheduler error', [
             'error' => $e->getMessage(),
         ]);
@@ -85,10 +73,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         <input type="hidden" name="action" value="save">
 
         <div class="setting">
-            <label for="ics_url"><strong>Google Calendar ICS URL</strong></label><br>
+            <label><strong>Google Calendar ICS URL</strong></label><br>
             <input
                 type="text"
-                id="ics_url"
                 name="ics_url"
                 size="100"
                 value="<?php echo htmlspecialchars($cfg['calendar']['ics_url'] ?? '', ENT_QUOTES); ?>"
@@ -106,9 +93,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             </label>
         </div>
 
-        <div class="setting">
-            <button type="submit" class="buttons">Save Settings</button>
-        </div>
+        <button type="submit" class="buttons">Save Settings</button>
     </form>
 
     <hr>
