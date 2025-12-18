@@ -43,6 +43,7 @@ require_once __DIR__ . '/FppScheduleMapper.php';
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/SchedulerState.php';
+require_once __DIR__ . '/SchedulerDiffResult.php';
 require_once __DIR__ . '/SchedulerDiff.php';
 require_once __DIR__ . '/SchedulerApply.php';
 require_once __DIR__ . '/SchedulerSync.php';
