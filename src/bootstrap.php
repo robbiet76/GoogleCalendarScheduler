@@ -35,6 +35,7 @@ require_once __DIR__ . '/IcsParser.php';
  */
 require_once __DIR__ . '/TargetResolver.php';
 require_once __DIR__ . '/IntentConsolidator.php';
+require_once __DIR__ . '/YamlMetadata.php';      // <-- ADD THIS
 require_once __DIR__ . '/FppScheduleMapper.php';
 
 /*
