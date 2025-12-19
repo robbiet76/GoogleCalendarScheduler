@@ -1,23 +1,36 @@
 <?php
 
 /**
- * Minimal YAML metadata parser for Google Calendar events.
+ * Simple, foolproof YAML-like metadata parser for Google Calendar descriptions.
  *
- * Handles Google Calendar quirks:
- * - Non-breaking spaces (NBSP)
- * - Folded lines already unfolded upstream
+ * Design goals:
+ * - Extremely tolerant of formatting
+ * - No required parent key
+ * - Flat keys preferred (e.g. stoptype)
+ * - Safe defaults when fields are missing or invalid
+ * - Explicit logging of ignored / unsupported keys
  *
- * Supported schema:
+ * Supported keys (case-insensitive):
+ *   type       : playlist | sequence | command (playlist only effective today)
+ *   enabled    : true | false
+ *   stoptype   : graceful | hard
+ *   repeat     : none | immediate | <number>
  *
- * fpp:
- *   type: playlist|sequence|command
+ * Legacy support (accepted but discouraged):
  *   stop:
- *     type: graceful|graceful_loop|hard
- *   repeat: none|immediate|5|10|15|20|30|60
+ *     type: graceful | hard
+ *
+ * Unsupported keys are ignored and logged.
  */
-final class GcsYamlMetadata {
-
-    public static function parse(?string $description): ?array {
+final class YamlMetadata
+{
+    /**
+     * Parse YAML-like metadata from an event description.
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function parse(?string $description): ?array
+    {
         if (!$description) {
             return null;
         }
@@ -26,10 +39,14 @@ final class GcsYamlMetadata {
         $description = str_replace("\xC2\xA0", ' ', $description);
 
         $lines = preg_split('/\R/', $description);
+        if (!$lines) {
+            return null;
+        }
 
-        $inFpp  = false;
-        $inStop = false;
-        $out    = [];
+        $out = [];
+
+        $inFppBlock  = false; // optional legacy parent
+        $inStopBlock = false;
 
         foreach ($lines as $rawLine) {
             $line = trim($rawLine);
@@ -38,45 +55,103 @@ final class GcsYamlMetadata {
                 continue;
             }
 
-            if ($line === 'fpp:') {
-                $inFpp  = true;
-                $inStop = false;
+            // Optional legacy parent: fpp:
+            if (strcasecmp($line, 'fpp:') === 0) {
+                $inFppBlock  = true;
+                $inStopBlock = false;
                 continue;
             }
 
-            if (!$inFpp) {
+            // Legacy nested stop block
+            if (strcasecmp($line, 'stop:') === 0) {
+                $inStopBlock = true;
                 continue;
             }
 
-            if ($line === 'stop:') {
-                $inStop = true;
-                continue;
-            }
-
-            // stop.type
-            if ($inStop && preg_match('/^type:\s*(\S+)/', $line, $m)) {
-                $valid = ['graceful', 'graceful_loop', 'hard'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['stopType'] = $m[1];
+            // -----------------------------
+            // Flat stoptype (preferred)
+            // -----------------------------
+            if (preg_match('/^stoptype\s*:\s*(\S+)/i', $line, $m)) {
+                $v = strtolower(trim($m[1]));
+                if (in_array($v, ['graceful', 'hard'], true)) {
+                    $out['stopType'] = $v;
+                } else {
+                    GcsLog::info('Ignored invalid stoptype', ['value' => $m[1]]);
                 }
                 continue;
             }
 
-            // fpp.type
-            if (!$inStop && preg_match('/^type:\s*(\S+)/', $line, $m)) {
-                $valid = ['playlist', 'sequence', 'command'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['type'] = $m[1];
+            // -----------------------------
+            // Legacy stop.type
+            // -----------------------------
+            if ($inStopBlock && preg_match('/^type\s*:\s*(\S+)/i', $line, $m)) {
+                $v = strtolower(trim($m[1]));
+                if (in_array($v, ['graceful', 'hard'], true)) {
+                    $out['stopType'] = $v;
+                    GcsLog::info('Applied legacy stop.type (use stoptype instead)', [
+                        'value' => $v,
+                    ]);
+                } else {
+                    GcsLog::info('Ignored invalid legacy stop.type', ['value' => $m[1]]);
                 }
                 continue;
             }
 
+            // Leaving legacy stop block on first non-indented key
+            if ($inStopBlock && preg_match('/^\S+:/', $line)) {
+                $inStopBlock = false;
+            }
+
+            // -----------------------------
+            // type (validated, behavior-only)
+            // -----------------------------
+            if (preg_match('/^type\s*:\s*(\S+)/i', $line, $m)) {
+                $v = strtolower(trim($m[1]));
+                if (in_array($v, ['playlist', 'sequence', 'command'], true)) {
+                    $out['type'] = $v;
+                } else {
+                    GcsLog::info('Ignored invalid type', ['value' => $m[1]]);
+                }
+                continue;
+            }
+
+            // -----------------------------
+            // enabled
+            // -----------------------------
+            if (preg_match('/^enabled\s*:\s*(\S+)/i', $line, $m)) {
+                $v = strtolower(trim($m[1]));
+                if (in_array($v, ['true', 'yes', '1'], true)) {
+                    $out['enabled'] = true;
+                } elseif (in_array($v, ['false', 'no', '0'], true)) {
+                    $out['enabled'] = false;
+                } else {
+                    GcsLog::info('Ignored invalid enabled value', ['value' => $m[1]]);
+                }
+                continue;
+            }
+
+            // -----------------------------
             // repeat
-            if (preg_match('/^repeat:\s*(\S+)/', $line, $m)) {
-                $valid = ['none', 'immediate', '5', '10', '15', '20', '30', '60'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['repeat'] = $m[1];
+            // -----------------------------
+            if (preg_match('/^repeat\s*:\s*(\S+)/i', $line, $m)) {
+                $v = strtolower(trim($m[1]));
+                if ($v === 'none' || $v === '') {
+                    $out['repeat'] = 'none';
+                } elseif ($v === 'immediate') {
+                    $out['repeat'] = 'immediate';
+                } elseif (ctype_digit($v)) {
+                    $out['repeat'] = $v;
+                } else {
+                    GcsLog::info('Ignored invalid repeat value', ['value' => $m[1]]);
                 }
+                continue;
+            }
+
+            // -----------------------------
+            // Explicitly unsupported keys
+            // -----------------------------
+            if (preg_match('/^(target|priority|day|date)\s*:/i', $line, $m)) {
+                GcsLog::info('Ignored unsupported YAML key', ['key' => strtolower($m[1])]);
                 continue;
             }
         }

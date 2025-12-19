@@ -62,7 +62,8 @@ final class SchedulerRunner
             $start = new DateTime($event['start']);
             $end   = new DateTime($event['end']);
 
-            $intents[] = [
+            // Defaults (Phase 8 behavior)
+            $intent = [
                 'uid'      => $event['uid'] ?? null,
                 'type'     => $resolved['type'],
                 'target'   => $resolved['target'],
@@ -70,7 +71,22 @@ final class SchedulerRunner
                 'end'      => $end->format('Y-m-d H:i:s'),
                 'stopType' => 'graceful',
                 'repeat'   => 'none',
+                'enabled'  => true,
             ];
+
+            // Apply YAML metadata (behavior-only)
+            $yaml = YamlMetadata::parse($event['description'] ?? null);
+            if ($yaml) {
+                foreach ($yaml as $k => $v) {
+                    // Never allow YAML to override target
+                    if ($k === 'target') {
+                        continue;
+                    }
+                    $intent[$k] = $v;
+                }
+            }
+
+            $intents[] = $intent;
         }
 
         // ------------------------------------------------------------
