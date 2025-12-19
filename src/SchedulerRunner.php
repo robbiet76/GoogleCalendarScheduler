@@ -86,6 +86,70 @@ final class SchedulerRunner
                 }
             }
 
+            // ------------------------------------------------------------
+            // YAML type override (Option A):
+            // - Default resolution is playlist-first, then sequence (resolver)
+            // - YAML may override type if the requested target exists
+            // ------------------------------------------------------------
+            if (isset($intent['type']) && is_string($intent['type'])) {
+                $overrideType = strtolower(trim($intent['type']));
+
+                if ($overrideType === 'playlist') {
+                    // Resolver already picked a playlist if it exists.
+                    // If resolver picked sequence but YAML says playlist, ensure playlist exists.
+                    if ($resolved['type'] !== 'playlist') {
+                        $name = trim($summary);
+                        if ($name !== '' && $this->playlistExists($name)) {
+                            $intent['type'] = 'playlist';
+                            $intent['target'] = $name;
+                            GcsLog::info('Applied YAML type override', [
+                                'type' => 'playlist',
+                                'target' => $name,
+                            ]);
+                        } else {
+                            GcsLog::info('Ignored YAML type override (playlist not found)', [
+                                'summary' => $summary,
+                            ]);
+                            // Revert to resolved type
+                            $intent['type'] = $resolved['type'];
+                            $intent['target'] = $resolved['target'];
+                        }
+                    }
+                } elseif ($overrideType === 'sequence') {
+                    // Compute expected .fseq target
+                    $name = trim($summary);
+                    $seq = (substr($name, -5) === '.fseq') ? $name : ($name . '.fseq');
+
+                    if ($seq !== '' && $this->sequenceExists($seq)) {
+                        $intent['type'] = 'sequence';
+                        $intent['target'] = $seq;
+                        GcsLog::info('Applied YAML type override', [
+                            'type' => 'sequence',
+                            'target' => $seq,
+                        ]);
+                    } else {
+                        GcsLog::info('Ignored YAML type override (sequence not found)', [
+                            'summary' => $summary,
+                            'expected' => $seq,
+                        ]);
+                        // Revert to resolved type
+                        $intent['type'] = $resolved['type'];
+                        $intent['target'] = $resolved['target'];
+                    }
+                } elseif ($overrideType === 'command') {
+                    // Not implemented in mapper yet; keep resolved so we don't silently drop an event.
+                    GcsLog::info('Ignored YAML type override (command not supported yet)', [
+                        'summary' => $summary,
+                    ]);
+                    $intent['type'] = $resolved['type'];
+                    $intent['target'] = $resolved['target'];
+                } else {
+                    // Any other unexpected value: revert to resolved
+                    $intent['type'] = $resolved['type'];
+                    $intent['target'] = $resolved['target'];
+                }
+            }
+
             $intents[] = $intent;
         }
 
@@ -133,12 +197,26 @@ final class SchedulerRunner
             'end'         => new DateTime($t['end']),
             'stopType'    => $t['stopType'] ?? 'graceful',
             'repeat'      => $t['repeat'] ?? 'none',
+            'enabled'     => $t['enabled'] ?? true,
             'weekdayMask' => IntentConsolidator::shortDaysToWeekdayMask(
                 $ri['range']['days']
             ),
             'startDate'   => $ri['range']['start'],
             'endDate'     => $ri['range']['end'],
         ];
+    }
+
+    private function playlistExists(string $name): bool
+    {
+        $dirBased  = "/home/fpp/media/playlists/$name/playlist.json";
+        $fileBased = "/home/fpp/media/playlists/$name.json";
+
+        return is_file($dirBased) || is_file($fileBased);
+    }
+
+    private function sequenceExists(string $name): bool
+    {
+        return is_file("/home/fpp/media/sequences/$name");
     }
 
     private function emptyResult(): array

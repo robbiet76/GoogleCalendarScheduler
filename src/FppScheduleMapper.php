@@ -1,12 +1,16 @@
 <?php
 
 /**
- * Map a consolidated "range intent" into an FPP schedule.json entry (playlist-only for now).
+ * Map a consolidated "range intent" into an FPP schedule.json entry.
+ *
+ * Supported types (Phase 9.2):
+ *  - playlist
+ *  - sequence
  *
  * FPP fields observed/used:
  *  - enabled (1/0)
- *  - sequence (0 for playlist)
- *  - playlist (string)
+ *  - sequence (0 for playlist, 1 for sequence)
+ *  - playlist (string)  (NOTE: used as "Playlist/Command Args" by FPP UI/logs)
  *  - day (int) = common presets + day-mask mode
  *  - dayMask (int) when in day-mask mode
  *  - startTime, endTime
@@ -14,9 +18,6 @@
  *  - repeat (int)
  *  - startDate, endDate
  *  - stopType (int)
- *
- * NOTE: The exact encoding of "day"/"dayMask" is based on FPP UI behavior:
- *       manual describes a "Day Mask" selection. :contentReference[oaicite:2]{index=2}
  */
 class GcsFppScheduleMapper
 {
@@ -36,8 +37,10 @@ class GcsFppScheduleMapper
 
     public static function mapRangeIntentToSchedule(array $ri): ?array
     {
-        // Playlist only in this stage (sequence/command later)
-        if (($ri['type'] ?? '') !== 'playlist') {
+        $type = (string)($ri['type'] ?? '');
+
+        // Phase 9.2 supports playlist + sequence
+        if ($type !== 'playlist' && $type !== 'sequence') {
             return null;
         }
 
@@ -48,17 +51,22 @@ class GcsFppScheduleMapper
         }
 
         $weekdayMask = intval($ri['weekdayMask'] ?? 0);
-
         $dayFields = self::encodeDayFields($weekdayMask);
 
-        $repeat = self::mapRepeat($ri['repeat'] ?? 'none');
+        $repeat   = self::mapRepeat($ri['repeat'] ?? 'none');
         $stopType = self::mapStopType($ri['stopType'] ?? 'graceful');
 
         $tag = self::buildTag($ri);
 
+        // enabled: default true
+        $enabledBool = $ri['enabled'] ?? true;
+        $enabled = ($enabledBool === false) ? 0 : 1;
+
         $entry = [
-            'enabled'         => 1,
-            'sequence'        => 0,
+            'enabled'         => $enabled,
+            'sequence'        => ($type === 'sequence') ? 1 : 0,
+            // NOTE: we keep using "playlist" as the payload field because that is what
+            // your current Phase 8/9 pipeline keys off of for identity tagging and diffing.
             'playlist'        => (string)$ri['target'] . $tag,
             'day'             => $dayFields['day'],
             'startTime'       => $start->format('H:i:s'),
@@ -80,7 +88,7 @@ class GcsFppScheduleMapper
 
     public static function isPluginManaged(array $entry): bool
     {
-        // We embed a stable tag into the playlist name
+        // We embed a stable tag into the playlist field
         $p = (string)($entry['playlist'] ?? '');
         return (strpos($p, '|GCS:v1|') !== false);
     }
@@ -98,9 +106,9 @@ class GcsFppScheduleMapper
 
     private static function buildTag(array $ri): string
     {
-        $uid = (string)($ri['uid'] ?? '');
+        $uid   = (string)($ri['uid'] ?? '');
         $range = (string)($ri['startDate'] ?? '') . '..' . (string)($ri['endDate'] ?? '');
-        $days = GcsIntentConsolidator::weekdayMaskToShortDays(intval($ri['weekdayMask'] ?? 0));
+        $days  = GcsIntentConsolidator::weekdayMaskToShortDays(intval($ri['weekdayMask'] ?? 0));
 
         // Keep tags short and deterministic; avoid characters that confuse FPP UI
         return '|GCS:v1|uid=' . $uid . '|range=' . $range . '|days=' . $days;
@@ -138,9 +146,6 @@ class GcsFppScheduleMapper
     private static function mapStopType(string $stopType): int
     {
         // FPP stopType observed: 0 (graceful), 1 (hard) in your schedule.json
-        // We'll map:
-        //  graceful -> 0
-        //  hard     -> 1
         $s = strtolower(trim($stopType));
         if ($s === 'hard') {
             return 1;
@@ -150,14 +155,10 @@ class GcsFppScheduleMapper
 
     private static function mapRepeat($repeat): int
     {
-        // Your YAML currently uses numeric "15" and FPP schedule.json shows repeat: 1
-        // To stay backwards compatible with what you've been doing:
+        // Backwards compatible behavior:
         // - 'none' => 0
         // - integer N => N
         // - 'immediate' => 1 (common FPP internal)
-        //
-        // If you later decide that YAML repeat: 15 means something else (e.g., minutes),
-        // we can remap here.
         if (is_int($repeat)) {
             return $repeat;
         }
