@@ -74,29 +74,35 @@ final class SchedulerRunner
                 'enabled'  => true,
             ];
 
+            // ------------------------------------------------------------
             // Apply YAML metadata (behavior-only)
+            // Track whether YAML explicitly set "type"
+            // ------------------------------------------------------------
             $yaml = YamlMetadata::parse($event['description'] ?? null);
+            $yamlType = null;
+
             if ($yaml) {
                 foreach ($yaml as $k => $v) {
                     // Never allow YAML to override target
                     if ($k === 'target') {
                         continue;
                     }
+
                     $intent[$k] = $v;
+
+                    if ($k === 'type' && is_string($v)) {
+                        $yamlType = strtolower(trim($v));
+                    }
                 }
             }
 
             // ------------------------------------------------------------
-            // YAML type override (Option A):
-            // - Default resolution is playlist-first, then sequence (resolver)
-            // - YAML may override type if the requested target exists
+            // YAML type override (ONLY if explicitly provided)
             // ------------------------------------------------------------
-            if (isset($intent['type']) && is_string($intent['type'])) {
-                $overrideType = strtolower(trim($intent['type']));
-
-                if ($overrideType === 'playlist') {
-                    // Resolver already picked a playlist if it exists.
-                    // If resolver picked sequence but YAML says playlist, ensure playlist exists.
+            if ($yamlType !== null) {
+                if ($yamlType === 'playlist') {
+                    // Resolver already prefers playlist.
+                    // If resolver picked sequence, ensure playlist exists.
                     if ($resolved['type'] !== 'playlist') {
                         $name = trim($summary);
                         if ($name !== '' && $this->playlistExists($name)) {
@@ -110,13 +116,11 @@ final class SchedulerRunner
                             GcsLog::info('Ignored YAML type override (playlist not found)', [
                                 'summary' => $summary,
                             ]);
-                            // Revert to resolved type
                             $intent['type'] = $resolved['type'];
                             $intent['target'] = $resolved['target'];
                         }
                     }
-                } elseif ($overrideType === 'sequence') {
-                    // Compute expected .fseq target
+                } elseif ($yamlType === 'sequence') {
                     $name = trim($summary);
                     $seq = (substr($name, -5) === '.fseq') ? $name : ($name . '.fseq');
 
@@ -132,19 +136,13 @@ final class SchedulerRunner
                             'summary' => $summary,
                             'expected' => $seq,
                         ]);
-                        // Revert to resolved type
                         $intent['type'] = $resolved['type'];
                         $intent['target'] = $resolved['target'];
                     }
-                } elseif ($overrideType === 'command') {
-                    // Not implemented in mapper yet; keep resolved so we don't silently drop an event.
+                } elseif ($yamlType === 'command') {
                     GcsLog::info('Ignored YAML type override (command not supported yet)', [
                         'summary' => $summary,
                     ]);
-                    $intent['type'] = $resolved['type'];
-                    $intent['target'] = $resolved['target'];
-                } else {
-                    // Any other unexpected value: revert to resolved
                     $intent['type'] = $resolved['type'];
                     $intent['target'] = $resolved['target'];
                 }
