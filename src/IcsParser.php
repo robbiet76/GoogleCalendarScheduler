@@ -9,6 +9,7 @@ class IcsParser
      * [
      *   'uid'          => string|null,
      *   'summary'      => string,
+     *   'description'  => string|null,
      *   'start'        => 'Y-m-d H:i:s',
      *   'end'          => 'Y-m-d H:i:s',
      *   'isAllDay'     => bool,
@@ -44,8 +45,23 @@ class IcsParser
             // Gather properties (handle repeats like EXDATE)
             $props = $this->parseLinesToProps($lines);
 
-            $summary = isset($props['SUMMARY'][0]['value']) ? trim((string)$props['SUMMARY'][0]['value']) : '';
-            $uid     = isset($props['UID'][0]['value']) ? trim((string)$props['UID'][0]['value']) : null;
+            $summaryRaw = isset($props['SUMMARY'][0]['value']) ? (string)$props['SUMMARY'][0]['value'] : '';
+            $summary    = trim($this->unescapeIcsText($summaryRaw));
+
+            $uid = isset($props['UID'][0]['value']) ? trim((string)$props['UID'][0]['value']) : null;
+
+            $description = null;
+            if (isset($props['DESCRIPTION'][0]['value'])) {
+                // Google encodes newlines as "\n" in ICS; unescape into real newlines.
+                $descRaw = (string)$props['DESCRIPTION'][0]['value'];
+                $desc = $this->unescapeIcsText($descRaw);
+
+                // Keep as-is for YAML parsing; just trim trailing whitespace/newlines
+                $description = rtrim($desc);
+                if ($description === '') {
+                    $description = null;
+                }
+            }
 
             // DTSTART (required)
             $dtStartInfo = $props['DTSTART'][0] ?? null;
@@ -126,6 +142,7 @@ class IcsParser
             $events[] = [
                 'uid'          => $uid,
                 'summary'      => $summary,
+                'description'  => $description,
                 'start'        => $dtstartObj->format('Y-m-d H:i:s'),
                 'end'          => $dtendObj->format('Y-m-d H:i:s'),
                 'isAllDay'     => $isAllDay,
@@ -152,6 +169,26 @@ class IcsParser
         $ics = preg_replace("/\n[ \t]/", "", $ics);
 
         return $ics ?? '';
+    }
+
+    /**
+     * Unescape RFC5545 text values.
+     *
+     * Google commonly encodes DESCRIPTION newlines as "\n".
+     * Also supports: \N, \;, \,, and \\.
+     */
+    private function unescapeIcsText(string $v): string
+    {
+        // Newlines
+        $v = str_replace(['\\n', '\\N'], "\n", $v);
+
+        // Escaped punctuation
+        $v = str_replace(['\\,', '\\;'], [',', ';'], $v);
+
+        // Backslash last
+        $v = str_replace('\\\\', '\\', $v);
+
+        return $v;
     }
 
     /**
@@ -342,4 +379,3 @@ class IcsParser
 }
 
 class GcsIcsParser extends IcsParser {}
-
