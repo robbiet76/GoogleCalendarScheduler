@@ -11,14 +11,14 @@
  * - Explicit logging of ignored / unsupported keys
  *
  * Supported keys (case-insensitive):
- *   type       : playlist | sequence | command (playlist only effective today)
+ *   type       : playlist | sequence | command
  *   enabled    : true | false
- *   stoptype   : graceful | hard
+ *   stoptype   : graceful | graceful_loop | hard
  *   repeat     : none | immediate | <number>
  *
  * Legacy support (accepted but discouraged):
  *   stop:
- *     type: graceful | hard
+ *     type: graceful | graceful_loop | hard
  *
  * Unsupported keys are ignored and logged.
  */
@@ -55,7 +55,7 @@ final class YamlMetadata
                 continue;
             }
 
-            // Optional legacy parent: fpp:
+            // Optional legacy parent
             if (strcasecmp($line, 'fpp:') === 0) {
                 $inFppBlock  = true;
                 $inStopBlock = false;
@@ -68,12 +68,12 @@ final class YamlMetadata
                 continue;
             }
 
-            // -----------------------------
+            // --------------------------------------------------
             // Flat stoptype (preferred)
-            // -----------------------------
+            // --------------------------------------------------
             if (preg_match('/^stoptype\s*:\s*(\S+)/i', $line, $m)) {
                 $v = strtolower(trim($m[1]));
-                if (in_array($v, ['graceful', 'hard'], true)) {
+                if (in_array($v, ['graceful', 'graceful_loop', 'hard'], true)) {
                     $out['stopType'] = $v;
                 } else {
                     GcsLog::info('Ignored invalid stoptype', ['value' => $m[1]]);
@@ -81,30 +81,34 @@ final class YamlMetadata
                 continue;
             }
 
-            // -----------------------------
+            // --------------------------------------------------
             // Legacy stop.type
-            // -----------------------------
+            // --------------------------------------------------
             if ($inStopBlock && preg_match('/^type\s*:\s*(\S+)/i', $line, $m)) {
                 $v = strtolower(trim($m[1]));
-                if (in_array($v, ['graceful', 'hard'], true)) {
+                if (in_array($v, ['graceful', 'graceful_loop', 'hard'], true)) {
                     $out['stopType'] = $v;
-                    GcsLog::info('Applied legacy stop.type (use stoptype instead)', [
-                        'value' => $v,
-                    ]);
+                    GcsLog::info(
+                        'Applied legacy stop.type (use stoptype instead)',
+                        ['value' => $v]
+                    );
                 } else {
-                    GcsLog::info('Ignored invalid legacy stop.type', ['value' => $m[1]]);
+                    GcsLog::info(
+                        'Ignored invalid legacy stop.type',
+                        ['value' => $m[1]]
+                    );
                 }
                 continue;
             }
 
-            // Leaving legacy stop block on first non-indented key
+            // Exit legacy stop block
             if ($inStopBlock && preg_match('/^\S+:/', $line)) {
                 $inStopBlock = false;
             }
 
-            // -----------------------------
-            // type (validated, behavior-only)
-            // -----------------------------
+            // --------------------------------------------------
+            // type (behavior-only)
+            // --------------------------------------------------
             if (preg_match('/^type\s*:\s*(\S+)/i', $line, $m)) {
                 $v = strtolower(trim($m[1]));
                 if (in_array($v, ['playlist', 'sequence', 'command'], true)) {
@@ -115,9 +119,9 @@ final class YamlMetadata
                 continue;
             }
 
-            // -----------------------------
+            // --------------------------------------------------
             // enabled
-            // -----------------------------
+            // --------------------------------------------------
             if (preg_match('/^enabled\s*:\s*(\S+)/i', $line, $m)) {
                 $v = strtolower(trim($m[1]));
                 if (in_array($v, ['true', 'yes', '1'], true)) {
@@ -130,9 +134,9 @@ final class YamlMetadata
                 continue;
             }
 
-            // -----------------------------
+            // --------------------------------------------------
             // repeat
-            // -----------------------------
+            // --------------------------------------------------
             if (preg_match('/^repeat\s*:\s*(\S+)/i', $line, $m)) {
                 $v = strtolower(trim($m[1]));
                 if ($v === 'none' || $v === '') {
@@ -147,11 +151,14 @@ final class YamlMetadata
                 continue;
             }
 
-            // -----------------------------
+            // --------------------------------------------------
             // Explicitly unsupported keys
-            // -----------------------------
+            // --------------------------------------------------
             if (preg_match('/^(target|priority|day|date)\s*:/i', $line, $m)) {
-                GcsLog::info('Ignored unsupported YAML key', ['key' => strtolower($m[1])]);
+                GcsLog::info(
+                    'Ignored unsupported YAML key',
+                    ['key' => strtolower($m[1])]
+                );
                 continue;
             }
         }
