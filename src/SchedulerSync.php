@@ -14,11 +14,23 @@ final class GcsSchedulerSync
     }
 
     /**
-     * Execute full pipeline.
+     * Backwards-compatible entrypoint.
+     * (Legacy callers may still call run(); it will perform a no-op diff.)
      *
      * @return array<string,mixed>
      */
     public function run(): array
+    {
+        return $this->sync([]);
+    }
+
+    /**
+     * Execute full pipeline using desired schedule entries produced by the runner.
+     *
+     * @param array<int,array<string,mixed>> $desiredEntries
+     * @return array<string,mixed>
+     */
+    public function sync(array $desiredEntries): array
     {
         // Load scheduler state
         $state = GcsSchedulerState::load($this->horizonDays);
@@ -27,10 +39,8 @@ final class GcsSchedulerSync
             'count' => count($state->getEntries()),
         ]);
 
-        // TODO: will be used by SchedulerRunner orchestration
-        // For now keep legacy logs for continuity
-
-        $diff = new GcsSchedulerDiff([], $state);
+        // Compute diff (desired vs existing state)
+        $diff = new GcsSchedulerDiff($desiredEntries, $state);
         $diffResult = $diff->compute();
 
         GcsLog::info('SchedulerDiff summary' . ($this->dryRun ? ' (dry-run)' : ''), [
@@ -39,6 +49,7 @@ final class GcsSchedulerSync
             'delete' => count($diffResult->getToDelete()),
         ]);
 
+        // Apply
         $apply = new GcsSchedulerApply($this->dryRun);
         $applySummary = $apply->apply($diffResult);
 
