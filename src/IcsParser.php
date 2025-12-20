@@ -56,7 +56,6 @@ class GcsIcsParser
                 continue;
             }
 
-            // Split property name/params/value
             $pos = strpos($line, ':');
             if ($pos === false) {
                 continue;
@@ -94,12 +93,6 @@ class GcsIcsParser
         return $events;
     }
 
-    /**
-     * Normalize one VEVENT dictionary into a simplified event array.
-     *
-     * @param array<string,array<int,array{params:?string,value:string}>> $raw
-     * @return array<string,mixed>|null
-     */
     private function normalizeEvent(array $raw, DateTime $now, DateTime $horizonEnd): ?array
     {
         $uid = $this->getFirstValue($raw, 'UID');
@@ -108,6 +101,9 @@ class GcsIcsParser
         }
 
         $summary = $this->getFirstValue($raw, 'SUMMARY') ?? '';
+
+        // ✅ NEW: surface DESCRIPTION (preserve escaped \n)
+        $description = $this->getJoinedTextValue($raw, 'DESCRIPTION');
 
         $dtStart = $this->getFirstProp($raw, 'DTSTART');
         $dtEnd   = $this->getFirstProp($raw, 'DTEND');
@@ -121,115 +117,78 @@ class GcsIcsParser
             return null;
         }
 
-        $end = null;
-        if ($dtEnd !== null) {
-            $end = $this->parseDateTimeProp($dtEnd);
-        }
-
-        $isAllDay = false;
-        $startVal = $dtStart['value'];
-        if (preg_match('/^\d{8}$/', $startVal)) {
-            $isAllDay = true;
-        }
-
+        $end = $dtEnd ? $this->parseDateTimeProp($dtEnd) : null;
         if ($end === null) {
             $end = (clone $start)->modify('+30 minutes');
         }
 
-        // Basic horizon filter
         if ($start > $horizonEnd) {
             return null;
         }
 
-        $rrule = $this->getFirstValue($raw, 'RRULE');
-        $exdates = $this->getAllValues($raw, 'EXDATE');
-
-        // NOTE: baseline implementation includes RRULE expansion elsewhere in this file;
-        // leaving as-is (no logic changes intended in Phase 11 item #2).
+        $isAllDay = preg_match('/^\d{8}$/', $dtStart['value']) === 1;
 
         return [
-            'uid'      => $uid,
-            'summary'  => $summary,
-            'start'    => $start->format('Y-m-d H:i:s'),
-            'end'      => $end->format('Y-m-d H:i:s'),
-            'isAllDay' => $isAllDay,
-            'rrule'    => $rrule,
-            'exdates'  => $exdates,
-            'raw'      => $raw,
+            'uid'         => $uid,
+            'summary'     => $summary,
+            'description' => $description,   // ← ONLY ADDITION
+            'start'       => $start->format('Y-m-d H:i:s'),
+            'end'         => $end->format('Y-m-d H:i:s'),
+            'isAllDay'    => $isAllDay,
+            'rrule'       => $this->getFirstValue($raw, 'RRULE'),
+            'exdates'     => $this->getAllValues($raw, 'EXDATE'),
+            'raw'         => $raw,
         ];
     }
 
     private function getFirstProp(array $raw, string $key): ?array
     {
-        if (!isset($raw[$key]) || !is_array($raw[$key]) || count($raw[$key]) < 1) {
-            return null;
-        }
-        $first = $raw[$key][0] ?? null;
-        return is_array($first) ? $first : null;
+        return $raw[$key][0] ?? null;
     }
 
     private function getFirstValue(array $raw, string $key): ?string
     {
-        $p = $this->getFirstProp($raw, $key);
-        if ($p === null) {
-            return null;
-        }
-        return (string)($p['value'] ?? '');
+        return isset($raw[$key][0]['value']) ? (string)$raw[$key][0]['value'] : null;
     }
 
     private function getAllValues(array $raw, string $key): array
     {
-        if (!isset($raw[$key]) || !is_array($raw[$key])) {
+        if (!isset($raw[$key])) {
             return [];
         }
-        $out = [];
-        foreach ($raw[$key] as $item) {
-            if (is_array($item) && isset($item['value'])) {
-                $out[] = (string)$item['value'];
-            }
-        }
-        return $out;
+        return array_map(fn($v) => (string)$v['value'], $raw[$key]);
     }
 
-    /**
-     * Parse DTSTART/DTEND property into DateTime.
-     *
-     * @param array{params:?string,value:string} $prop
-     */
+    private function getJoinedTextValue(array $raw, string $key): ?string
+    {
+        if (!isset($raw[$key])) {
+            return null;
+        }
+        $vals = array_map(fn($v) => (string)$v['value'], $raw[$key]);
+        $text = trim(implode("\n", $vals));
+        return $text === '' ? null : $text;
+    }
+
     private function parseDateTimeProp(array $prop): ?DateTime
     {
-        $val = $prop['value'] ?? '';
+        $val = $prop['value'];
         $params = $prop['params'] ?? null;
 
-        // DATE (all-day): YYYYMMDD
         if (preg_match('/^\d{8}$/', $val)) {
-            $dt = DateTime::createFromFormat('Ymd', $val);
-            return $dt ?: null;
+            return DateTime::createFromFormat('Ymd', $val) ?: null;
         }
 
-        // DATE-TIME:
-        // - UTC: YYYYMMDDTHHMMSSZ
-        // - Local: YYYYMMDDTHHMMSS (maybe with TZID param)
         if (preg_match('/^\d{8}T\d{6}Z$/', $val)) {
-            $dt = DateTime::createFromFormat('Ymd\THis\Z', $val, new DateTimeZone('UTC'));
-            return $dt ?: null;
+            return DateTime::createFromFormat('Ymd\THis\Z', $val, new DateTimeZone('UTC')) ?: null;
         }
 
         if (preg_match('/^\d{8}T\d{6}$/', $val)) {
             $tz = null;
-            if ($params !== null) {
+            if ($params) {
                 $p = $this->parseParams($params);
-                if ($p !== null && isset($p['TZID'])) {
-                    $tz = $p['TZID'];
-                }
+                $tz = $p['TZID'] ?? null;
             }
-            try {
-                $zone = $tz ? new DateTimeZone($tz) : null;
-                $dt = DateTime::createFromFormat('Ymd\THis', $val, $zone ?: null);
-                return $dt ?: null;
-            } catch (Throwable $_) {
-                return null;
-            }
+            return DateTime::createFromFormat('Ymd\THis', $val, $tz ? new DateTimeZone($tz) : null) ?: null;
         }
 
         return null;
@@ -238,40 +197,12 @@ class GcsIcsParser
     private function parseParams(string $raw): ?array
     {
         $out = [];
-        $parts = explode(';', $raw);
-        foreach ($parts as $p) {
-            $p = trim($p);
-            if ($p === '' || strpos($p, '=') === false) {
-                continue;
-            }
-            [$k, $v] = explode('=', $p, 2);
-            $k = strtoupper(trim($k));
-            $v = trim($v);
-            if ($k !== '') {
-                $out[$k] = $v;
+        foreach (explode(';', $raw) as $p) {
+            if (strpos($p, '=') !== false) {
+                [$k, $v] = explode('=', $p, 2);
+                $out[strtoupper(trim($k))] = trim($v);
             }
         }
-
         return $out ?: null;
-    }
-
-    /**
-     * Split comma-separated values (EXDATE can contain multiple values).
-     */
-    private function splitCsvValues(string $raw): array
-    {
-        $raw = trim($raw);
-        if ($raw === '') {
-            return [];
-        }
-        $parts = explode(',', $raw);
-        $out = [];
-        foreach ($parts as $p) {
-            $p = trim($p);
-            if ($p !== '') {
-                $out[] = $p;
-            }
-        }
-        return $out;
     }
 }

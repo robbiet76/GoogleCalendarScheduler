@@ -38,6 +38,13 @@ final class GcsYamlMetadata
             return [];
         }
 
+        // -------------------------------------------------------------
+        // NEW (Phase 12.1):
+        // Google Calendar ICS encodes newlines as literal "\n"
+        // Normalize before YAML extraction/parsing
+        // -------------------------------------------------------------
+        $text = str_replace("\\n", "\n", $text);
+
         $yamlText = self::extractYaml($text);
         if ($yamlText === null) {
             return [];
@@ -93,7 +100,7 @@ final class GcsYamlMetadata
         }
 
         GcsLog::warn('YAML metadata warnings summary', [
-            'total' => count(self::$warnings),
+            'total'  => count(self::$warnings),
             'byType' => $byType,
         ]);
 
@@ -107,7 +114,7 @@ final class GcsYamlMetadata
     private static function warn(string $code, array $details, ?array $context): void
     {
         $entry = [
-            'code' => $code,
+            'code'    => $code,
             'details' => $details,
         ];
 
