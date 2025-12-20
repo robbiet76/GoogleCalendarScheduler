@@ -38,11 +38,7 @@ final class GcsYamlMetadata
             return [];
         }
 
-        // -------------------------------------------------------------
-        // NEW (Phase 12.1):
-        // Google Calendar ICS encodes newlines as literal "\n"
-        // Normalize before YAML extraction/parsing
-        // -------------------------------------------------------------
+        // Normalize Google Calendar escaped newlines
         $text = str_replace("\\n", "\n", $text);
 
         $yamlText = self::extractYaml($text);
@@ -84,50 +80,6 @@ final class GcsYamlMetadata
         return $out;
     }
 
-    /**
-     * Emit a summary warning at end of sync.
-     * Safe to call multiple times.
-     */
-    public static function flushWarnings(): void
-    {
-        if (empty(self::$warnings)) {
-            return;
-        }
-
-        $byType = [];
-        foreach (self::$warnings as $w) {
-            $byType[$w['code']] = ($byType[$w['code']] ?? 0) + 1;
-        }
-
-        GcsLog::warn('YAML metadata warnings summary', [
-            'total'  => count(self::$warnings),
-            'byType' => $byType,
-        ]);
-
-        self::$warnings = [];
-    }
-
-    // -----------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------
-
-    private static function warn(string $code, array $details, ?array $context): void
-    {
-        $entry = [
-            'code'    => $code,
-            'details' => $details,
-        ];
-
-        if ($context) {
-            $entry['event'] = $context;
-        }
-
-        self::$warnings[] = $entry;
-
-        // Emit immediate warning with context
-        GcsLog::warn('YAML metadata warning', $entry);
-    }
-
     private static function extractYaml(string $text): ?string
     {
         if (preg_match('/```yaml(.*?)```/s', $text, $m)) {
@@ -139,7 +91,11 @@ final class GcsYamlMetadata
             return substr($text, $pos);
         }
 
-        return null;
+        // ---------------------------------------------------------
+        // FIX (Phase 12.1):
+        // Top-level YAML without wrapper → entire description
+        // ---------------------------------------------------------
+        return trim($text);
     }
 
     private static function parseSimpleYaml(string $yaml): array
@@ -183,15 +139,9 @@ final class GcsYamlMetadata
     {
         $v = trim($val);
 
-        if ($v === 'true') {
-            return true;
-        }
-        if ($v === 'false') {
-            return false;
-        }
-        if (is_numeric($v)) {
-            return (int)$v;
-        }
+        if ($v === 'true') return true;
+        if ($v === 'false') return false;
+        if (is_numeric($v)) return (int)$v;
 
         return $v;
     }
@@ -204,5 +154,39 @@ final class GcsYamlMetadata
             'array'  => is_array($value),
             default  => false,
         };
+    }
+
+    private static function warn(string $code, array $details, ?array $context): void
+    {
+        $entry = [
+            'code'    => $code,
+            'details' => $details,
+        ];
+
+        if ($context) {
+            $entry['event'] = $context;
+        }
+
+        self::$warnings[] = $entry;
+        GcsLog::warn('YAML metadata warning', $entry);
+    }
+
+    public static function flushWarnings(): void
+    {
+        if (empty(self::$warnings)) {
+            return;
+        }
+
+        $byType = [];
+        foreach (self::$warnings as $w) {
+            $byType[$w['code']] = ($byType[$w['code']] ?? 0) + 1;
+        }
+
+        GcsLog::warn('YAML metadata warnings summary', [
+            'total'  => count(self::$warnings),
+            'byType' => $byType,
+        ]);
+
+        self::$warnings = [];
     }
 }
