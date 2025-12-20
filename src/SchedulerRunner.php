@@ -1,6 +1,6 @@
 <?php
 
-final class SchedulerRunner
+final class GcsSchedulerRunner
 {
     private array $cfg;
     private int $horizonDays;
@@ -44,10 +44,10 @@ final class SchedulerRunner
         // ------------------------------------------------------------
         $intents = [];
         $intentTypeCounts = [
-            'command' => 0,
+            'command'  => 0,
             'playlist' => 0,
             'sequence' => 0,
-            'unknown' => 0,
+            'unknown'  => 0,
         ];
 
         foreach ($events as $event) {
@@ -116,7 +116,7 @@ final class SchedulerRunner
                 }
 
                 $intent['type'] = 'command';
-                $intent['target'] = ''; // commands do not use target
+                $intent['target'] = '';
                 $intent['command'] = $cmd;
                 $intent['args'] = is_array($intent['args']) ? $intent['args'] : [];
                 $intent['multisyncCommand'] = !empty($intent['multisyncCommand']);
