@@ -44,8 +44,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'days' => $horizonDays,
             ]);
 
-            // FIX: resolve naming conflict only
-            $runner = new SchedulerRunner($cfg, $horizonDays, $dryRun);
+            // --------------------------------------------------------
+            // FIX: use correct GcsSchedulerRunner class name
+            // --------------------------------------------------------
+            $runner = new GcsSchedulerRunner($cfg, $horizonDays, $dryRun);
             $result = $runner->run();
 
             GcsLog::info('Sync completed', $result);
@@ -98,3 +100,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         <button type="submit" class="buttons">Sync Calendar</button>
     </form>
 </div>
+
