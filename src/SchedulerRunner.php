@@ -24,6 +24,7 @@ final class SchedulerRunner
         $fetcher = new GcsIcsFetcher();
         $ics = $fetcher->fetch($this->cfg['calendar']['ics_url'] ?? '');
         if ($ics === '') {
+            GcsLog::warn('ICS fetch returned empty string');
             return (new GcsSchedulerSync($this->cfg, $this->horizonDays, $this->dryRun))->sync([]);
         }
 
@@ -42,6 +43,12 @@ final class SchedulerRunner
         // Build intents
         // ------------------------------------------------------------
         $intents = [];
+        $intentTypeCounts = [
+            'command' => 0,
+            'playlist' => 0,
+            'sequence' => 0,
+            'unknown' => 0,
+        ];
 
         foreach ($events as $event) {
             $summary = trim((string)($event['summary'] ?? ''));
@@ -84,9 +91,11 @@ final class SchedulerRunner
                 }
             }
 
-            $yamlType = isset($intent['type']) ? trim((string)$intent['type']) : '';
+            $yamlType = isset($intent['type']) ? strtolower(trim((string)$intent['type'])) : '';
 
+            // --------------------------------------------------------
             // Explicit command
+            // --------------------------------------------------------
             if ($yamlType === 'command') {
                 $cmdFromYaml = isset($intent['command']) ? trim((string)$intent['command']) : '';
                 $cmd = ($cmdFromYaml !== '') ? $cmdFromYaml : $summary;
@@ -94,6 +103,7 @@ final class SchedulerRunner
                 if ($cmd === '') {
                     GcsLog::warn('Command event missing command name', [
                         'uid' => $uid,
+                        'summary' => $summary,
                     ]);
                     continue;
                 }
@@ -106,46 +116,78 @@ final class SchedulerRunner
                 }
 
                 $intent['type'] = 'command';
-                $intent['target'] = '';
+                $intent['target'] = ''; // commands do not use target
                 $intent['command'] = $cmd;
                 $intent['args'] = is_array($intent['args']) ? $intent['args'] : [];
                 $intent['multisyncCommand'] = !empty($intent['multisyncCommand']);
 
                 $intents[] = $intent;
+                $intentTypeCounts['command']++;
                 continue;
             }
 
+            // --------------------------------------------------------
             // Playlist / sequence
+            // --------------------------------------------------------
             $resolved = GcsTargetResolver::resolve($summary);
             if (!$resolved) {
+                $intentTypeCounts['unknown']++;
                 continue;
             }
 
             $intent['type']   = $resolved['type'];
             $intent['target'] = $resolved['target'];
 
+            if ($intent['type'] === 'playlist') {
+                $intentTypeCounts['playlist']++;
+            } elseif ($intent['type'] === 'sequence') {
+                $intentTypeCounts['sequence']++;
+            } else {
+                $intentTypeCounts['unknown']++;
+            }
+
             $intents[] = $intent;
         }
 
+        GcsLog::info('Intent build summary', [
+            'intentCount' => count($intents),
+            'byType' => $intentTypeCounts,
+        ]);
+
         // ------------------------------------------------------------
-        // Consolidate + map to FPP schedule entries
+        // Consolidate + map to desired scheduler entries
         // ------------------------------------------------------------
         $consolidator = new GcsIntentConsolidator();
         $ranges = $consolidator->consolidate($intents);
 
+        GcsLog::info('Intent consolidation', [
+            'inputIntents' => count($intents),
+            'rangeCount' => count($ranges),
+        ]);
+
         $mapped = [];
+        $mappedNulls = 0;
+
         foreach ($ranges as $ri) {
             $entry = GcsFppScheduleMapper::mapRangeIntentToSchedule(
                 $this->hydrateRangeIntent($ri)
             );
+
             if ($entry) {
                 $mapped[] = $entry;
                 GcsLog::info('Mapped FPP schedule (dry-run)', $entry);
+            } else {
+                $mappedNulls++;
             }
         }
 
+        GcsLog::info('Mapping summary', [
+            'mappedCount' => count($mapped),
+            'nullMappings' => $mappedNulls,
+        ]);
+
         // ------------------------------------------------------------
-        // Diff + apply using mapped desired entries
+        // Diff + apply using desired entries
         // ------------------------------------------------------------
         return (new GcsSchedulerSync($this->cfg, $this->horizonDays, $this->dryRun))->sync($mapped);
     }
@@ -164,6 +206,7 @@ final class SchedulerRunner
             'repeat'      => $t['repeat'] ?? 'none',
             'enabled'     => array_key_exists('enabled', $t) ? (bool)$t['enabled'] : true,
 
+            // Command fields
             'command'          => $t['command'] ?? null,
             'args'             => (isset($t['args']) && is_array($t['args'])) ? $t['args'] : [],
             'multisyncCommand' => !empty($t['multisyncCommand']),
