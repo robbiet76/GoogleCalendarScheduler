@@ -44,7 +44,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'days' => $horizonDays,
             ]);
 
-            $runner = new GcsSchedulerRunner($cfg, $horizonDays, $dryRun);
+            // FIX: resolve naming conflict only
+            $runner = new SchedulerRunner($cfg, $horizonDays, $dryRun);
             $result = $runner->run();
 
             GcsLog::info('Sync completed', $result);
