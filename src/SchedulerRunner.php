@@ -1,13 +1,5 @@
 <?php
 
-require_once __DIR__ . '/IcsFetcher.php';
-require_once __DIR__ . '/IcsParser.php';
-require_once __DIR__ . '/YamlMetadata.php';
-require_once __DIR__ . '/IntentConsolidator.php';
-require_once __DIR__ . '/SchedulerSync.php';
-require_once __DIR__ . '/GcsTargetResolver.php';
-require_once __DIR__ . '/GcsFppScheduleMapper.php';
-
 final class SchedulerRunner
 {
     private array $cfg;
@@ -26,15 +18,16 @@ final class SchedulerRunner
         $now = new DateTime('now');
         $horizonEnd = (clone $now)->modify("+{$this->horizonDays} days");
 
-        // Fetch ICS
-        $fetcher = new IcsFetcher();
+        // ------------------------------------------------------------
+        // Fetch + parse ICS
+        // ------------------------------------------------------------
+        $fetcher = new GcsIcsFetcher();
         $ics = $fetcher->fetch($this->cfg['calendar']['ics_url'] ?? '');
         if ($ics === '') {
-            return (new SchedulerSync($this->dryRun))->sync([]);
+            return (new GcsSchedulerSync($this->cfg, $this->horizonDays, $this->dryRun))->run();
         }
 
-        // Parse ICS
-        $parser = new IcsParser();
+        $parser = new GcsIcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
 
         GcsLog::info('Parser returned', [
@@ -42,9 +35,12 @@ final class SchedulerRunner
         ]);
 
         if (empty($events)) {
-            return (new SchedulerSync($this->dryRun))->sync([]);
+            return (new GcsSchedulerSync($this->cfg, $this->horizonDays, $this->dryRun))->run();
         }
 
+        // ------------------------------------------------------------
+        // Build intents
+        // ------------------------------------------------------------
         $intents = [];
 
         foreach ($events as $event) {
@@ -72,12 +68,14 @@ final class SchedulerRunner
                 'repeat'   => 'none',
                 'enabled'  => true,
 
+                // Command fields
                 'command'          => null,
                 'args'             => [],
                 'multisyncCommand' => false,
             ];
 
-            $yaml = YamlMetadata::parse($event['description'] ?? null);
+            // YAML (top-level, no fpp: wrapper)
+            $yaml = GcsYamlMetadata::parse($event['description'] ?? null);
             if (is_array($yaml)) {
                 foreach ($yaml as $k => $v) {
                     if ($k !== 'target') {
@@ -88,7 +86,9 @@ final class SchedulerRunner
 
             $yamlType = isset($intent['type']) ? trim((string)$intent['type']) : '';
 
-            // Command (explicit only)
+            // --------------------------------------------------------
+            // Explicit command
+            // --------------------------------------------------------
             if ($yamlType === 'command') {
                 $cmdFromYaml = isset($intent['command']) ? trim((string)$intent['command']) : '';
                 $cmd = ($cmdFromYaml !== '') ? $cmdFromYaml : $summary;
@@ -98,6 +98,13 @@ final class SchedulerRunner
                         'uid' => $uid,
                     ]);
                     continue;
+                }
+
+                if ($cmdFromYaml === '') {
+                    GcsLog::info('Command name fell back to event summary', [
+                        'uid' => $uid,
+                        'command' => $cmd,
+                    ]);
                 }
 
                 $intent['type'] = 'command';
@@ -110,7 +117,9 @@ final class SchedulerRunner
                 continue;
             }
 
+            // --------------------------------------------------------
             // Playlist / sequence
+            // --------------------------------------------------------
             $resolved = GcsTargetResolver::resolve($summary);
             if (!$resolved) {
                 continue;
@@ -122,20 +131,22 @@ final class SchedulerRunner
             $intents[] = $intent;
         }
 
-        $consolidator = new IntentConsolidator();
+        // ------------------------------------------------------------
+        // Consolidate + map
+        // ------------------------------------------------------------
+        $consolidator = new GcsIntentConsolidator();
         $ranges = $consolidator->consolidate($intents);
 
-        $mapped = [];
         foreach ($ranges as $ri) {
-            $entry = GcsFppScheduleMapper::mapRangeIntentToSchedule(
+            GcsFppScheduleMapper::mapRangeIntentToSchedule(
                 $this->hydrateRangeIntent($ri)
             );
-            if ($entry) {
-                $mapped[] = $entry;
-            }
         }
 
-        return (new SchedulerSync($this->dryRun))->sync($mapped);
+        // ------------------------------------------------------------
+        // Diff + apply (Phase 11 contract)
+        // ------------------------------------------------------------
+        return (new GcsSchedulerSync($this->cfg, $this->horizonDays, $this->dryRun))->run();
     }
 
     private function hydrateRangeIntent(array $ri): array
@@ -156,7 +167,7 @@ final class SchedulerRunner
             'args'             => (isset($t['args']) && is_array($t['args'])) ? $t['args'] : [],
             'multisyncCommand' => !empty($t['multisyncCommand']),
 
-            'weekdayMask' => IntentConsolidator::shortDaysToWeekdayMask(
+            'weekdayMask' => GcsIntentConsolidator::shortDaysToWeekdayMask(
                 $ri['range']['days']
             ),
             'startDate'   => $ri['range']['start'],
