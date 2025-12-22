@@ -1,6 +1,6 @@
 <?php
 
-class IcsFetcher
+class GcsIcsFetcher
 {
     public function fetch(string $url): string
     {
@@ -29,6 +29,7 @@ class IcsFetcher
             return '';
         }
 
-        return $data;
+        return (string)$data;
     }
 }
+

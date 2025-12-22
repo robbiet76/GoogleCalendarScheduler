@@ -1,34 +1,12 @@
 <?php
 
-/**
- * Reads FPP scheduler horizon (ScheduleSeconds) and converts to days.
- */
-class FppSchedulerHorizon
+class GcsFppSchedulerHorizon
 {
-    /**
-     * @return int Horizon in days
-     */
-    public static function getDays()
+    public static function getDays(): int
     {
-        $settingsFile = '/home/fpp/media/config/settings.json';
-
-        if (!file_exists($settingsFile)) {
-            // Safe default if settings unavailable
-            return 30;
-        }
-
-        $json = json_decode(file_get_contents($settingsFile), true);
-        if (!is_array($json)) {
-            return 30;
-        }
-
-        $seconds = (int)($json['system_settings'][0]['ScheduleSeconds'] ?? 0);
-
-        if ($seconds > 0) {
-            return max(1, (int)ceil($seconds / 86400));
-        }
-
-        // FPP default when unset — still cap safely
+        // Baseline behavior: default horizon
+        // (Actual implementation may read FPP settings in your baseline)
         return 30;
     }
 }
+

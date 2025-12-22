@@ -1,27 +1,7 @@
 <?php
 
-/**
- * Map a consolidated "range intent" into an FPP schedule.json entry (playlist-only for now).
- *
- * FPP fields observed/used:
- *  - enabled (1/0)
- *  - sequence (0 for playlist)
- *  - playlist (string)
- *  - day (int) = common presets + day-mask mode
- *  - dayMask (int) when in day-mask mode
- *  - startTime, endTime
- *  - startTimeOffset, endTimeOffset
- *  - repeat (int)
- *  - startDate, endDate
- *  - stopType (int)
- *
- * NOTE: The exact encoding of "day"/"dayMask" is based on FPP UI behavior:
- *       manual describes a "Day Mask" selection. :contentReference[oaicite:2]{index=2}
- */
 class GcsFppScheduleMapper
 {
-    // These are conventional based on observed schedule.json "Everyday" => 7 and FPP UI.
-    // If your system differs, adjust constants here.
     const DAY_SUN      = 0;
     const DAY_MON      = 1;
     const DAY_TUE      = 2;
@@ -36,11 +16,6 @@ class GcsFppScheduleMapper
 
     public static function mapRangeIntentToSchedule(array $ri): ?array
     {
-        // Playlist only in this stage (sequence/command later)
-        if (($ri['type'] ?? '') !== 'playlist') {
-            return null;
-        }
-
         $start = $ri['start'] ?? null;
         $end   = $ri['end'] ?? null;
         if (!($start instanceof DateTime) || !($end instanceof DateTime)) {
@@ -48,18 +23,18 @@ class GcsFppScheduleMapper
         }
 
         $weekdayMask = intval($ri['weekdayMask'] ?? 0);
+        $dayFields   = self::encodeDayFields($weekdayMask);
 
-        $dayFields = self::encodeDayFields($weekdayMask);
-
-        $repeat = self::mapRepeat($ri['repeat'] ?? 'none');
+        $repeat   = self::mapRepeat($ri['repeat'] ?? 'none');
         $stopType = self::mapStopType($ri['stopType'] ?? 'graceful');
+        $tag      = self::buildTag($ri);
 
-        $tag = self::buildTag($ri);
+        $type = (string)($ri['type'] ?? '');
 
+        // Base entry common fields
         $entry = [
-            'enabled'         => 1,
+            'enabled'         => !empty($ri['enabled']) ? 1 : 0,
             'sequence'        => 0,
-            'playlist'        => (string)$ri['target'] . $tag,
             'day'             => $dayFields['day'],
             'startTime'       => $start->format('H:i:s'),
             'startTimeOffset' => 0,
@@ -75,19 +50,63 @@ class GcsFppScheduleMapper
             $entry['dayMask'] = $dayFields['dayMask'];
         }
 
-        return $entry;
+        // ------------------------------------------------------------
+        // Playlist
+        // ------------------------------------------------------------
+        if ($type === 'playlist') {
+            $entry['sequence'] = 0;
+            $entry['playlist'] = (string)$ri['target'] . $tag;
+            return $entry;
+        }
+
+        // ------------------------------------------------------------
+        // Sequence
+        // ------------------------------------------------------------
+        if ($type === 'sequence') {
+            // FPP uses sequence=1 but still stores the sequence name in "playlist"
+            $entry['sequence'] = 1;
+            $entry['playlist'] = (string)$ri['target'] . $tag;
+            return $entry;
+        }
+
+        // ------------------------------------------------------------
+        // Command (Phase 10/12) — EDGE-TRIGGERED
+        // ------------------------------------------------------------
+        if ($type === 'command') {
+            $cmd = isset($ri['command']) ? trim((string)$ri['command']) : '';
+            if ($cmd === '') {
+                return null;
+            }
+
+            $args = (isset($ri['args']) && is_array($ri['args'])) ? $ri['args'] : [];
+
+            // EDGE semantics: command triggers at start only (zero-length window)
+            $entry['endTime'] = $entry['startTime'];
+            $entry['endTimeOffset'] = 0;
+
+            // Keep stable identity tag in playlist field (ignored by FPP when command is set)
+            $entry['sequence'] = 0;
+            $entry['playlist'] = $tag;
+
+            $entry['command'] = $cmd;
+            $entry['args'] = $args;
+            $entry['multisyncCommand'] = !empty($ri['multisyncCommand']);
+
+            return $entry;
+        }
+
+        // Unknown type
+        return null;
     }
 
     public static function isPluginManaged(array $entry): bool
     {
-        // We embed a stable tag into the playlist name
         $p = (string)($entry['playlist'] ?? '');
         return (strpos($p, '|GCS:v1|') !== false);
     }
 
     public static function pluginKey(array $entry): ?string
     {
-        // Extract everything from |GCS:v1| onwards; that's our stable identity
         $p = (string)($entry['playlist'] ?? '');
         $pos = strpos($p, '|GCS:v1|');
         if ($pos === false) {
@@ -102,13 +121,11 @@ class GcsFppScheduleMapper
         $range = (string)($ri['startDate'] ?? '') . '..' . (string)($ri['endDate'] ?? '');
         $days = GcsIntentConsolidator::weekdayMaskToShortDays(intval($ri['weekdayMask'] ?? 0));
 
-        // Keep tags short and deterministic; avoid characters that confuse FPP UI
         return '|GCS:v1|uid=' . $uid . '|range=' . $range . '|days=' . $days;
     }
 
     private static function encodeDayFields(int $weekdayMask): array
     {
-        // Normalize to 7-bit
         $weekdayMask = $weekdayMask & 127;
 
         $weekdaysMask = (GcsIntentConsolidator::WD_MON
@@ -131,36 +148,33 @@ class GcsFppScheduleMapper
             return ['day' => self::DAY_WEEKENDS];
         }
 
-        // Arbitrary combinations: use Day Mask mode
         return ['day' => self::DAY_MASK, 'dayMask' => $weekdayMask];
     }
 
     private static function mapStopType(string $stopType): int
     {
-        // FPP stopType observed: 0 (graceful), 1 (hard) in your schedule.json
-        // We'll map:
-        //  graceful -> 0
-        //  hard     -> 1
         $s = strtolower(trim($stopType));
-        if ($s === 'hard') {
-            return 1;
+
+        // 0 = graceful
+        // 1 = hard
+        // 2 = graceful_loop
+        switch ($s) {
+            case 'hard':
+                return 1;
+            case 'graceful_loop':
+                return 2;
+            case 'graceful':
+            default:
+                return 0;
         }
-        return 0;
     }
 
     private static function mapRepeat($repeat): int
     {
-        // Your YAML currently uses numeric "15" and FPP schedule.json shows repeat: 1
-        // To stay backwards compatible with what you've been doing:
-        // - 'none' => 0
-        // - integer N => N
-        // - 'immediate' => 1 (common FPP internal)
-        //
-        // If you later decide that YAML repeat: 15 means something else (e.g., minutes),
-        // we can remap here.
         if (is_int($repeat)) {
             return $repeat;
         }
+
         if (is_string($repeat)) {
             $r = strtolower(trim($repeat));
             if ($r === 'none' || $r === '') {
@@ -173,6 +187,7 @@ class GcsFppScheduleMapper
                 return intval($r);
             }
         }
+
         return 0;
     }
 }

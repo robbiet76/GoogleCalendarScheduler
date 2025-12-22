@@ -1,91 +1,192 @@
 <?php
 
 /**
- * Minimal YAML metadata parser for Google Calendar events.
+ * YAML metadata parser with schema validation and warning aggregation.
  *
- * Handles Google Calendar quirks:
- * - Non-breaking spaces (NBSP)
- * - Folded lines already unfolded upstream
- *
- * Supported schema:
- *
- * fpp:
- *   type: playlist|sequence|command
- *   stop:
- *     type: graceful|graceful_loop|hard
- *   repeat: none|immediate|5|10|15|20|30|60
+ * PHASE 11 CONTRACT:
+ * - Schema is explicit and locked
+ * - Unknown keys generate warnings
+ * - Invalid value types generate warnings
+ * - Warnings are aggregated and summarized per sync
  */
-final class GcsYamlMetadata {
+final class GcsYamlMetadata
+{
+    private const SCHEMA = [
+        'type'       => 'string',
+        'stopType'   => 'string',
+        'repeat'     => 'string',
+        'override'   => 'bool',
 
-    public static function parse(?string $description): ?array {
-        if (!$description) {
-            return null;
+        'command'          => 'string',
+        'args'             => 'array',
+        'multisyncCommand' => 'bool',
+    ];
+
+    /** @var array<int,array<string,mixed>> */
+    private static array $warnings = [];
+
+    /**
+     * Parse YAML metadata from an event description.
+     *
+     * @param string|null $text
+     * @param array<string,string>|null $context
+     * @return array<string,mixed>
+     */
+    public static function parse(?string $text, ?array $context = null): array
+    {
+        if ($text === null || trim($text) === '') {
+            return [];
         }
 
-        // Normalize Google Calendar NBSP → space
-        $description = str_replace("\xC2\xA0", ' ', $description);
+        // Normalize Google Calendar escaped newlines
+        $text = str_replace("\\n", "\n", $text);
 
-        $lines = preg_split('/\R/', $description);
+        $yamlText = self::extractYaml($text);
+        if ($yamlText === null) {
+            return [];
+        }
 
-        $inFpp  = false;
-        $inStop = false;
-        $out    = [];
+        $parsed = self::parseSimpleYaml($yamlText);
+        if (!is_array($parsed)) {
+            self::warn('yaml_parse_failed', [
+                'yaml' => $yamlText,
+            ], $context);
+            return [];
+        }
 
-        foreach ($lines as $rawLine) {
-            $line = trim($rawLine);
+        $out = [];
 
-            if ($line === '' || strpos($line, '#') === 0) {
+        foreach ($parsed as $key => $value) {
+            if (!array_key_exists($key, self::SCHEMA)) {
+                self::warn('unknown_key', [
+                    'key' => $key,
+                ], $context);
                 continue;
             }
 
-            if ($line === 'fpp:') {
-                $inFpp  = true;
-                $inStop = false;
+            $expected = self::SCHEMA[$key];
+            if (!self::isValidType($value, $expected)) {
+                self::warn('invalid_type', [
+                    'key'      => $key,
+                    'expected' => $expected,
+                    'actual'   => gettype($value),
+                ], $context);
                 continue;
             }
 
-            if (!$inFpp) {
+            $out[$key] = $value;
+        }
+
+        return $out;
+    }
+
+    private static function extractYaml(string $text): ?string
+    {
+        if (preg_match('/```yaml(.*?)```/s', $text, $m)) {
+            return trim($m[1]);
+        }
+
+        $pos = strpos($text, 'fpp:');
+        if ($pos !== false) {
+            return substr($text, $pos);
+        }
+
+        // ---------------------------------------------------------
+        // FIX (Phase 12.1):
+        // Top-level YAML without wrapper → entire description
+        // ---------------------------------------------------------
+        return trim($text);
+    }
+
+    private static function parseSimpleYaml(string $yaml): array
+    {
+        $lines = preg_split('/\r?\n/', $yaml);
+        $data  = [];
+        $currentKey = null;
+
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+            if ($line === '' || str_starts_with(trim($line), '#')) {
                 continue;
             }
 
-            if ($line === 'stop:') {
-                $inStop = true;
-                continue;
-            }
-
-            // stop.type
-            if ($inStop && preg_match('/^type:\s*(\S+)/', $line, $m)) {
-                $valid = ['graceful', 'graceful_loop', 'hard'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['stopType'] = $m[1];
+            if ($currentKey !== null && preg_match('/^\s*-\s*(.+)$/', $line, $m)) {
+                if (!isset($data[$currentKey]) || !is_array($data[$currentKey])) {
+                    $data[$currentKey] = [];
                 }
+                $data[$currentKey][] = self::castValue($m[1]);
                 continue;
             }
 
-            // fpp.type
-            if (!$inStop && preg_match('/^type:\s*(\S+)/', $line, $m)) {
-                $valid = ['playlist', 'sequence', 'command'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['type'] = $m[1];
-                }
-                continue;
-            }
+            if (preg_match('/^([a-zA-Z0-9_]+)\s*:\s*(.*)$/', $line, $m)) {
+                $key = $m[1];
+                $val = $m[2];
 
-            // repeat
-            if (preg_match('/^repeat:\s*(\S+)/', $line, $m)) {
-                $valid = ['none', 'immediate', '5', '10', '15', '20', '30', '60'];
-                if (in_array($m[1], $valid, true)) {
-                    $out['repeat'] = $m[1];
+                if ($val === '') {
+                    $data[$key] = [];
+                    $currentKey = $key;
+                } else {
+                    $data[$key] = self::castValue($val);
+                    $currentKey = null;
                 }
-                continue;
             }
         }
 
-        if (!empty($out)) {
-            GcsLog::info('Applied YAML metadata', $out);
-            return $out;
+        return $data;
+    }
+
+    private static function castValue(string $val)
+    {
+        $v = trim($val);
+
+        if ($v === 'true') return true;
+        if ($v === 'false') return false;
+        if (is_numeric($v)) return (int)$v;
+
+        return $v;
+    }
+
+    private static function isValidType($value, string $expected): bool
+    {
+        return match ($expected) {
+            'string' => is_string($value),
+            'bool'   => is_bool($value),
+            'array'  => is_array($value),
+            default  => false,
+        };
+    }
+
+    private static function warn(string $code, array $details, ?array $context): void
+    {
+        $entry = [
+            'code'    => $code,
+            'details' => $details,
+        ];
+
+        if ($context) {
+            $entry['event'] = $context;
         }
 
-        return null;
+        self::$warnings[] = $entry;
+        GcsLog::warn('YAML metadata warning', $entry);
+    }
+
+    public static function flushWarnings(): void
+    {
+        if (empty(self::$warnings)) {
+            return;
+        }
+
+        $byType = [];
+        foreach (self::$warnings as $w) {
+            $byType[$w['code']] = ($byType[$w['code']] ?? 0) + 1;
+        }
+
+        GcsLog::warn('YAML metadata warnings summary', [
+            'total'  => count(self::$warnings),
+            'byType' => $byType,
+        ]);
+
+        self::$warnings = [];
     }
 }

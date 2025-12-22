@@ -39,6 +39,13 @@ if ($action === 'sync') {
         'dryRun' => $dryRun,
     ]);
 
+<<<<<<< HEAD
+    $horizonDays = GcsFppSchedulerHorizon::getDays();
+    GcsLog::info('Using FPP scheduler horizon', ['days' => $horizonDays]);
+
+    $sync = new GcsSchedulerSync($cfg, $horizonDays, $dryRun);
+    $result = $sync->run();
+=======
     $horizonDays = FppSchedulerHorizon::getDays();
     GcsLog::info('Using FPP scheduler horizon', [
         'days' => $horizonDays,
@@ -46,6 +53,7 @@ if ($action === 'sync') {
 
     $runner = new SchedulerRunner($cfg, $horizonDays, $dryRun);
     $result = $runner->run();
+>>>>>>> master
 
     GcsLog::info('Sync completed', $result);
 }

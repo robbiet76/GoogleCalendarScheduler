@@ -1,58 +1,66 @@
 <?php
 
-/**
- * SchedulerDiff
- *
- * Computes add / update / delete sets between
- * existing and desired scheduler entries.
- */
-class SchedulerDiff
+final class GcsSchedulerDiff
 {
+    /** @var array<int,array<string,mixed>> */
+    private array $desired;
+
+    private GcsSchedulerState $state;
+
     /**
-     * @param array<int,array<string,mixed>> $existing
      * @param array<int,array<string,mixed>> $desired
-     * @return array<string,array>
      */
-    public static function diff(array $existing, array $desired): array
+    public function __construct(array $desired, GcsSchedulerState $state)
     {
-        $adds = [];
-        $updates = [];
-        $deletes = [];
+        $this->desired = $desired;
+        $this->state   = $state;
+    }
 
-        $existingByKey = [];
-        foreach ($existing as $item) {
-            if (isset($item['playlist'])) {
-                $existingByKey[$item['playlist']] = $item;
+    public function compute(): GcsSchedulerDiffResult
+    {
+        $existingByUid = [];
+        foreach ($this->state->getEntries() as $entry) {
+            $uid = $entry->getGcsUid();
+            if ($uid !== null) {
+                $existingByUid[$uid] = $entry;
             }
         }
 
-        $desiredByKey = [];
-        foreach ($desired as $item) {
-            if (isset($item['playlist'])) {
-                $desiredByKey[$item['playlist']] = $item;
+        $toCreate = [];
+        $toUpdate = [];
+        $seen     = [];
+
+        foreach ($this->desired as $desiredEntry) {
+            $uid = GcsSchedulerIdentity::extractUid($desiredEntry);
+            if ($uid === null) {
+                // Desired entry without GCS identity is ignored
+                continue;
+            }
+
+            $seen[$uid] = true;
+
+            if (!isset($existingByUid[$uid])) {
+                $toCreate[] = $desiredEntry;
+                continue;
+            }
+
+            $existing = $existingByUid[$uid];
+
+            if (!GcsSchedulerComparator::isEquivalent($existing, $desiredEntry)) {
+                $toUpdate[] = [
+                    'existing' => $existing,
+                    'desired'  => $desiredEntry,
+                ];
             }
         }
 
-        // Adds & updates
-        foreach ($desiredByKey as $key => $item) {
-            if (!isset($existingByKey[$key])) {
-                $adds[] = $item;
-            } elseif ($existingByKey[$key] != $item) {
-                $updates[] = $item;
+        $toDelete = [];
+        foreach ($existingByUid as $uid => $entry) {
+            if (!isset($seen[$uid])) {
+                $toDelete[] = $entry;
             }
         }
 
-        // Deletes
-        foreach ($existingByKey as $key => $item) {
-            if (!isset($desiredByKey[$key])) {
-                $deletes[] = $item;
-            }
-        }
-
-        return [
-            'add'    => $adds,
-            'update' => $updates,
-            'delete' => $deletes,
-        ];
+        return new GcsSchedulerDiffResult($toCreate, $toUpdate, $toDelete);
     }
 }
