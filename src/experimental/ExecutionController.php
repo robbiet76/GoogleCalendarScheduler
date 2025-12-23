@@ -6,22 +6,18 @@ declare(strict_types=1);
  *
  * Explicit entry point for experimental execution paths.
  *
- * IMPORTANT:
- * - This file introduces NO runtime behavior on its own.
- * - Nothing in this class is automatically executed.
- * - Methods here must only run when explicitly invoked.
+ * TEMPORARY STATE (Milestone 11.3 Step B):
+ * - Emits a single experimental log entry when run().
  */
 final class ExecutionController
 {
     /**
      * Manual execution entry point.
      *
-     * This method is intentionally inert for now.
-     * It will be used in later milestones for opt-in testing.
+     * This method is only executed when explicitly invoked.
      */
     public static function run(): void
     {
-        // Intentionally empty.
-        // No behavior permitted in Milestone 11.2 Step A.
+        ScopedLogger::log('ExecutionController run invoked');
     }
 }
