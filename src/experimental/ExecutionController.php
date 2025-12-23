@@ -15,12 +15,17 @@ final class ExecutionController
     /**
      * Manual execution entry point.
      *
-     * Intentionally inert.
+     * Intentionally inert for Milestone 11.5 Step B.
+     * DiffPreviewer is referenced but NOT invoked.
      *
      * @param array $config Loaded plugin configuration
      */
     public static function run(array $config): void
     {
-        // Intentionally empty.
+        // DiffPreviewer is intentionally NOT invoked yet.
+        // This wiring exists only to validate structure.
+        //
+        // Example (DO NOT ENABLE YET):
+        // $summary = DiffPreviewer::preview($config);
     }
 }
