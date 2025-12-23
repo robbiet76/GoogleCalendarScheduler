@@ -40,12 +40,17 @@ final class CalendarReader
         $icsData = $fetcher->fetch($icsUrl);
 
         // Parse ICS data (read-only)
-        $parser = new GcsIcsParser($icsData);
-        $events = $parser->parse();
+        // Use the widest possible safe window; this is read-only
+        $parser = new GcsIcsParser();
+
+        $start = new DateTimeImmutable('now');
+        $end   = $start->modify('+1 year');
+
+        $events = $parser->parse($icsData, $start, $end);
 
         // Summary only — no event objects returned
         return [
-            'events' => count($events),
+            'events' => is_array($events) ? count($events) : 0,
         ];
     }
 }
