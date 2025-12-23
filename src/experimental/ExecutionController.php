@@ -6,26 +6,23 @@ declare(strict_types=1);
  *
  * Explicit entry point for experimental execution paths.
  *
- * IMPORTANT:
- * - Nothing in this class runs automatically.
- * - Methods are only executed when explicitly invoked.
+ * TEMPORARY STATE (Milestone 11.5 Step C):
+ * - Invokes DiffPreviewer
+ * - Logs summary counts only
  */
 final class ExecutionController
 {
     /**
      * Manual execution entry point.
      *
-     * Intentionally inert for Milestone 11.5 Step B.
-     * DiffPreviewer is referenced but NOT invoked.
-     *
      * @param array $config Loaded plugin configuration
      */
     public static function run(array $config): void
     {
-        // DiffPreviewer is intentionally NOT invoked yet.
-        // This wiring exists only to validate structure.
-        //
-        // Example (DO NOT ENABLE YET):
-        // $summary = DiffPreviewer::preview($config);
+        $summary = DiffPreviewer::preview($config);
+
+        ScopedLogger::log(
+            'Diff preview summary ' . json_encode($summary)
+        );
     }
 }

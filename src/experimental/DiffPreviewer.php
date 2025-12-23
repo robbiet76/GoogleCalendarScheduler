@@ -6,17 +6,10 @@ declare(strict_types=1);
  *
  * Read-only diff preview helper.
  *
- * Responsibilities:
- * - Load current scheduler state (read-only)
- * - Build desired schedule from calendar data (read-only)
- * - Compute differences (read-only)
- * - Return summary counts only (create/update/delete)
- *
- * IMPORTANT:
- * - No apply
- * - No config mutation
- * - No logging
- * - No side effects
+ * TEMPORARY IMPLEMENTATION (Milestone 11.5 Step C):
+ * - Computes diff summary only
+ * - NO apply
+ * - NO mutation
  */
 final class DiffPreviewer
 {
@@ -28,12 +21,23 @@ final class DiffPreviewer
      */
     public static function preview(array $config): array
     {
-        // Intentionally inert in Step A.
-        // This method will be implemented in Step C.
+        // Load current scheduler state (read-only)
+        $state = GcsSchedulerState::load();
+
+        // Build desired intent from calendar (read-only)
+        $dryRun = true;
+        $horizonDays = GcsFppSchedulerHorizon::getDays();
+
+        $runner = new GcsSchedulerRunner($config, $horizonDays, $dryRun);
+        $result = $runner->run();
+
+        // Extract diff summary only
+        $diff = $result['diff'] ?? [];
+
         return [
-            'create' => 0,
-            'update' => 0,
-            'delete' => 0,
+            'create' => count($diff['create'] ?? []),
+            'update' => count($diff['update'] ?? []),
+            'delete' => count($diff['delete'] ?? []),
         ];
     }
 }
