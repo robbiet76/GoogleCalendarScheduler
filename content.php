@@ -7,7 +7,7 @@
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
-// Experimental scaffolding (no runtime behavior unless gated)
+// Experimental scaffolding (explicitly required, inert)
 require_once __DIR__ . '/src/experimental/ExecutionContext.php';
 require_once __DIR__ . '/src/experimental/ScopedLogger.php';
 require_once __DIR__ . '/src/experimental/ExecutionController.php';
@@ -40,14 +40,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         if ($action === 'sync') {
-            // --------------------------------------------------------
-            // Experimental execution (config-gated, read-only)
-            // --------------------------------------------------------
-            ExecutionController::maybeRun($cfg);
-
-            // --------------------------------------------------------
-            // Normal sync flow (unchanged)
-            // --------------------------------------------------------
             $dryRun = !empty($cfg['runtime']['dry_run']);
 
             GcsLog::info('Starting sync', [
@@ -76,6 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 <div class="settings">
     <h2>Google Calendar Scheduler</h2>
 
+    <!-- SAVE SETTINGS -->
     <form method="post">
         <input type="hidden" name="action" value="save">
 
@@ -105,6 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     <hr>
 
+    <!-- SYNC -->
     <form method="post">
         <input type="hidden" name="action" value="sync">
         <button type="submit" class="buttons">Sync Calendar</button>
