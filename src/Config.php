@@ -4,12 +4,27 @@ final class GcsConfig {
     public static function defaults(): array {
         return [
             "version" => 1,
+
             "calendar" => [
                 "ics_url" => ""
             ],
+
             "runtime" => [
                 "dry_run" => true
             ],
+
+            /*
+             * ------------------------------------------------------------
+             * Experimental features (Phase 11)
+             * ------------------------------------------------------------
+             * All experimental behavior is gated behind these flags.
+             * Defaults MUST remain false.
+             */
+            "experimental" => [
+                "enabled" => false,
+                "allow_apply" => false
+            ],
+
             "sync" => [
                 "last_run" => null,
                 "last_status" => "never",

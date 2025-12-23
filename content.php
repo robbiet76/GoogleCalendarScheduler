@@ -7,11 +7,95 @@
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
+// Experimental scaffolding (explicitly required)
+require_once __DIR__ . '/src/experimental/ExecutionContext.php';
+require_once __DIR__ . '/src/experimental/ScopedLogger.php';
+require_once __DIR__ . '/src/experimental/ExecutionController.php';
+require_once __DIR__ . '/src/experimental/HealthProbe.php';
+require_once __DIR__ . '/src/experimental/CalendarReader.php';
+require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
+
 $cfg = GcsConfig::load();
 
 /*
  * --------------------------------------------------------------------
- * POST handling
+ * EXPERIMENTAL ENDPOINTS (11.7 / 11.8)
+ * --------------------------------------------------------------------
+ */
+
+/*
+ * Diff preview endpoint (read-only)
+ * GET ?endpoint=experimental_diff
+ */
+if (
+    $_SERVER['REQUEST_METHOD'] === 'GET'
+    && isset($_GET['endpoint'])
+    && $_GET['endpoint'] === 'experimental_diff'
+) {
+    header('Content-Type: application/json');
+
+    if (empty($cfg['experimental']['enabled'])) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => 'experimental_disabled',
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    try {
+        $diff = DiffPreviewer::preview($cfg);
+
+        echo json_encode([
+            'ok'                  => true,
+            'experimentalEnabled' => true,
+            'diff'                => $diff,
+        ], JSON_PRETTY_PRINT);
+        exit;
+
+    } catch (Throwable $e) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => 'experimental_error',
+            'msg'   => $e->getMessage(),
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+
+/*
+ * Apply endpoint (11.8 — triple-guarded)
+ * GET ?endpoint=experimental_apply
+ */
+if (
+    $_SERVER['REQUEST_METHOD'] === 'GET'
+    && isset($_GET['endpoint'])
+    && $_GET['endpoint'] === 'experimental_apply'
+) {
+    header('Content-Type: application/json');
+
+    try {
+        $result = DiffPreviewer::apply($cfg);
+
+        echo json_encode([
+            'ok'     => true,
+            'applied'=> true,
+            'result' => $result,
+        ], JSON_PRETTY_PRINT);
+        exit;
+
+    } catch (Throwable $e) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => 'apply_blocked',
+            'msg'   => $e->getMessage(),
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+
+/*
+ * --------------------------------------------------------------------
+ * POST handling (normal UI flow)
  * --------------------------------------------------------------------
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
@@ -32,7 +116,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         if ($action === 'sync') {
-            // IMPORTANT: dry-run comes ONLY from persisted config
             $dryRun = !empty($cfg['runtime']['dry_run']);
 
             GcsLog::info('Starting sync', [
@@ -44,9 +127,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'days' => $horizonDays,
             ]);
 
-            // --------------------------------------------------------
-            // FIX: use correct GcsSchedulerRunner class name
-            // --------------------------------------------------------
             $runner = new GcsSchedulerRunner($cfg, $horizonDays, $dryRun);
             $result = $runner->run();
 
@@ -64,7 +144,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 <div class="settings">
     <h2>Google Calendar Scheduler</h2>
 
-    <!-- SAVE SETTINGS -->
     <form method="post">
         <input type="hidden" name="action" value="save">
 
@@ -94,10 +173,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     <hr>
 
-    <!-- SYNC -->
     <form method="post">
         <input type="hidden" name="action" value="sync">
         <button type="submit" class="buttons">Sync Calendar</button>
     </form>
 </div>
-
