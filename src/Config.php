@@ -17,11 +17,12 @@ final class GcsConfig {
              * ------------------------------------------------------------
              * Experimental features (Phase 11)
              * ------------------------------------------------------------
-             * All experimental behavior is gated behind this flag.
-             * Default MUST remain false.
+             * All experimental behavior is gated behind these flags.
+             * Defaults MUST remain false.
              */
             "experimental" => [
-                "enabled" => false
+                "enabled" => false,
+                "allow_apply" => false
             ],
 
             "sync" => [
@@ -40,9 +41,7 @@ final class GcsConfig {
         if (!is_file(GCS_CONFIG_PATH)) {
             return self::defaults();
         }
-
         $cfg = json_decode(@file_get_contents(GCS_CONFIG_PATH), true);
-
         return is_array($cfg)
             ? array_replace_recursive(self::defaults(), $cfg)
             : self::defaults();
@@ -50,13 +49,9 @@ final class GcsConfig {
 
     public static function save(array $cfg): void {
         @mkdir(dirname(GCS_CONFIG_PATH), 0775, true);
-
         file_put_contents(
             GCS_CONFIG_PATH,
-            json_encode(
-                $cfg,
-                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
-            ) . "\n"
+            json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n"
         );
     }
 }
