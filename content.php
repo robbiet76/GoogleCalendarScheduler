@@ -7,6 +7,10 @@
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
+// Experimental scaffolding (no runtime behavior)
+require_once __DIR__ . '/src/experimental/ExecutionContext.php';
+require_once __DIR__ . '/src/experimental/ScopedLogger.php';
+
 $cfg = GcsConfig::load();
 
 /*
@@ -100,4 +104,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         <button type="submit" class="buttons">Sync Calendar</button>
     </form>
 </div>
-
