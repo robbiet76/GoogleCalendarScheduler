@@ -19,7 +19,31 @@ $cfg = GcsConfig::load();
 
 /*
  * --------------------------------------------------------------------
- * POST handling
+ * EXPERIMENTAL ENDPOINT (INERT — 11.7 STEP A)
+ * --------------------------------------------------------------------
+ * GET ?experimental=diff
+ *
+ * This stub intentionally does NOT execute anything.
+ * It only reports that the endpoint exists but is disabled.
+ */
+if (
+    $_SERVER['REQUEST_METHOD'] === 'GET'
+    && isset($_GET['experimental'])
+    && $_GET['experimental'] === 'diff'
+) {
+    header('Content-Type: application/json');
+
+    echo json_encode([
+        'ok' => false,
+        'error' => 'experimental_disabled',
+    ], JSON_PRETTY_PRINT);
+
+    exit;
+}
+
+/*
+ * --------------------------------------------------------------------
+ * POST handling (normal UI flow)
  * --------------------------------------------------------------------
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
