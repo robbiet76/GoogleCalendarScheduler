@@ -10,6 +10,22 @@ require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 // Experimental scaffolding (no runtime behavior)
 require_once __DIR__ . '/src/experimental/ExecutionContext.php';
 require_once __DIR__ . '/src/experimental/ScopedLogger.php';
+require_once __DIR__ . '/src/experimental/ExecutionController.php';
+require_once __DIR__ . '/src/experimental/HealthProbe.php';
+
+/*
+ * --------------------------------------------------------------------
+ * EXPERIMENTAL MANUAL HOOK (DISABLED)
+ * --------------------------------------------------------------------
+ *
+ * This hook is intentionally commented out.
+ * It must only be enabled temporarily for Milestone 11.2 testing.
+ *
+ * Example manual test sequence (DO NOT LEAVE ENABLED):
+ *   ExecutionController::run();
+ *
+ */
+// ExecutionController::run();
 
 $cfg = GcsConfig::load();
 
@@ -48,9 +64,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 'days' => $horizonDays,
             ]);
 
-            // --------------------------------------------------------
-            // FIX: use correct GcsSchedulerRunner class name
-            // --------------------------------------------------------
             $runner = new GcsSchedulerRunner($cfg, $horizonDays, $dryRun);
             $result = $runner->run();
 
