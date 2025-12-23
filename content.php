@@ -19,18 +19,22 @@ $cfg = GcsConfig::load();
 
 /*
  * --------------------------------------------------------------------
- * EXPERIMENTAL ENDPOINT (11.7 STEP B — CONFIG-GATED, READ-ONLY)
+ * EXPERIMENTAL ENDPOINT (11.7 — HARDENED)
  * --------------------------------------------------------------------
- * GET ?experimental=diff
+ * GET ?endpoint=experimental_diff
+ *
+ * IMPORTANT:
+ * - Must NOT trigger from `page=` value
+ * - Must be explicit
+ * - Must be UI-safe
  */
 if (
     $_SERVER['REQUEST_METHOD'] === 'GET'
-    && isset($_GET['experimental'])
-    && $_GET['experimental'] === 'diff'
+    && isset($_GET['endpoint'])
+    && $_GET['endpoint'] === 'experimental_diff'
 ) {
     header('Content-Type: application/json');
 
-    // Gate by config
     if (empty($cfg['experimental']['enabled'])) {
         echo json_encode([
             'ok'    => false,
@@ -39,7 +43,6 @@ if (
         exit;
     }
 
-    // Read-only diff preview
     try {
         $diff = DiffPreviewer::preview($cfg);
 
@@ -111,7 +114,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 <div class="settings">
     <h2>Google Calendar Scheduler</h2>
 
-    <!-- SAVE SETTINGS -->
     <form method="post">
         <input type="hidden" name="action" value="save">
 
@@ -136,4 +138,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             </label>
         </div>
 
-        <button type="submit" class="buttons"
+        <button type="submit" class="buttons">Save Settings</button>
+    </form>
+
+    <hr>
+
+    <form method="post">
+        <input type="hidden" name="action" value="sync">
+        <button type="submit" class="buttons">Sync Calendar</button>
+    </form>
+</div>
