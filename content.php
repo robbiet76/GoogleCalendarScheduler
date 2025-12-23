@@ -13,6 +13,7 @@ require_once __DIR__ . '/src/experimental/ScopedLogger.php';
 require_once __DIR__ . '/src/experimental/ExecutionController.php';
 require_once __DIR__ . '/src/experimental/HealthProbe.php';
 require_once __DIR__ . '/src/experimental/CalendarReader.php';
+require_once __DIR__ . '/src/experimental/DiffPreviewer.php'; // ✅ FIX
 
 $cfg = GcsConfig::load();
 
@@ -21,7 +22,7 @@ $cfg = GcsConfig::load();
  * EXPERIMENTAL MANUAL HOOK (DISABLED)
  * --------------------------------------------------------------------
  *
- * TEMPORARY FOR MILESTONE 11.4:
+ * TEMPORARY FOR MILESTONE 11.5:
  * - Uncomment only for manual testing
  * - MUST be re-commented immediately after verification
  *
