@@ -19,14 +19,13 @@ $cfg = GcsConfig::load();
 
 /*
  * --------------------------------------------------------------------
- * EXPERIMENTAL ENDPOINT (11.7 — HARDENED)
+ * EXPERIMENTAL ENDPOINTS (11.7 / 11.8)
  * --------------------------------------------------------------------
+ */
+
+/*
+ * Diff preview endpoint (read-only)
  * GET ?endpoint=experimental_diff
- *
- * IMPORTANT:
- * - Must NOT trigger from `page=` value
- * - Must be explicit
- * - Must be UI-safe
  */
 if (
     $_SERVER['REQUEST_METHOD'] === 'GET'
@@ -57,6 +56,37 @@ if (
         echo json_encode([
             'ok'    => false,
             'error' => 'experimental_error',
+            'msg'   => $e->getMessage(),
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+
+/*
+ * Apply endpoint (11.8 — triple-guarded)
+ * GET ?endpoint=experimental_apply
+ */
+if (
+    $_SERVER['REQUEST_METHOD'] === 'GET'
+    && isset($_GET['endpoint'])
+    && $_GET['endpoint'] === 'experimental_apply'
+) {
+    header('Content-Type: application/json');
+
+    try {
+        $result = DiffPreviewer::apply($cfg);
+
+        echo json_encode([
+            'ok'     => true,
+            'applied'=> true,
+            'result' => $result,
+        ], JSON_PRETTY_PRINT);
+        exit;
+
+    } catch (Throwable $e) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => 'apply_blocked',
             'msg'   => $e->getMessage(),
         ], JSON_PRETTY_PRINT);
         exit;
