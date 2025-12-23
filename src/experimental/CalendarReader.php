@@ -8,7 +8,7 @@ declare(strict_types=1);
  *
  * Responsibilities:
  * - Fetch ICS data using existing project components
- * - Parse calendar events
+ * - Parse calendar events using canonical parser API
  * - Return summary information only
  *
  * IMPORTANT:
@@ -39,18 +39,18 @@ final class CalendarReader
         $fetcher = new GcsIcsFetcher();
         $icsData = $fetcher->fetch($icsUrl);
 
-        // Parse ICS data (read-only)
-        // Use the widest possible safe window; this is read-only
+        // Parse ICS data (read-only, canonical API)
         $parser = new GcsIcsParser();
 
-        $start = new DateTimeImmutable('now');
-        $end   = $start->modify('+1 year');
+        $now = new DateTime();
+        $horizonDays = GcsFppSchedulerHorizon::getDays();
+        $horizonEnd = (clone $now)->modify('+' . $horizonDays . ' days');
 
-        $events = $parser->parse($icsData, $start, $end);
+        $events = $parser->parse($icsData, $now, $horizonEnd);
 
         // Summary only — no event objects returned
         return [
-            'events' => is_array($events) ? count($events) : 0,
+            'events' => count($events),
         ];
     }
 }
