@@ -127,8 +127,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             Preview Changes
         </button>
 
-        <div id="gcs-diff-results" style="margin-top:10px;"></div>
+        <div id="gcs-diff-results" style="margin-top:12px;"></div>
     </div>
+
+    <style>
+        .gcs-diff-badges {
+            display: flex;
+            gap: 10px;
+            margin: 8px 0 4px 0;
+            flex-wrap: wrap;
+        }
+        .gcs-badge {
+            padding: 6px 10px;
+            border-radius: 12px;
+            font-weight: bold;
+            font-size: 0.9em;
+            display: inline-block;
+        }
+        .gcs-badge-create {
+            background-color: #e6f4ea;
+            color: #1e7e34;
+        }
+        .gcs-badge-update {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .gcs-badge-delete {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .gcs-readonly-note {
+            margin-top: 6px;
+            font-style: italic;
+            color: #555;
+        }
+    </style>
 
     <script>
     (function () {
@@ -151,6 +184,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         function countArray(v) {
             return (v && Object.prototype.toString.call(v) === '[object Array]') ? v.length : 0;
+        }
+
+        function renderSummary(results, diff) {
+            var creates = countArray(diff.creates);
+            var updates = countArray(diff.updates);
+            var deletes = countArray(diff.deletes);
+
+            var container = document.createElement('div');
+            container.className = 'gcs-diff-badges';
+
+            var c = document.createElement('span');
+            c.className = 'gcs-badge gcs-badge-create';
+            c.textContent = '+ ' + creates + ' Creates';
+            container.appendChild(c);
+
+            var u = document.createElement('span');
+            u.className = 'gcs-badge gcs-badge-update';
+            u.textContent = '~ ' + updates + ' Updates';
+            container.appendChild(u);
+
+            var d = document.createElement('span');
+            d.className = 'gcs-badge gcs-badge-delete';
+            d.textContent = '− ' + deletes + ' Deletes';
+            container.appendChild(d);
+
+            results.innerHTML = '';
+            results.appendChild(container);
+
+            var note = document.createElement('div');
+            note.className = 'gcs-readonly-note';
+            note.textContent = 'Read-only preview. No changes applied.';
+            results.appendChild(note);
         }
 
         function onReady() {
@@ -188,16 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             return;
                         }
 
-                        var diff = data.diff || {};
-                        var creates = countArray(diff.creates);
-                        var updates = countArray(diff.updates);
-                        var deletes = countArray(diff.deletes);
-
-                        results.innerHTML =
-                            '<strong>Creates:</strong> ' + creates + '<br>' +
-                            '<strong>Updates:</strong> ' + updates + '<br>' +
-                            '<strong>Deletes:</strong> ' + deletes + '<br>' +
-                            '<em>Read-only preview. No changes applied.</em>';
+                        renderSummary(results, data.diff || {});
                     })
                     .catch(function (e) {
                         results.textContent = 'Network error: ' + e.message;
