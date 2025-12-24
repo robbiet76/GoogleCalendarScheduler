@@ -133,15 +133,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     <hr>
 
-    <!-- Phase 12.3 Step B: Apply Readiness -->
+    <!-- Phase 12.3 Step C: Simplified Apply Confirmation -->
     <div class="gcs-apply-preview gcs-hidden" id="gcs-apply-container">
         <h3>Apply Scheduler Changes</h3>
 
-        <p id="gcs-apply-reason" style="font-weight:bold; color:#856404;">
-            Apply is disabled until all safety checks are satisfied.
+        <p style="font-weight:bold; color:#856404;">
+            Applying changes will modify the FPP scheduler based on the preview above.
+            This action cannot be undone.
         </p>
 
-        <button type="button" class="buttons" id="gcs-apply-btn" disabled>
+        <button type="button" class="buttons" id="gcs-apply-btn">
             Apply Changes
         </button>
     </div>
@@ -179,26 +180,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             return Object.prototype.toString.call(v) === '[object Array]' ? v.length : 0;
         }
 
-        function resetApplyUI() {
+        function hideApply() {
             var c = document.getElementById('gcs-apply-container');
-            var r = document.getElementById('gcs-apply-reason');
-            var b = document.getElementById('gcs-apply-btn');
-            if (!c || !r || !b) return;
-
-            c.className = 'gcs-apply-preview gcs-hidden';
-            r.textContent = 'Apply is disabled until all safety checks are satisfied.';
-            b.disabled = true;
+            if (c) c.className = 'gcs-apply-preview gcs-hidden';
         }
 
-        function showApplyDisabled(reason) {
+        function showApply() {
             var c = document.getElementById('gcs-apply-container');
-            var r = document.getElementById('gcs-apply-reason');
-            var b = document.getElementById('gcs-apply-btn');
-            if (!c || !r || !b) return;
-
-            c.className = 'gcs-apply-preview';
-            r.textContent = reason;
-            b.disabled = true;
+            if (c) c.className = 'gcs-apply-preview';
         }
 
         function onReady() {
@@ -207,12 +196,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if (!previewBtn || !results) return;
 
             previewBtn.disabled = false;
-            resetApplyUI();
+            hideApply();
 
             previewBtn.addEventListener('click', function () {
                 previewBtn.disabled = true;
                 results.textContent = 'Fetching diff preview (read-only)…';
-                resetApplyUI();
+                hideApply();
 
                 var url = new URL(window.location.href);
                 url.searchParams.set('endpoint', 'experimental_diff');
@@ -247,9 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                             'Preview complete. Review changes above before applying.';
 
                         if (creates + updates + deletes > 0) {
-                            showApplyDisabled(
-                                'Preview complete. Apply is available after confirmation steps.'
-                            );
+                            showApply();
                         }
                     })
                     .finally(function () {
