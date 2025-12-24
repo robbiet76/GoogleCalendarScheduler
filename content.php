@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['endpoint'])) {
         }
     }
 
-    /* ---- Apply (kept for Phase 13.1 Step B wiring) ---- */
+    /* ---- Apply (triple-guarded, Phase 11) ---- */
     if ($_GET['endpoint'] === 'experimental_apply') {
         try {
             echo json_encode([
@@ -137,7 +137,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 <hr>
 
-<!-- ================= Diff Preview ================= -->
 <div class="gcs-diff-preview">
     <h3>Scheduler Change Preview</h3>
 
@@ -157,17 +156,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 <hr>
 
-<!-- ================= Apply UX (Phase 13.1 Step A: UI ONLY) ================= -->
 <div class="gcs-apply-panel gcs-hidden" id="gcs-apply-container">
     <h3>Apply Scheduler Changes</h3>
 
     <div class="gcs-warning">
-        <div style="font-weight:bold; margin-bottom:6px;">
-            This will modify the FPP scheduler.
-        </div>
-        <div>
-            Review the preview above. Applying cannot be undone.
-        </div>
+        <strong>This will modify the FPP scheduler.</strong><br>
+        Review the preview above. Applying cannot be undone.
     </div>
 
     <div id="gcs-apply-summary" style="margin-top:10px; font-weight:bold;"></div>
@@ -181,42 +175,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 <style>
 .gcs-hidden { display:none; }
-
 .gcs-info {
-    padding: 10px;
-    background: #eef5ff;
-    border: 1px solid #cfe2ff;
-    border-radius: 6px;
+    padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px;
 }
-
 .gcs-warning {
-    padding: 10px;
-    background: #fff3cd;
-    border: 1px solid #ffeeba;
-    border-radius: 6px;
+    padding:10px; background:#fff3cd; border:1px solid #ffeeba; border-radius:6px;
 }
-
 .gcs-diff-badges { display:flex; gap:10px; margin:8px 0; flex-wrap:wrap; }
 .gcs-badge { padding:6px 10px; border-radius:12px; font-weight:bold; font-size:.9em; }
 .gcs-badge-create { background:#e6f4ea; color:#1e7e34; }
 .gcs-badge-update { background:#fff3cd; color:#856404; }
 .gcs-badge-delete { background:#f8d7da; color:#721c24; }
-
 .gcs-section { margin-top:10px; border-top:1px solid #ddd; padding-top:6px; }
 .gcs-section h4 { cursor:pointer; margin:6px 0; }
 .gcs-section ul { margin:6px 0 6px 18px; }
-
 .gcs-empty {
-    padding:10px;
-    background:#eef5ff;
-    border:1px solid #cfe2ff;
-    border-radius:6px;
+    padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px;
 }
-
 .gcs-apply-panel {
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
+    padding:10px; border:1px solid #ddd; border-radius:6px;
 }
 </style>
 
@@ -224,14 +201,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 (function () {
 'use strict';
 
-/*
- * FPP-supported JSON endpoint (nopage=1 suppresses HTML wrapper)
- */
 var ENDPOINT_BASE =
   'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
 
 function getJSON(url, cb) {
-    fetch(url, { credentials: 'same-origin' })
+    fetch(url, { credentials:'same-origin' })
         .then(function (r) { return r.text(); })
         .then(function (t) {
             try { cb(JSON.parse(t)); }
@@ -239,180 +213,106 @@ function getJSON(url, cb) {
         });
 }
 
-function isArr(v) {
-    return Object.prototype.toString.call(v) === '[object Array]';
+function isArr(v){ return Object.prototype.toString.call(v)==='[object Array]'; }
+function counts(diff){
+    var c=isArr(diff.creates)?diff.creates.length:0;
+    var u=isArr(diff.updates)?diff.updates.length:0;
+    var d=isArr(diff.deletes)?diff.deletes.length:0;
+    return {c:c,u:u,d:d,t:c+u+d};
 }
 
-function countsFromDiff(diff) {
-    var creates = isArr(diff.creates) ? diff.creates.length : 0;
-    var updates = isArr(diff.updates) ? diff.updates.length : 0;
-    var deletes = isArr(diff.deletes) ? diff.deletes.length : 0;
-    return { creates: creates, updates: updates, deletes: deletes, total: creates + updates + deletes };
+function renderBadges(el,n){
+    el.innerHTML=
+      '<div class="gcs-diff-badges">'+
+      '<span class="gcs-badge gcs-badge-create">+ '+n.c+' Creates</span>'+
+      '<span class="gcs-badge gcs-badge-update">~ '+n.u+' Updates</span>'+
+      '<span class="gcs-badge gcs-badge-delete">− '+n.d+' Deletes</span>'+
+      '</div>';
 }
 
-function renderBadges(container, c) {
-    container.innerHTML =
-        '<div class="gcs-diff-badges">' +
-        '<span class="gcs-badge gcs-badge-create">+ ' + c.creates + ' Creates</span>' +
-        '<span class="gcs-badge gcs-badge-update">~ ' + c.updates + ' Updates</span>' +
-        '<span class="gcs-badge gcs-badge-delete">− ' + c.deletes + ' Deletes</span>' +
-        '</div>';
+function renderSections(el,diff){
+    function sec(title,items){
+        if(!isArr(items)||!items.length)return;
+        var s=document.createElement('div'); s.className='gcs-section';
+        var h=document.createElement('h4'); h.textContent=title+' ('+items.length+')';
+        var ul=document.createElement('ul'); ul.style.display='none';
+        items.forEach(function(i){ var li=document.createElement('li'); li.textContent=String(i); ul.appendChild(li);});
+        h.onclick=function(){ ul.style.display=(ul.style.display==='none')?'block':'none'; };
+        s.appendChild(h); s.appendChild(ul); el.appendChild(s);
+    }
+    sec('Creates',diff.creates); sec('Updates',diff.updates); sec('Deletes',diff.deletes);
 }
 
-function renderSections(container, diff) {
-    function section(title, items) {
-        if (!isArr(items) || items.length === 0) return;
+function hide(el,h){ if(!el)return; el.className=h?(el.className+' gcs-hidden'):el.className.replace(/\s*gcs-hidden\s*/g,' '); }
 
-        var s = document.createElement('div');
-        s.className = 'gcs-section';
+var previewBtn=document.getElementById('gcs-preview-btn');
+if(!previewBtn)return;
 
-        var h = document.createElement('h4');
-        h.textContent = title + ' (' + items.length + ')';
+var diffSummary=document.getElementById('gcs-diff-summary');
+var diffResults=document.getElementById('gcs-diff-results');
+var applyBox=document.getElementById('gcs-apply-container');
+var applySummary=document.getElementById('gcs-apply-summary');
+var applyBtn=document.getElementById('gcs-apply-btn');
+var applyResult=document.getElementById('gcs-apply-result');
 
-        var ul = document.createElement('ul');
-        ul.style.display = 'none';
+var last=null, armed=false;
 
-        for (var i = 0; i < items.length; i++) {
-            var li = document.createElement('li');
-            li.textContent = String(items[i]);
-            ul.appendChild(li);
+previewBtn.onclick=function(){
+    armed=false;
+    applyBtn.disabled=true;
+    applyBtn.textContent='Apply Changes';
+    applyResult.textContent='';
+    hide(applyBox,true);
+
+    diffResults.textContent='Loading preview…';
+    hide(diffSummary,true); diffSummary.innerHTML=''; diffResults.innerHTML='';
+
+    getJSON(ENDPOINT_BASE+'&endpoint=experimental_diff',function(d){
+        if(!d||!d.ok){ diffResults.textContent='Preview unavailable.'; return; }
+
+        var n=counts(d.diff||{}); last=n;
+
+        hide(diffSummary,false); renderBadges(diffSummary,n);
+
+        diffResults.innerHTML='';
+        if(n.t===0){
+            diffResults.innerHTML='<div class="gcs-empty">No scheduler changes detected.</div>';
+        } else {
+            renderSections(diffResults,d.diff||{});
         }
 
-        h.onclick = function () {
-            ul.style.display = (ul.style.display === 'none') ? 'block' : 'none';
-        };
+        hide(applyBox,false);
+        applySummary.textContent=
+          'Ready to apply: '+n.c+' create(s), '+n.u+' update(s), '+n.d+' delete(s).';
 
-        s.appendChild(h);
-        s.appendChild(ul);
-        container.appendChild(s);
-    }
-
-    section('Creates', diff.creates);
-    section('Updates', diff.updates);
-    section('Deletes', diff.deletes);
-}
-
-function setHidden(el, hidden) {
-    if (!el) return;
-    el.className = hidden ? (el.className.replace(/\s*gcs-hidden\s*/g, ' ') + ' gcs-hidden') : el.className.replace(/\s*gcs-hidden\s*/g, ' ');
-}
-
-var previewBtn = document.getElementById('gcs-preview-btn');
-if (!previewBtn) return;
-
-var diffSummary = document.getElementById('gcs-diff-summary');
-var diffResults = document.getElementById('gcs-diff-results');
-
-var applyContainer = document.getElementById('gcs-apply-container');
-var applySummary = document.getElementById('gcs-apply-summary');
-var applyBtn = document.getElementById('gcs-apply-btn');
-var applyResult = document.getElementById('gcs-apply-result');
-
-var lastCounts = { creates: 0, updates: 0, deletes: 0, total: 0 };
-var hasPreview = false;
-var confirmArmed = false;
-
-function resetApplyUI() {
-    confirmArmed = false;
-    if (applyBtn) {
-        applyBtn.disabled = true;
-        applyBtn.textContent = 'Apply Changes';
-    }
-    if (applyResult) applyResult.textContent = '';
-}
-
-function showApplyPanelWithCounts(c) {
-    if (!applyContainer) return;
-
-    setHidden(applyContainer, false);
-
-    if (applySummary) {
-        applySummary.textContent =
-            'Ready to apply: ' + c.creates + ' create(s), ' + c.updates + ' update(s), ' + c.deletes + ' delete(s).';
-    }
-
-    // Enabled only if non-empty diff
-    if (applyBtn) {
-        applyBtn.disabled = (c.total === 0);
-        applyBtn.textContent = 'Apply Changes';
-    }
-
-    if (c.total === 0 && applyResult) {
-        applyResult.textContent = 'Nothing to apply.';
-    }
-}
-
-previewBtn.onclick = function () {
-    hasPreview = false;
-    resetApplyUI();
-
-    if (diffResults) diffResults.textContent = 'Loading preview…';
-    if (diffSummary) {
-        diffSummary.textContent = '';
-        setHidden(diffSummary, true);
-    }
-    if (diffResults) diffResults.innerHTML = '';
-    setHidden(applyContainer, true);
-
-    getJSON(ENDPOINT_BASE + '&endpoint=experimental_diff', function (data) {
-        if (!data || !data.ok) {
-            if (diffResults) diffResults.textContent = 'Preview unavailable.';
-            setHidden(applyContainer, true);
-            return;
-        }
-
-        hasPreview = true;
-
-        var diff = data.diff || {};
-        lastCounts = countsFromDiff(diff);
-
-        if (diffSummary) {
-            setHidden(diffSummary, false);
-            renderBadges(diffSummary, lastCounts);
-        }
-
-        if (diffResults) {
-            diffResults.innerHTML = '';
-
-            if (lastCounts.total === 0) {
-                diffResults.innerHTML = '<div class="gcs-empty">No scheduler changes detected.</div>';
-            } else {
-                renderSections(diffResults, diff);
-            }
-        }
-
-        showApplyPanelWithCounts(lastCounts);
+        applyBtn.disabled=(n.t===0);
     });
 };
 
-/*
- * Phase 13.1 Step A: UI-only confirmation (NO backend call yet)
- * - First click arms confirmation.
- * - Second click confirms intent and shows message.
- */
-if (applyBtn) {
-    applyBtn.onclick = function () {
-        if (!hasPreview) return;
-        if (lastCounts.total === 0) return;
+applyBtn.onclick=function(){
+    if(!last||last.t===0)return;
 
-        if (!confirmArmed) {
-            confirmArmed = true;
-            applyBtn.textContent = 'Confirm Apply';
-            if (applyResult) {
-                applyResult.textContent = 'Click "Confirm Apply" to confirm intent. (No changes will be made in this step.)';
-            }
-            return;
-        }
+    if(!armed){
+        armed=true;
+        applyBtn.textContent='Confirm Apply';
+        applyResult.textContent='Click "Confirm Apply" to proceed.';
+        return;
+    }
 
-        // Confirmed intent — still no execution in Step A
-        applyBtn.disabled = true;
-        applyBtn.textContent = 'Apply (Not Wired Yet)';
-        if (applyResult) {
-            applyResult.textContent =
-                'Intent confirmed. Apply execution will be wired in Phase 13.1 Step B.';
+    applyBtn.disabled=true;
+    applyBtn.textContent='Applying…';
+    applyResult.textContent='Applying scheduler changes…';
+
+    getJSON(ENDPOINT_BASE+'&endpoint=experimental_apply',function(r){
+        if(r&&r.ok){
+            applyBtn.textContent='Apply Completed';
+            applyResult.textContent='Apply completed successfully (or blocked by guards).';
+        } else {
+            applyBtn.textContent='Apply Failed';
+            applyResult.textContent='Apply failed or was blocked.';
         }
-    };
-}
+    });
+};
 
 })();
 </script>
