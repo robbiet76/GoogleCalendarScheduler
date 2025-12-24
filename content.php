@@ -77,9 +77,9 @@ if (
         $result = DiffPreviewer::apply($cfg);
 
         echo json_encode([
-            'ok'     => true,
-            'applied'=> true,
-            'result' => $result,
+            'ok'      => true,
+            'applied' => true,
+            'result'  => $result,
         ], JSON_PRETTY_PRINT);
         exit;
 
@@ -177,4 +177,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         <input type="hidden" name="action" value="sync">
         <button type="submit" class="buttons">Sync Calendar</button>
     </form>
+
+    <hr>
+
+    <!-- =============================== -->
+    <!-- Phase 12.1 Step A: UI Skeleton -->
+    <!-- Read-only diff preview (no logic) -->
+    <!-- =============================== -->
+
+    <div class="gcs-diff-preview">
+        <h3>Scheduler Change Preview</h3>
+
+        <p class="description">
+            Preview proposed scheduler changes before applying them.
+        </p>
+
+        <button type="button" disabled>
+            Preview Changes
+        </button>
+
+        <div id="gcs-diff-results">
+            <!-- Phase 12.1 Step A: intentionally empty -->
+        </div>
+    </div>
+
+    <!-- =============================== -->
+    <!-- End Phase 12.1 Step A -->
+    <!-- =============================== -->
+
 </div>
