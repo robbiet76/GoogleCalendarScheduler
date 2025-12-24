@@ -26,34 +26,61 @@ $cfg = GcsConfig::load();
 if (
     $_SERVER['REQUEST_METHOD'] === 'GET'
     && isset($_GET['endpoint'])
-    && $_GET['endpoint'] === 'experimental_diff'
 ) {
     header('Content-Type: application/json');
 
-    if (empty($cfg['experimental']['enabled'])) {
-        echo json_encode([
-            'ok'    => false,
-            'error' => 'experimental_disabled',
-        ], JSON_PRETTY_PRINT);
-        exit;
+    /*
+     * Diff preview (read-only)
+     */
+    if ($_GET['endpoint'] === 'experimental_diff') {
+        if (empty($cfg['experimental']['enabled'])) {
+            echo json_encode([
+                'ok'    => false,
+                'error' => 'experimental_disabled',
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
+
+        try {
+            $diff = DiffPreviewer::preview($cfg);
+            echo json_encode([
+                'ok'   => true,
+                'diff' => $diff,
+            ], JSON_PRETTY_PRINT);
+            exit;
+
+        } catch (Throwable $e) {
+            echo json_encode([
+                'ok'    => false,
+                'error' => 'experimental_error',
+                'msg'   => $e->getMessage(),
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
     }
 
-    try {
-        $diff = DiffPreviewer::preview($cfg);
+    /*
+     * Apply endpoint (triple-guarded, Phase 11)
+     */
+    if ($_GET['endpoint'] === 'experimental_apply') {
+        try {
+            $result = DiffPreviewer::apply($cfg);
 
-        echo json_encode([
-            'ok'   => true,
-            'diff' => $diff,
-        ], JSON_PRETTY_PRINT);
-        exit;
+            echo json_encode([
+                'ok'      => true,
+                'applied' => true,
+                'result'  => $result,
+            ], JSON_PRETTY_PRINT);
+            exit;
 
-    } catch (Throwable $e) {
-        echo json_encode([
-            'ok'    => false,
-            'error' => 'experimental_error',
-            'msg'   => $e->getMessage(),
-        ], JSON_PRETTY_PRINT);
-        exit;
+        } catch (Throwable $e) {
+            echo json_encode([
+                'ok'    => false,
+                'error' => 'apply_blocked',
+                'msg'   => $e->getMessage(),
+            ], JSON_PRETTY_PRINT);
+            exit;
+        }
     }
 }
 
@@ -133,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     <hr>
 
-    <!-- Phase 12.3 Step C: Simplified Apply Confirmation -->
+    <!-- Apply UI -->
     <div class="gcs-apply-preview gcs-hidden" id="gcs-apply-container">
         <h3>Apply Scheduler Changes</h3>
 
@@ -145,6 +172,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         <button type="button" class="buttons" id="gcs-apply-btn">
             Apply Changes
         </button>
+
+        <div id="gcs-apply-result" style="margin-top:10px;"></div>
     </div>
 
     <style>
@@ -192,8 +221,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         function onReady() {
             var previewBtn = document.getElementById('gcs-preview-btn');
-            var results = document.getElementById('gcs-diff-results');
-            if (!previewBtn || !results) return;
+            var applyBtn   = document.getElementById('gcs-apply-btn');
+            var results    = document.getElementById('gcs-diff-results');
+            var applyRes   = document.getElementById('gcs-apply-result');
+
+            if (!previewBtn || !applyBtn || !results) return;
 
             previewBtn.disabled = false;
             hideApply();
@@ -202,6 +234,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 previewBtn.disabled = true;
                 results.textContent = 'Fetching diff preview (read-only)…';
                 hideApply();
+                if (applyRes) applyRes.textContent = '';
 
                 var url = new URL(window.location.href);
                 url.searchParams.set('endpoint', 'experimental_diff');
@@ -210,37 +243,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                     .then(function (r) { return r.text(); })
                     .then(function (text) {
                         var data = extractJsonObjectWithOk(text);
-
                         if (!data) {
                             results.textContent = 'Unable to parse diff response from FPP.';
                             return;
                         }
-
                         if (data.ok !== true) {
-                            if (data.error === 'experimental_disabled') {
-                                results.textContent =
-                                    'Experimental diff preview is currently disabled.';
-                                return;
-                            }
                             results.textContent =
-                                'Diff preview error: ' + (data.error || 'unknown');
+                                data.error === 'experimental_disabled'
+                                    ? 'Experimental diff preview is currently disabled.'
+                                    : 'Diff preview error: ' + (data.error || 'unknown');
                             return;
                         }
 
                         var diff = data.diff || {};
-                        var creates = countArray(diff.creates);
-                        var updates = countArray(diff.updates);
-                        var deletes = countArray(diff.deletes);
+                        var total =
+                            countArray(diff.creates) +
+                            countArray(diff.updates) +
+                            countArray(diff.deletes);
 
                         results.textContent =
                             'Preview complete. Review changes above before applying.';
 
-                        if (creates + updates + deletes > 0) {
+                        if (total > 0) {
                             showApply();
                         }
                     })
                     .finally(function () {
                         previewBtn.disabled = false;
+                    });
+            });
+
+            applyBtn.addEventListener('click', function () {
+                applyBtn.disabled = true;
+                if (applyRes) applyRes.textContent = 'Applying changes…';
+
+                var url = new URL(window.location.href);
+                url.searchParams.set('endpoint', 'experimental_apply');
+
+                fetch(url.toString(), { credentials: 'same-origin' })
+                    .then(function (r) { return r.text(); })
+                    .then(function (text) {
+                        var data = extractJsonObjectWithOk(text);
+                        if (!data) {
+                            applyRes.textContent = 'Unable to parse apply response.';
+                            return;
+                        }
+                        if (data.ok === true && data.applied === true) {
+                            applyRes.textContent =
+                                'Scheduler changes applied successfully.';
+                        } else {
+                            applyRes.textContent =
+                                'Apply blocked: ' + (data.msg || data.error || 'unknown');
+                        }
+                    })
+                    .catch(function (e) {
+                        applyRes.textContent = 'Network error: ' + e.message;
                     });
             });
         }
