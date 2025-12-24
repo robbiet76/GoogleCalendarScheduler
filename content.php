@@ -169,6 +169,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         .gcs-hidden {
             display: none;
         }
+
+        .gcs-empty-state {
+            padding: 10px;
+            background: #eef5ff;
+            border: 1px solid #cfe2ff;
+            border-radius: 6px;
+            color: #084298;
+            font-weight: bold;
+        }
     </style>
 
     <script>
@@ -194,15 +203,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             return Object.prototype.toString.call(v) === '[object Array]';
         }
 
-        function itemLabel(item) {
-            if (typeof item === 'string') return item;
-            if (item && typeof item === 'object') {
-                if (item.name) return item.name;
-                if (item.title) return item.title;
-                if (item.id) return String(item.id);
-                return JSON.stringify(item);
-            }
-            return String(item);
+        function renderEmptyState(results) {
+            results.innerHTML = '';
+            var box = document.createElement('div');
+            box.className = 'gcs-empty-state';
+            box.textContent =
+                'No scheduler changes detected. The calendar is already in sync.';
+            results.appendChild(box);
         }
 
         function renderSection(parent, title, items) {
@@ -220,7 +227,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             for (var i = 0; i < items.length; i++) {
                 var li = document.createElement('li');
-                li.textContent = itemLabel(items[i]);
+                li.textContent =
+                    (typeof items[i] === 'string')
+                        ? items[i]
+                        : (items[i].name || items[i].title || items[i].id || JSON.stringify(items[i]));
                 list.appendChild(li);
             }
 
@@ -233,6 +243,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         function renderSummaryAndDetails(results, diff) {
+            var creates = isArray(diff.creates) ? diff.creates.length : 0;
+            var updates = isArray(diff.updates) ? diff.updates.length : 0;
+            var deletes = isArray(diff.deletes) ? diff.deletes.length : 0;
+
+            if (creates === 0 && updates === 0 && deletes === 0) {
+                renderEmptyState(results);
+                return;
+            }
+
             results.innerHTML = '';
 
             var badges = document.createElement('div');
@@ -240,17 +259,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             var c = document.createElement('span');
             c.className = 'gcs-badge gcs-badge-create';
-            c.textContent = '+ ' + (diff.creates ? diff.creates.length : 0) + ' Creates';
+            c.textContent = '+ ' + creates + ' Creates';
             badges.appendChild(c);
 
             var u = document.createElement('span');
             u.className = 'gcs-badge gcs-badge-update';
-            u.textContent = '~ ' + (diff.updates ? diff.updates.length : 0) + ' Updates';
+            u.textContent = '~ ' + updates + ' Updates';
             badges.appendChild(u);
 
             var d = document.createElement('span');
             d.className = 'gcs-badge gcs-badge-delete';
-            d.textContent = '− ' + (diff.deletes ? diff.deletes.length : 0) + ' Deletes';
+            d.textContent = '− ' + deletes + ' Deletes';
             badges.appendChild(d);
 
             results.appendChild(badges);
