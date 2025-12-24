@@ -4,17 +4,10 @@
  * content.php
  */
 
-/*
- * ==============================================================
- * TEMP (Phase 12 UI testing only — REMOVE BEFORE MERGE)
- * ==============================================================
- */
-$UI_TEST_MODE = true;
-
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
-// Experimental scaffolding
+// Experimental scaffolding (Phase 11)
 require_once __DIR__ . '/src/experimental/ExecutionContext.php';
 require_once __DIR__ . '/src/experimental/ScopedLogger.php';
 require_once __DIR__ . '/src/experimental/ExecutionController.php';
@@ -35,23 +28,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['endpoint'])) {
     /* ---- Diff preview (read-only) ---- */
     if ($_GET['endpoint'] === 'experimental_diff') {
 
-        if (empty($cfg['experimental']['enabled']) && !$UI_TEST_MODE) {
+        if (empty($cfg['experimental']['enabled'])) {
             echo json_encode([
                 'ok'    => false,
                 'error' => 'experimental_disabled',
-            ]);
-            exit;
-        }
-
-        // UI test mode: synthetic diff
-        if ($UI_TEST_MODE && empty($cfg['experimental']['enabled'])) {
-            echo json_encode([
-                'ok'   => true,
-                'diff' => [
-                    'creates' => ['Test Event A', 'Test Event B'],
-                    'updates' => ['Updated Event C'],
-                    'deletes' => ['Removed Event D'],
-                ],
             ]);
             exit;
         }
@@ -157,18 +137,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 <hr>
 
-<!-- ================= Diff Preview ================= -->
 <div class="gcs-diff-preview">
     <h3>Scheduler Change Preview</h3>
+
+<?php if (empty($cfg['experimental']['enabled'])): ?>
+    <div class="gcs-empty">
+        Experimental diff preview is currently disabled.
+    </div>
+<?php else: ?>
     <button type="button" class="buttons" id="gcs-preview-btn">
         Preview Changes
     </button>
     <div id="gcs-diff-results" style="margin-top:12px;"></div>
+<?php endif; ?>
 </div>
 
 <hr>
 
-<!-- ================= Apply UI ================= -->
 <div class="gcs-apply-preview gcs-hidden" id="gcs-apply-container">
     <h3>Apply Scheduler Changes</h3>
     <p style="font-weight:bold; color:#856404;">
@@ -196,16 +181,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 (function () {
 'use strict';
 
-/*
- * FPP-supported JSON endpoint (nopage=1 suppresses HTML)
- */
 var ENDPOINT_BASE =
   'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
 
 function getJSON(url, cb) {
     fetch(url, { credentials:'same-origin' })
-        .then(function (r) { return r.text(); })
-        .then(function (t) {
+        .then(r => r.text())
+        .then(t => {
             try { cb(JSON.parse(t)); }
             catch (e) { cb(null); }
         });
@@ -232,42 +214,47 @@ function renderDiff(container, diff) {
         '</div>';
 }
 
-document.getElementById('gcs-preview-btn').onclick = function () {
-    var results = document.getElementById('gcs-diff-results');
-    var applyBox = document.getElementById('gcs-apply-container');
+var previewBtn = document.getElementById('gcs-preview-btn');
+if (previewBtn) {
+    previewBtn.onclick = function () {
+        var results = document.getElementById('gcs-diff-results');
+        var applyBox = document.getElementById('gcs-apply-container');
 
-    results.textContent = 'Loading preview…';
-    applyBox.className = 'gcs-apply-preview gcs-hidden';
+        results.textContent = 'Loading preview…';
+        applyBox.className = 'gcs-apply-preview gcs-hidden';
 
-    getJSON(ENDPOINT_BASE + '&endpoint=experimental_diff', function (data) {
-        if (!data || !data.ok) {
-            results.textContent = 'Preview unavailable.';
-            return;
-        }
+        getJSON(ENDPOINT_BASE + '&endpoint=experimental_diff', function (data) {
+            if (!data || !data.ok) {
+                results.textContent = 'Preview unavailable.';
+                return;
+            }
 
-        renderDiff(results, data.diff || {});
+            renderDiff(results, data.diff || {});
 
-        if (
-            (data.diff.creates || []).length +
-            (data.diff.updates || []).length +
-            (data.diff.deletes || []).length > 0
-        ) {
-            applyBox.className = 'gcs-apply-preview';
-        }
-    });
-};
+            if (
+                (data.diff.creates || []).length +
+                (data.diff.updates || []).length +
+                (data.diff.deletes || []).length > 0
+            ) {
+                applyBox.className = 'gcs-apply-preview';
+            }
+        });
+    };
+}
 
-document.getElementById('gcs-apply-btn').onclick = function () {
-    var out = document.getElementById('gcs-apply-result');
-    out.textContent = 'Applying changes…';
+var applyBtn = document.getElementById('gcs-apply-btn');
+if (applyBtn) {
+    applyBtn.onclick = function () {
+        var out = document.getElementById('gcs-apply-result');
+        out.textContent = 'Applying changes…';
 
-    getJSON(ENDPOINT_BASE + '&endpoint=experimental_apply', function (data) {
-        out.textContent = (data && data.ok)
-            ? 'Apply completed (or blocked by safety guards).'
-            : 'Apply failed.';
-    });
-};
-
+        getJSON(ENDPOINT_BASE + '&endpoint=experimental_apply', function (data) {
+            out.textContent = (data && data.ok)
+                ? 'Apply completed (or blocked by safety guards).'
+                : 'Apply failed.';
+        });
+    };
+}
 })();
 </script>
 </div>
