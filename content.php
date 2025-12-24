@@ -37,11 +37,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['endpoint'])) {
         }
 
         try {
+            $diff = DiffPreviewer::preview($cfg);
+
+            // Defensive counts from diff payload
+            $creates = (isset($diff['creates']) && is_array($diff['creates'])) ? count($diff['creates']) : 0;
+            $updates = (isset($diff['updates']) && is_array($diff['updates'])) ? count($diff['updates']) : 0;
+            $deletes = (isset($diff['deletes']) && is_array($diff['deletes'])) ? count($diff['deletes']) : 0;
+
+            // Diagnostics: do NOT change behavior; only report what we can observe safely.
+            $horizonDays = null;
+            try {
+                $horizonDays = GcsFppSchedulerHorizon::getDays();
+            } catch (Throwable $ignored) {
+                $horizonDays = null;
+            }
+
+            $diagnostics = [
+                'timestamp' => date('c'),
+                'configPath' => defined('GCS_CONFIG_PATH') ? GCS_CONFIG_PATH : null,
+                'experimental' => [
+                    'enabled' => !empty($cfg['experimental']['enabled']),
+                    'allow_apply' => !empty($cfg['experimental']['allow_apply']),
+                ],
+                'runtime' => [
+                    'dry_run' => !empty($cfg['runtime']['dry_run']),
+                ],
+                'scheduler' => [
+                    'horizon_days' => $horizonDays,
+                ],
+                'diff_counts' => [
+                    'creates' => $creates,
+                    'updates' => $updates,
+                    'deletes' => $deletes,
+                    'total'   => $creates + $updates + $deletes,
+                ],
+                'request' => [
+                    'uri' => $_SERVER['REQUEST_URI'] ?? null,
+                ],
+            ];
+
             echo json_encode([
-                'ok'   => true,
-                'diff' => DiffPreviewer::preview($cfg),
+                'ok'          => true,
+                'diff'        => $diff,
+                'diagnostics' => $diagnostics,
             ]);
             exit;
+
         } catch (Throwable $e) {
             echo json_encode([
                 'ok'    => false,
@@ -225,7 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     padding:10px; border:1px solid #ddd; border-radius:6px;
 }
 
-/* Phase 13.2 Step B: apply result status styles */
+/* Apply result status styles */
 .gcs-result {
     padding:10px;
     border-radius:6px;
@@ -326,11 +367,10 @@ function renderApplyResult(el, resp) {
         return;
     }
 
-    // Normalize
     var ok = !!resp.ok;
     var status = resp.status ? String(resp.status) : (ok ? 'applied' : 'blocked');
     var msg = resp.message ? String(resp.message) : (ok ? 'Apply completed.' : 'Apply failed or was blocked.');
-    var counts = resp.counts && typeof resp.counts === 'object' ? resp.counts : null;
+    var cts = resp.counts && typeof resp.counts === 'object' ? resp.counts : null;
 
     var css = 'gcs-result-error';
     var title = 'Apply failed';
@@ -344,10 +384,10 @@ function renderApplyResult(el, resp) {
     }
 
     var countsLine = '';
-    if (counts) {
-        var c = Number(counts.creates || 0);
-        var u = Number(counts.updates || 0);
-        var d = Number(counts.deletes || 0);
+    if (cts) {
+        var c = Number(cts.creates || 0);
+        var u = Number(cts.updates || 0);
+        var d = Number(cts.deletes || 0);
         countsLine = '<div class="gcs-mono">Counts: ' + c + ' creates, ' + u + ' updates, ' + d + ' deletes</div>';
     }
 
@@ -400,6 +440,9 @@ previewBtn.onclick=function(){
           'Ready to apply: '+n.c+' create(s), '+n.u+' update(s), '+n.d+' delete(s).';
 
         applyBtn.disabled=(n.t===0);
+
+        // If you want to quickly inspect diagnostics without changing UI,
+        // open browser devtools and view the network response JSON.
     });
 };
 
@@ -426,7 +469,6 @@ applyBtn.onclick=function(){
         '</div>';
 
     getJSON(ENDPOINT_BASE+'&endpoint=experimental_apply',function(r){
-        // Lock final button label
         if (r && r.ok) {
             applyBtn.textContent = 'Apply Completed';
         } else if (r && r.status === 'blocked') {
