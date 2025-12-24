@@ -135,18 +135,84 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         'use strict';
 
         function extractJsonObjectWithOk(text) {
-            // Match ALL {...} blocks (non-greedy)
             var matches = text.match(/\{[\s\S]*?\}/g);
             if (!matches) return null;
 
             for (var i = matches.length - 1; i >= 0; i--) {
                 try {
                     var obj = JSON.parse(matches[i]);
-                    if (obj && typeof obj === 'object' && typeof obj.ok === 'boolean') {
+                    if (obj && typeof obj.ok === 'boolean') {
                         return obj;
                     }
-                } catch (e) {
-                    // ignore non-JSON blocks
-                }
+                } catch (e) {}
             }
-            retur
+            return null;
+        }
+
+        function countArray(v) {
+            return (v && Object.prototype.toString.call(v) === '[object Array]') ? v.length : 0;
+        }
+
+        function onReady() {
+            var btn = document.getElementById('gcs-preview-btn');
+            var results = document.getElementById('gcs-diff-results');
+            if (!btn || !results) return;
+
+            btn.disabled = false;
+
+            btn.addEventListener('click', function () {
+                btn.disabled = true;
+                results.textContent = 'Fetching diff preview (read-only)…';
+
+                var url = new URL(window.location.href);
+                url.searchParams.set('endpoint', 'experimental_diff');
+
+                fetch(url.toString(), { credentials: 'same-origin' })
+                    .then(function (r) { return r.text(); })
+                    .then(function (text) {
+                        var data = extractJsonObjectWithOk(text);
+
+                        if (!data) {
+                            results.textContent = 'Unable to parse diff response from FPP.';
+                            return;
+                        }
+
+                        if (data.ok !== true) {
+                            if (data.error === 'experimental_disabled') {
+                                results.textContent =
+                                    'Experimental diff preview is currently disabled.';
+                                return;
+                            }
+                            results.textContent =
+                                'Diff preview error: ' + (data.error || 'unknown');
+                            return;
+                        }
+
+                        var diff = data.diff || {};
+                        var creates = countArray(diff.creates);
+                        var updates = countArray(diff.updates);
+                        var deletes = countArray(diff.deletes);
+
+                        results.innerHTML =
+                            '<strong>Creates:</strong> ' + creates + '<br>' +
+                            '<strong>Updates:</strong> ' + updates + '<br>' +
+                            '<strong>Deletes:</strong> ' + deletes + '<br>' +
+                            '<em>Read-only preview. No changes applied.</em>';
+                    })
+                    .catch(function (e) {
+                        results.textContent = 'Network error: ' + e.message;
+                    })
+                    .finally(function () {
+                        btn.disabled = false;
+                    });
+            });
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', onReady);
+        } else {
+            onReady();
+        }
+    })();
+    </script>
+</div>
