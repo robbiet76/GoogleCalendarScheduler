@@ -224,6 +224,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 .gcs-apply-panel {
     padding:10px; border:1px solid #ddd; border-radius:6px;
 }
+
+/* Phase 13.2 Step B: apply result status styles */
+.gcs-result {
+    padding:10px;
+    border-radius:6px;
+    border: 1px solid #ddd;
+    margin-top: 8px;
+}
+.gcs-result-success {
+    background:#e6f4ea;
+    border-color:#c7eed2;
+    color:#1e7e34;
+}
+.gcs-result-warn {
+    background:#fff3cd;
+    border-color:#ffeeba;
+    color:#856404;
+}
+.gcs-result-error {
+    background:#f8d7da;
+    border-color:#f5c6cb;
+    color:#721c24;
+}
+.gcs-result-title {
+    font-weight:bold;
+    margin-bottom:4px;
+}
+.gcs-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.9em;
+}
 </style>
 
 <script>
@@ -250,6 +281,15 @@ function counts(diff){
     return {c:c,u:u,d:d,t:c+u+d};
 }
 
+function esc(s) {
+    return String(s)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
+
 function renderBadges(el,n){
     el.innerHTML=
       '<div class="gcs-diff-badges">'+
@@ -274,6 +314,51 @@ function renderSections(el,diff){
 
 function hide(el,h){ if(!el)return; el.className=h?(el.className+' gcs-hidden'):el.className.replace(/\s*gcs-hidden\s*/g,' '); }
 
+function renderApplyResult(el, resp) {
+    if (!el) return;
+
+    if (!resp) {
+        el.innerHTML =
+            '<div class="gcs-result gcs-result-error">' +
+              '<div class="gcs-result-title">Apply failed</div>' +
+              '<div>Unable to parse server response.</div>' +
+            '</div>';
+        return;
+    }
+
+    // Normalize
+    var ok = !!resp.ok;
+    var status = resp.status ? String(resp.status) : (ok ? 'applied' : 'blocked');
+    var msg = resp.message ? String(resp.message) : (ok ? 'Apply completed.' : 'Apply failed or was blocked.');
+    var counts = resp.counts && typeof resp.counts === 'object' ? resp.counts : null;
+
+    var css = 'gcs-result-error';
+    var title = 'Apply failed';
+
+    if (ok && status === 'applied') {
+        css = 'gcs-result-success';
+        title = 'Apply completed';
+    } else if (!ok && status === 'blocked') {
+        css = 'gcs-result-warn';
+        title = 'Apply blocked';
+    }
+
+    var countsLine = '';
+    if (counts) {
+        var c = Number(counts.creates || 0);
+        var u = Number(counts.updates || 0);
+        var d = Number(counts.deletes || 0);
+        countsLine = '<div class="gcs-mono">Counts: ' + c + ' creates, ' + u + ' updates, ' + d + ' deletes</div>';
+    }
+
+    el.innerHTML =
+        '<div class="gcs-result ' + css + '">' +
+          '<div class="gcs-result-title">' + esc(title) + '</div>' +
+          '<div>' + esc(msg) + '</div>' +
+          (countsLine ? countsLine : '') +
+        '</div>';
+}
+
 var previewBtn=document.getElementById('gcs-preview-btn');
 if(!previewBtn)return;
 
@@ -290,7 +375,7 @@ previewBtn.onclick=function(){
     armed=false;
     applyBtn.disabled=true;
     applyBtn.textContent='Apply Changes';
-    applyResult.textContent='';
+    applyResult.innerHTML='';
     hide(applyBox,true);
 
     diffResults.textContent='Loading preview…';
@@ -324,31 +409,33 @@ applyBtn.onclick=function(){
     if(!armed){
         armed=true;
         applyBtn.textContent='Confirm Apply';
-        applyResult.textContent='Click "Confirm Apply" to proceed.';
+        applyResult.innerHTML =
+            '<div class="gcs-result gcs-result-warn">' +
+              '<div class="gcs-result-title">Confirmation required</div>' +
+              '<div>Click <strong>Confirm Apply</strong> to proceed.</div>' +
+            '</div>';
         return;
     }
 
     applyBtn.disabled=true;
     applyBtn.textContent='Applying…';
-    applyResult.textContent='Applying scheduler changes…';
+    applyResult.innerHTML =
+        '<div class="gcs-result gcs-result-warn">' +
+          '<div class="gcs-result-title">Applying…</div>' +
+          '<div>Please wait while changes are applied.</div>' +
+        '</div>';
 
     getJSON(ENDPOINT_BASE+'&endpoint=experimental_apply',function(r){
-        if(r&&r.ok){
-            applyBtn.textContent='Apply Completed';
-
-            // Phase 13.2 Step A: structured envelope (status/counts/message)
-            if (r.counts) {
-                applyResult.textContent =
-                    (r.message ? r.message : 'Apply completed.') +
-                    ' (' + r.counts.creates + ' creates, ' + r.counts.updates + ' updates, ' + r.counts.deletes + ' deletes)';
-            } else {
-                applyResult.textContent = (r.message ? r.message : 'Apply completed successfully (or blocked by guards).');
-            }
-
+        // Lock final button label
+        if (r && r.ok) {
+            applyBtn.textContent = 'Apply Completed';
+        } else if (r && r.status === 'blocked') {
+            applyBtn.textContent = 'Apply Blocked';
         } else {
-            applyBtn.textContent='Apply Failed';
-            applyResult.textContent = (r && r.message) ? r.message : 'Apply failed or was blocked.';
+            applyBtn.textContent = 'Apply Failed';
         }
+
+        renderApplyResult(applyResult, r);
     });
 };
 
