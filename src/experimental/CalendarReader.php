@@ -13,9 +13,11 @@ declare(strict_types=1);
  *
  * IMPORTANT:
  * - No scheduler interaction
- * - No logging
  * - No config mutation
  * - No side effects
+ *
+ * NOTE:
+ * - Phase 13 troubleshooting instrumentation added (logging only)
  */
 final class CalendarReader
 {
@@ -47,6 +49,34 @@ final class CalendarReader
         $horizonEnd = (clone $now)->modify('+' . $horizonDays . ' days');
 
         $events = $parser->parse($icsData, $now, $horizonEnd);
+
+        /*
+         * ------------------------------------------------------------
+         * Phase 13 instrumentation (read-only)
+         * ------------------------------------------------------------
+         * Log every event seen by CalendarReader so we can determine:
+         * - Are events reaching the reader?
+         * - What titles / UIDs / DTSTART values are observed?
+         *
+         * No behavior changes. Logging only.
+         */
+        foreach ($events as $event) {
+            try {
+                $title   = method_exists($event, 'getTitle') ? $event->getTitle() : '(unknown)';
+                $uid     = method_exists($event, 'getUid') ? $event->getUid() : '(unknown)';
+                $dtstart = method_exists($event, 'getStart') ? $event->getStart() : null;
+
+                GcsLog::info('CalendarReader event seen', [
+                    'title'   => $title,
+                    'uid'     => $uid,
+                    'dtstart' => $dtstart instanceof DateTimeInterface
+                        ? $dtstart->format(DateTimeInterface::ATOM)
+                        : null,
+                ]);
+            } catch (Throwable $e) {
+                // Never allow instrumentation to affect behavior
+            }
+        }
 
         // Summary only — no event objects returned
         return [
