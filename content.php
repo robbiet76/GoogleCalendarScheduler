@@ -367,7 +367,17 @@ var applyResult=document.getElementById('gcs-apply-result');
 
 var last=null, armed=false;
 
+/*
+ * Phase 14.1.3:
+ * Require a successful Preview run before Apply can proceed.
+ * This is a UI-only safety gate (backend unchanged).
+ */
+var previewRan = false;
+
 previewBtn.onclick=function(){
+    // Reset gate each time user runs Preview
+    previewRan = false;
+
     armed=false;
     applyBtn.disabled=true;
     applyBtn.textContent='Apply Changes';
@@ -380,7 +390,13 @@ previewBtn.onclick=function(){
     diffResults.innerHTML='';
 
     getJSON(ENDPOINT+'&endpoint=experimental_diff',function(d){
-        if(!d||!d.ok){ diffResults.textContent='Preview unavailable.'; return; }
+        if(!d||!d.ok){
+            diffResults.textContent='Preview unavailable.';
+            return;
+        }
+
+        // Preview succeeded for this page load
+        previewRan = true;
 
         var n=counts(d.diff||{}); last=n;
 
@@ -410,11 +426,19 @@ previewBtn.onclick=function(){
 
         hide(applyBox,false);
         applySummary.textContent='Ready to apply: '+n.c+' create(s), '+n.u+' update(s), '+n.x+' delete(s).';
-        applyBtn.disabled=(n.t===0);
+
+        // Apply stays disabled until Preview has succeeded (previewRan=true) AND there are changes.
+        applyBtn.disabled = (!previewRan || (n.t===0));
     });
 };
 
 applyBtn.onclick=function(){
+    // Phase 14.1.3 hard gate (defense-in-depth, even if button is force-enabled)
+    if (!previewRan) {
+        applyResult.textContent='You must run "Preview Changes" successfully before applying.';
+        return;
+    }
+
     if(!last||last.t===0) return;
 
     if(!armed){
