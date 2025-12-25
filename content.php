@@ -91,15 +91,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['endpoint'])) {
             ];
 
             if (is_array($result)) {
-                if (isset($result['creates']) && is_array($result['creates'])) {
-                    $counts['creates'] = count($result['creates']);
-                }
-                if (isset($result['updates']) && is_array($result['updates'])) {
-                    $counts['updates'] = count($result['updates']);
-                }
-                if (isset($result['deletes']) && is_array($result['deletes'])) {
-                    $counts['deletes'] = count($result['deletes']);
-                }
+                if (isset($result['diff']['create']) && is_array($result['diff']['create'])) $counts['creates'] = count($result['diff']['create']);
+                if (isset($result['diff']['update']) && is_array($result['diff']['update'])) $counts['updates'] = count($result['diff']['update']);
+                if (isset($result['diff']['delete']) && is_array($result['diff']['delete'])) $counts['deletes'] = count($result['diff']['delete']);
 
                 if (isset($result['creates_count'])) $counts['creates'] = (int)$result['creates_count'];
                 if (isset($result['updates_count'])) $counts['updates'] = (int)$result['updates_count'];
@@ -270,8 +264,8 @@ var ENDPOINT =
 
 function getJSON(url, cb){
     fetch(url, {credentials:'same-origin'})
-        .then(r=>r.text())
-        .then(t=>{ try{cb(JSON.parse(t));}catch(e){cb(null);} });
+        .then(function(r){ return r.text(); })
+        .then(function(t){ try{cb(JSON.parse(t));}catch(e){cb(null);} });
 }
 
 function isArr(v){ return Object.prototype.toString.call(v)==='[object Array]'; }
@@ -329,7 +323,7 @@ previewBtn.onclick=function(){
             diffResults.innerHTML='<div class="gcs-empty">No scheduler changes detected.</div>';
         } else {
             ['creates','updates','deletes'].forEach(function(k){
-                var a=d.diff[k];
+                var a=(d.diff||{})[k];
                 if(!isArr(a)||!a.length) return;
                 var s=document.createElement('div'); s.className='gcs-section';
                 var h=document.createElement('h4'); h.textContent=k+' ('+a.length+')';

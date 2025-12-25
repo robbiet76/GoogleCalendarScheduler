@@ -16,8 +16,13 @@ final class DiffPreviewer
     /**
      * Compute a diff preview using the scheduler pipeline.
      *
+     * IMPORTANT: Preview is always forced to dry-run.
+     *
+     * Return shape is normalized for the UI:
+     *   ['creates' => array, 'updates' => array, 'deletes' => array]
+     *
      * @param array $config Loaded plugin configuration
-     * @return array Summary counts: ['create' => int, 'update' => int, 'delete' => int]
+     * @return array Normalized diff arrays
      */
     public static function preview(array $config): array
     {
@@ -30,17 +35,21 @@ final class DiffPreviewer
 
         $diff = $result['diff'] ?? [];
 
+        // Runner diff keys are expected to be: create/update/delete
+        $create = (isset($diff['create']) && is_array($diff['create'])) ? $diff['create'] : [];
+        $update = (isset($diff['update']) && is_array($diff['update'])) ? $diff['update'] : [];
+        $delete = (isset($diff['delete']) && is_array($diff['delete'])) ? $diff['delete'] : [];
+
+        // Normalize to UI-friendly keys: creates/updates/deletes
         return [
-            'create' => isset($diff['create']) ? count($diff['create']) : 0,
-            'update' => isset($diff['update']) ? count($diff['update']) : 0,
-            'delete' => isset($diff['delete']) ? count($diff['delete']) : 0,
+            'creates' => $create,
+            'updates' => $update,
+            'deletes' => $delete,
         ];
     }
 
     /**
      * Apply scheduler changes using the real pipeline.
-     *
-     * This method is intentionally NOT wired to any endpoint yet.
      *
      * @param array $config Loaded plugin configuration
      * @return array Result summary from SchedulerRunner
