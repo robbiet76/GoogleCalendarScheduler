@@ -39,6 +39,7 @@ class GcsIcsParser
                 $raw = '';
                 continue;
             }
+
             if ($line === 'END:VEVENT') {
                 $inEvent = false;
 
@@ -91,9 +92,10 @@ class GcsIcsParser
                 }
 
                 /**
-                 * IMPORTANT (Phase 13.3):
-                 * - Non-recurring events that ended before "now" can be dropped safely.
-                 * - Recurring series MUST NOT be dropped here just because base DTSTART/DTEND is in the past.
+                 * Phase 13.3:
+                 * - Non-recurring events that ended before "now" can be dropped.
+                 * - Recurring series MUST NOT be dropped here just because
+                 *   base DTSTART/DTEND is in the past.
                  */
                 if ($now && $dtend < $now && empty($rrule)) {
                     continue;
@@ -115,7 +117,6 @@ class GcsIcsParser
                         : null,
                     'isOverride'   => ($recurrenceId !== null),
                 ];
-
                 continue;
             }
 
@@ -127,9 +128,7 @@ class GcsIcsParser
         return $events;
     }
 
-    /* -----------------------------------------------------------------
-     * Helpers
-     * ----------------------------------------------------------------- */
+    /* ----------------------------------------------------------------- */
 
     private function parseDateWithFlags(string $value, string $params): array
     {
