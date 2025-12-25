@@ -3,14 +3,14 @@
 class GcsIcsParser
 {
     /**
-     * Parse ICS into an array of VEVENTs with normalized fields.
+     * Parse raw ICS into structured event records.
      *
-     * @param string   $ics
-     * @param DateTime $now
-     * @param DateTime $horizonEnd
+     * @param string        $ics
+     * @param DateTime|null $now
+     * @param DateTime      $horizonEnd
      * @return array<int,array<string,mixed>>
      */
-    public function parse(string $ics, DateTime $now, DateTime $horizonEnd): array
+    public function parse(string $ics, ?DateTime $now, DateTime $horizonEnd): array
     {
         $ics = str_replace("\r\n", "\n", $ics);
         $lines = explode("\n", $ics);
@@ -31,178 +31,162 @@ class GcsIcsParser
 
         $events = [];
         $inEvent = false;
-        $curr = [];
+        $raw = '';
 
         foreach ($unfolded as $line) {
-            if (trim($line) === 'BEGIN:VEVENT') {
+            if ($line === 'BEGIN:VEVENT') {
                 $inEvent = true;
-                $curr = [];
+                $raw = '';
                 continue;
             }
+            if ($line === 'END:VEVENT') {
+                $inEvent = false;
 
-            if (trim($line) === 'END:VEVENT') {
-                if ($inEvent) {
-                    $ev = $this->normalizeEvent($curr, $now, $horizonEnd);
-                    if ($ev !== null) {
-                        $events[] = $ev;
+                $uid          = null;
+                $summary      = '';
+                $dtstart      = null;
+                $dtend        = null;
+                $isAllDay     = false;
+                $rrule        = null;
+                $exDates      = [];
+                $recurrenceId = null;
+
+                if (preg_match('/UID:(.+)/', $raw, $m)) {
+                    $uid = trim($m[1]);
+                }
+
+                if (preg_match('/SUMMARY:(.+)/', $raw, $m)) {
+                    $summary = trim($m[1]);
+                }
+
+                if (preg_match('/DTSTART([^:]*):(.+)/', $raw, $m)) {
+                    [$dtstart, $isAllDay] = $this->parseDateWithFlags($m[2], $m[1]);
+                }
+
+                if (preg_match('/DTEND([^:]*):(.+)/', $raw, $m)) {
+                    [$dtend, $isAllDayEnd] = $this->parseDateWithFlags($m[2], $m[1]);
+                    $isAllDay = $isAllDay || $isAllDayEnd;
+                }
+
+                if (preg_match('/RRULE:(.+)/', $raw, $m)) {
+                    $rrule = $this->parseRrule($m[1]);
+                }
+
+                if (preg_match_all('/EXDATE([^:]*):([^\r\n]+)/', $raw, $m, PREG_SET_ORDER)) {
+                    foreach ($m as $ex) {
+                        $exDates = array_merge(
+                            $exDates,
+                            $this->parseExDates($ex[2], $ex[1])
+                        );
                     }
                 }
-                $inEvent = false;
-                $curr = [];
+
+                if (preg_match('/RECURRENCE-ID([^:]*):(.+)/', $raw, $m)) {
+                    $recurrenceId = $this->parseDate($m[2], $m[1]);
+                }
+
+                // Skip malformed events
+                if (!$uid || !$dtstart || !$dtend) {
+                    continue;
+                }
+
+                /**
+                 * IMPORTANT (Phase 13.3):
+                 * - Non-recurring events that ended before "now" can be dropped safely.
+                 * - Recurring series MUST NOT be dropped here just because base DTSTART/DTEND is in the past.
+                 */
+                if ($now && $dtend < $now && empty($rrule)) {
+                    continue;
+                }
+
+                $events[] = [
+                    'uid'          => $uid,
+                    'summary'      => $summary,
+                    'start'        => $dtstart->format('Y-m-d H:i:s'),
+                    'end'          => $dtend->format('Y-m-d H:i:s'),
+                    'isAllDay'     => $isAllDay,
+                    'rrule'        => $rrule,
+                    'exDates'      => array_map(
+                        fn(DateTime $d) => $d->format('Y-m-d H:i:s'),
+                        $exDates
+                    ),
+                    'recurrenceId' => $recurrenceId
+                        ? $recurrenceId->format('Y-m-d H:i:s')
+                        : null,
+                    'isOverride'   => ($recurrenceId !== null),
+                ];
+
                 continue;
             }
 
-            if (!$inEvent) {
-                continue;
+            if ($inEvent) {
+                $raw .= $line . "\n";
             }
-
-            $pos = strpos($line, ':');
-            if ($pos === false) {
-                continue;
-            }
-
-            $left = substr($line, 0, $pos);
-            $value = substr($line, $pos + 1);
-
-            $name = $left;
-            $params = null;
-
-            $semi = strpos($left, ';');
-            if ($semi !== false) {
-                $name = substr($left, 0, $semi);
-                $params = substr($left, $semi + 1);
-            }
-
-            $name = strtoupper(trim($name));
-            $value = trim($value);
-
-            if ($name === '') {
-                continue;
-            }
-
-            if (!isset($curr[$name])) {
-                $curr[$name] = [];
-            }
-
-            $curr[$name][] = [
-                'params' => $params,
-                'value'  => $value,
-            ];
         }
 
         return $events;
     }
 
-    private function normalizeEvent(array $raw, DateTime $now, DateTime $horizonEnd): ?array
+    /* -----------------------------------------------------------------
+     * Helpers
+     * ----------------------------------------------------------------- */
+
+    private function parseDateWithFlags(string $value, string $params): array
     {
-        $uid = $this->getFirstValue($raw, 'UID');
-        if ($uid === null || $uid === '') {
-            return null;
+        $isAllDay = str_contains($params, 'VALUE=DATE');
+        $dt = $this->parseDate($value, $params);
+
+        if ($dt && $isAllDay) {
+            $dt = $dt->setTime(0, 0, 0);
         }
 
-        $summary = $this->getFirstValue($raw, 'SUMMARY') ?? '';
-
-        // ✅ NEW: surface DESCRIPTION (preserve escaped \n)
-        $description = $this->getJoinedTextValue($raw, 'DESCRIPTION');
-
-        $dtStart = $this->getFirstProp($raw, 'DTSTART');
-        $dtEnd   = $this->getFirstProp($raw, 'DTEND');
-
-        if ($dtStart === null) {
-            return null;
-        }
-
-        $start = $this->parseDateTimeProp($dtStart);
-        if ($start === null) {
-            return null;
-        }
-
-        $end = $dtEnd ? $this->parseDateTimeProp($dtEnd) : null;
-        if ($end === null) {
-            $end = (clone $start)->modify('+30 minutes');
-        }
-
-        if ($start > $horizonEnd) {
-            return null;
-        }
-
-        $isAllDay = preg_match('/^\d{8}$/', $dtStart['value']) === 1;
-
-        return [
-            'uid'         => $uid,
-            'summary'     => $summary,
-            'description' => $description,   // ← ONLY ADDITION
-            'start'       => $start->format('Y-m-d H:i:s'),
-            'end'         => $end->format('Y-m-d H:i:s'),
-            'isAllDay'    => $isAllDay,
-            'rrule'       => $this->getFirstValue($raw, 'RRULE'),
-            'exdates'     => $this->getAllValues($raw, 'EXDATE'),
-            'raw'         => $raw,
-        ];
+        return [$dt, $isAllDay];
     }
 
-    private function getFirstProp(array $raw, string $key): ?array
+    private function parseDate(string $raw, string $params = ''): ?DateTime
     {
-        return $raw[$key][0] ?? null;
-    }
-
-    private function getFirstValue(array $raw, string $key): ?string
-    {
-        return isset($raw[$key][0]['value']) ? (string)$raw[$key][0]['value'] : null;
-    }
-
-    private function getAllValues(array $raw, string $key): array
-    {
-        if (!isset($raw[$key])) {
-            return [];
-        }
-        return array_map(fn($v) => (string)$v['value'], $raw[$key]);
-    }
-
-    private function getJoinedTextValue(array $raw, string $key): ?string
-    {
-        if (!isset($raw[$key])) {
-            return null;
-        }
-        $vals = array_map(fn($v) => (string)$v['value'], $raw[$key]);
-        $text = trim(implode("\n", $vals));
-        return $text === '' ? null : $text;
-    }
-
-    private function parseDateTimeProp(array $prop): ?DateTime
-    {
-        $val = $prop['value'];
-        $params = $prop['params'] ?? null;
-
-        if (preg_match('/^\d{8}$/', $val)) {
-            return DateTime::createFromFormat('Ymd', $val) ?: null;
-        }
-
-        if (preg_match('/^\d{8}T\d{6}Z$/', $val)) {
-            return DateTime::createFromFormat('Ymd\THis\Z', $val, new DateTimeZone('UTC')) ?: null;
-        }
-
-        if (preg_match('/^\d{8}T\d{6}$/', $val)) {
-            $tz = null;
-            if ($params) {
-                $p = $this->parseParams($params);
-                $tz = $p['TZID'] ?? null;
+        try {
+            if (preg_match('/^\d{8}T\d{6}Z$/', $raw)) {
+                return DateTime::createFromFormat(
+                    'Ymd\THis\Z',
+                    $raw,
+                    new DateTimeZone('UTC')
+                );
             }
-            return DateTime::createFromFormat('Ymd\THis', $val, $tz ? new DateTimeZone($tz) : null) ?: null;
-        }
+
+            if (preg_match('/^\d{8}T\d{6}$/', $raw)) {
+                return DateTime::createFromFormat('Ymd\THis', $raw);
+            }
+
+            if (preg_match('/^\d{8}$/', $raw)) {
+                return DateTime::createFromFormat('Ymd', $raw);
+            }
+        } catch (Throwable $ignored) {}
 
         return null;
     }
 
-    private function parseParams(string $raw): ?array
+    private function parseRrule(string $raw): array
     {
         $out = [];
-        foreach (explode(';', $raw) as $p) {
-            if (strpos($p, '=') !== false) {
-                [$k, $v] = explode('=', $p, 2);
-                $out[strtoupper(trim($k))] = trim($v);
+        foreach (explode(';', trim($raw)) as $part) {
+            if (str_contains($part, '=')) {
+                [$k, $v] = explode('=', $part, 2);
+                $out[strtoupper($k)] = $v;
             }
         }
-        return $out ?: null;
+        return $out;
+    }
+
+    private function parseExDates(string $raw, string $params): array
+    {
+        $dates = [];
+        foreach (explode(',', trim($raw)) as $val) {
+            $dt = $this->parseDate($val, $params);
+            if ($dt) {
+                $dates[] = $dt;
+            }
+        }
+        return $dates;
     }
 }
