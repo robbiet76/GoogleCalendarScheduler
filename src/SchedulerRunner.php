@@ -1,5 +1,15 @@
 <?php
 
+/**
+ * GcsSchedulerRunner
+ *
+ * Top-level orchestrator:
+ * - fetch ICS
+ * - parse events within horizon
+ * - resolve target/intent
+ * - consolidate
+ * - sync (dry-run safe)
+ */
 final class GcsSchedulerRunner
 {
     private array $cfg;
@@ -15,151 +25,137 @@ final class GcsSchedulerRunner
 
     public function run(): array
     {
+        $summary = [
+            'component'        => 'SchedulerRunner',
+            'phase'            => '14.2.1',
+            'dryRun'           => $this->dryRun,
+            'events_seen'      => 0,
+            'events_expanded'  => 0,
+            'intents_built'    => 0,
+            'ranges_created'   => 0,
+            'adds'             => 0,
+            'updates'          => 0,
+            'deletes'          => 0,
+            'result'           => 'unknown',
+            'reason'           => null,
+        ];
+
         $icsUrl = trim((string)($this->cfg['calendar']['ics_url'] ?? ''));
         if ($icsUrl === '') {
-            GcsLogger::instance()->warn('No ICS URL configured');
+            $summary['result'] = 'no-op';
+            $summary['reason'] = 'missing_ics_url';
+            GcsLogger::instance()->info('Scheduler run summary', $summary);
             return $this->emptyResult();
         }
 
+        // Fetch ICS
         $ics = (new GcsIcsFetcher())->fetch($icsUrl);
         if ($ics === '') {
+            $summary['result'] = 'no-op';
+            $summary['reason'] = 'empty_ics';
+            GcsLogger::instance()->info('Scheduler run summary', $summary);
             return $this->emptyResult();
         }
 
+        // Parse
         $now = new DateTime('now');
         $horizonEnd = (clone $now)->modify('+' . $this->horizonDays . ' days');
 
         $parser = new GcsIcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
+
+        $summary['events_seen'] = is_array($events) ? count($events) : 0;
+
         if (empty($events)) {
+            $summary['result'] = 'no-op';
+            $summary['reason'] = 'no_events_in_horizon';
+            GcsLogger::instance()->info('Scheduler run summary', $summary);
             return $this->emptyResult();
         }
 
-        // Group events by UID (base + overrides)
-        $byUid = [];
-        foreach ($events as $ev) {
-            if (!is_array($ev)) continue;
-            $uid = (string)($ev['uid'] ?? '');
-            if ($uid !== '') {
-                $byUid[$uid][] = $ev;
-            }
-        }
-
+        // Build intents
         $rawIntents = [];
 
-        foreach ($byUid as $uid => $items) {
-            $base = null;
-            $overrides = [];
-
-            foreach ($items as $ev) {
-                if (!empty($ev['isOverride']) && !empty($ev['recurrenceId'])) {
-                    $overrides[$ev['recurrenceId']] = $ev;
-                } elseif ($base === null) {
-                    $base = $ev;
-                }
-            }
-
-            $refEv = $base ?? $items[0];
-            if (!empty($refEv['isAllDay'])) {
+        foreach ($events as $ev) {
+            if (!is_array($ev)) {
                 continue;
             }
 
-            $summary = (string)($refEv['summary'] ?? '');
-            $resolved = GcsTargetResolver::resolve($summary);
+            if (!empty($ev['isAllDay'])) {
+                continue;
+            }
+
+            $summaryText = (string)($ev['summary'] ?? '');
+            $resolved = GcsTargetResolver::resolve($summaryText);
             if (!$resolved) {
                 continue;
             }
 
-            $occurrences = self::expandEventOccurrences($base, $overrides, $now, $horizonEnd);
-            if ($occurrences === false) {
-                continue;
-            }
-
-            foreach ($occurrences as $occ) {
-                $rawIntents[] = [
-                    'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => $resolved['type'],
-                    'target'     => $resolved['target'],
-                    'start'      => $occ['start'],
-                    'end'        => $occ['end'],
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
-                    'isOverride' => !empty($occ['isOverride']),
-                ];
-            }
+            $rawIntents[] = [
+                'uid'     => (string)($ev['uid'] ?? ''),
+                'summary' => $summaryText,
+                'type'    => (string)$resolved['type'],
+                'target'  => $resolved['target'],
+                'start'   => (string)$ev['start'],
+                'end'     => (string)$ev['end'],
+                'stopType'=> 'graceful',
+                'repeat'  => 'none',
+            ];
         }
 
+        $summary['intents_built'] = count($rawIntents);
+
+        if (empty($rawIntents)) {
+            $summary['result'] = 'no-op';
+            $summary['reason'] = 'no_resolvable_targets';
+            GcsLogger::instance()->info('Scheduler run summary', $summary);
+            return $this->emptyResult();
+        }
+
+        // Consolidate
         $consolidated = $rawIntents;
         try {
             $consolidator = new GcsIntentConsolidator();
             $maybe = $consolidator->consolidate($rawIntents);
             if (is_array($maybe)) {
                 $consolidated = $maybe;
+                $summary['ranges_created'] = count($consolidated);
             }
         } catch (Throwable $ignored) {}
 
+        // Sync
         $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($consolidated);
+        $result = $sync->sync($consolidated);
+
+        $summary['adds']    = (int)($result['adds']    ?? 0);
+        $summary['updates'] = (int)($result['updates'] ?? 0);
+        $summary['deletes'] = (int)($result['deletes'] ?? 0);
+
+        if (
+            $summary['adds'] === 0 &&
+            $summary['updates'] === 0 &&
+            $summary['deletes'] === 0
+        ) {
+            $summary['result'] = 'no-op';
+            $summary['reason'] = $this->dryRun
+                ? 'dry_run_preview_only'
+                : 'no_changes_detected';
+        } else {
+            $summary['result'] = 'changes_detected';
+        }
+
+        GcsLogger::instance()->info('Scheduler run summary', $summary);
+
+        return $result;
     }
 
     private function emptyResult(): array
     {
         return [
-            'adds'         => 0,
-            'updates'      => 0,
-            'deletes'      => 0,
-            'dryRun'       => $this->dryRun,
-            'intents_seen' => 0,
+            'adds'    => 0,
+            'updates' => 0,
+            'deletes' => 0,
+            'dryRun'  => $this->dryRun,
         ];
-    }
-
-    /**
-     * Phase 13.3 recurrence expansion helper
-     */
-    private static function expandEventOccurrences(?array $base, array $overrides, DateTime $horizonStart, DateTime $horizonEnd)
-    {
-        $out = [];
-        $overrideKeys = [];
-
-        foreach ($overrides as $rid => $ov) {
-            $s = new DateTime($ov['start']);
-            if ($s >= $horizonStart && $s <= $horizonEnd) {
-                $overrideKeys[$rid] = true;
-                $out[] = [
-                    'start'      => $s->format('Y-m-d H:i:s'),
-                    'end'        => (new DateTime($ov['end']))->format('Y-m-d H:i:s'),
-                    'isOverride' => true,
-                ];
-            }
-        }
-
-        if (!$base) {
-            return $out;
-        }
-
-        $start = new DateTime($base['start']);
-        $end   = new DateTime($base['end']);
-        $duration = max(0, $end->getTimestamp() - $start->getTimestamp());
-
-        // Non-recurring base event
-        if (empty($base['rrule'])) {
-            if ($start >= $horizonStart && $start <= $horizonEnd) {
-                $rid = $start->format('Y-m-d H:i:s');
-                if (empty($overrideKeys[$rid])) {
-                    $out[] = [
-                        'start'      => $rid,
-                        'end'        => (clone $start)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
-                        'isOverride' => false,
-                    ];
-                }
-            }
-            return $out;
-        }
-
-        // NOTE: Recurrence expansion logic already validated in Phase 13.3
-        // (kept identical to reviewed diff version)
-
-        return $out;
     }
 }
