@@ -167,7 +167,9 @@ class SchedulerSync
     /**
      * Convert an intent array to a schedule.json entry array.
      *
-     * NO recurrence logic changes: we simply map fields if present, otherwise use safe defaults.
+     * NO recurrence logic changes:
+     * - If a consolidated intent is provided ({template, range}), we trust it.
+     * - Otherwise we fall back to legacy flat fields (best-effort).
      *
      * Returns:
      * - array<string,mixed> schedule entry on success
@@ -178,12 +180,33 @@ class SchedulerSync
      */
     private function intentToScheduleEntry(array $intent)
     {
-        // Determine type: playlist or command
-        $type = $this->coalesceString($intent, ['type', 'entryType', 'intentType'], '');
-        $playlist = $this->coalesceString($intent, ['playlist', 'playlistName', 'name'], '');
-        $command  = $this->coalesceString($intent, ['command', 'commandName'], '');
+        // Consolidated schema: { template: {...}, range: {...} }
+        $template = (isset($intent['template']) && is_array($intent['template'])) ? $intent['template'] : [];
+        $range    = (isset($intent['range']) && is_array($intent['range'])) ? $intent['range'] : [];
 
-        // If "type" absent, infer:
+        // Flatten template over intent for legacy key lookup without changing intent meaning.
+        $flat = $intent;
+        foreach ($template as $k => $v) {
+            $flat[$k] = $v;
+        }
+
+        // Determine type: playlist or command
+        $type = $this->coalesceString($flat, ['type', 'entryType', 'intentType'], '');
+        $target = $this->coalesceString($flat, ['target'], '');
+
+        // Legacy explicit fields
+        $playlist = $this->coalesceString($flat, ['playlist', 'playlistName', 'name'], '');
+        $command  = $this->coalesceString($flat, ['command', 'commandName'], '');
+
+        // Prefer resolved "target" when present
+        if ($type === 'playlist' && $playlist === '' && $target !== '') {
+            $playlist = $target;
+        }
+        if ($type === 'command' && $command === '' && $target !== '') {
+            $command = $target;
+        }
+
+        // If "type" absent, infer from explicit fields (legacy support)
         if ($type === '') {
             if ($playlist !== '') {
                 $type = 'playlist';
@@ -196,23 +219,83 @@ class SchedulerSync
             return 'Unable to determine schedule entry type (expected playlist or command)';
         }
 
-        // Required time/date fields for scheduler persistence.
-        // Use the intent-provided values; do not synthesize recurrence.
-        $startTime = $this->coalesceString($intent, ['startTime', 'start_time'], '');
-        $endTime   = $this->coalesceString($intent, ['endTime', 'end_time'], $startTime);
+        // Datetimes: consolidated intents provide template.start/end in "Y-m-d H:i:s"
+        $dtStart = $this->coalesceString($flat, ['start'], '');
+        $dtEnd   = $this->coalesceString($flat, ['end'], '');
 
-        // For date range, FPP accepts "0000-01-01" .. "0000-12-31" as "always"
-        $startDate = $this->coalesceString($intent, ['startDate', 'start_date'], '0000-01-01');
-        $endDate   = $this->coalesceString($intent, ['endDate', 'end_date'], '0000-12-31');
+        $parsedStart = $this->parseDateTime($dtStart);
+        $parsedEnd   = $this->parseDateTime($dtEnd);
 
-        // Day mask: observed values include 7 for Everyday. Use intent value or default to 7.
-        $day = $this->coalesceInt($intent, ['day', 'dayMask', 'day_mask'], 7);
+        // startTime/endTime: accept explicit HH:MM:SS if present, otherwise derive from datetime
+        $startTime = $this->coalesceString($flat, ['startTime', 'start_time'], '');
+        if ($startTime === '' && $parsedStart !== null) {
+            $startTime = $parsedStart->format('H:i:s');
+        }
 
-        // Repeat: default 0 unless intent says otherwise
-        $repeat = $this->coalesceInt($intent, ['repeat'], 0);
+        $endTime = $this->coalesceString($flat, ['endTime', 'end_time'], '');
+        if ($endTime === '' && $parsedEnd !== null) {
+            $endTime = $parsedEnd->format('H:i:s');
+        }
+        if ($endTime === '' && $startTime !== '') {
+            $endTime = $startTime;
+        }
 
-        // stopType: default 0 (Graceful per projection examples)
-        $stopType = $this->coalesceInt($intent, ['stopType', 'stop_type'], 0);
+        // Date range: consolidated range.start/end is authoritative
+        $startDate = $this->coalesceString($flat, ['startDate', 'start_date'], '');
+        $endDate   = $this->coalesceString($flat, ['endDate', 'end_date'], '');
+
+        $rangeStart = $this->coalesceString($range, ['start'], '');
+        $rangeEnd   = $this->coalesceString($range, ['end'], '');
+
+        if ($rangeStart !== '') {
+            $startDate = $rangeStart;
+        } elseif ($startDate === '' && $parsedStart !== null) {
+            $startDate = $parsedStart->format('Y-m-d');
+        }
+
+        if ($rangeEnd !== '') {
+            $endDate = $rangeEnd;
+        } elseif ($endDate === '' && $parsedEnd !== null) {
+            $endDate = $parsedEnd->format('Y-m-d');
+        }
+
+        if ($startDate === '') {
+            $startDate = '0000-01-01';
+        }
+        if ($endDate === '') {
+            $endDate = '0000-12-31';
+        }
+
+        // Day mask:
+        // - If consolidated range.days (e.g. "SuMoTu") is present, trust it and map using existing helper.
+        // - Else allow legacy numeric 'day' fields.
+        $day = -1;
+
+        $rangeDaysShort = $this->coalesceString($range, ['days'], '');
+        if ($rangeDaysShort !== '') {
+            // Uses the same mapping helpers as the consolidator/FPP mapper.
+            $day = GcsIntentConsolidator::shortDaysToWeekdayMask($rangeDaysShort);
+        } else {
+            $day = $this->coalesceInt($flat, ['day', 'dayMask', 'day_mask'], -1);
+        }
+
+        if ($day < 0) {
+            return 'Missing scheduler day mask (expected range.days short string or numeric day)';
+        }
+
+        // Repeat: default 0. If string "none" present, map to 0.
+        $repeat = $this->coalesceInt($flat, ['repeat'], -1);
+        if ($repeat < 0) {
+            $repeatStr = $this->coalesceString($flat, ['repeat'], '');
+            $repeat = $this->mapRepeatStringToInt($repeatStr, 0);
+        }
+
+        // stopType: default 0 (Graceful). If string "graceful" present, map to 0.
+        $stopType = $this->coalesceInt($flat, ['stopType', 'stop_type'], -1);
+        if ($stopType < 0) {
+            $stopTypeStr = $this->coalesceString($flat, ['stopType', 'stop_type'], '');
+            $stopType = $this->mapStopTypeStringToInt($stopTypeStr, 0);
+        }
 
         // Validate time format (basic): HH:MM:SS
         if (!$this->isTimeHms($startTime)) {
@@ -224,30 +307,30 @@ class SchedulerSync
 
         // Args for commands
         $args = [];
-        if (isset($intent['args']) && is_array($intent['args'])) {
-            $args = array_values($intent['args']);
+        if (isset($flat['args']) && is_array($flat['args'])) {
+            $args = array_values($flat['args']);
         }
 
         // Multisync flags (optional)
-        $multisyncCommand = $this->coalesceBool($intent, ['multisyncCommand', 'multisync_command'], false);
+        $multisyncCommand = $this->coalesceBool($flat, ['multisyncCommand', 'multisync_command'], false);
 
         // Common required fields in schedule.json
         $entry = [
-            'enabled'         => 1,
-            'sequence'        => 0,
-            'day'             => $day,
-            'startTime'       => $startTime,
-            'startTimeOffset' => 0,
-            'endTime'         => $endTime,
-            'endTimeOffset'   => 0,
-            'repeat'          => $repeat,
-            'startDate'       => $startDate,
-            'endDate'         => $endDate,
-            'stopType'        => $stopType,
-            'playlist'        => '',
-            'command'         => '',
-            'args'            => $args,
-            'multisyncCommand'=> $multisyncCommand,
+            'enabled'          => 1,
+            'sequence'         => 0,
+            'day'              => $day,
+            'startTime'        => $startTime,
+            'startTimeOffset'  => 0,
+            'endTime'          => $endTime,
+            'endTimeOffset'    => 0,
+            'repeat'           => $repeat,
+            'startDate'        => $startDate,
+            'endDate'          => $endDate,
+            'stopType'         => $stopType,
+            'playlist'         => '',
+            'command'          => '',
+            'args'             => $args,
+            'multisyncCommand' => $multisyncCommand,
         ];
 
         if ($type === 'playlist') {
@@ -445,7 +528,7 @@ class SchedulerSync
                     continue;
                 }
 
-                // Projection entries have "type": "playlist" or contain "command"
+                // Projection entries have "type": "playlist" or "command"
                 $pType = $p['type'] ?? null;
 
                 if ($expIsPlaylist) {
@@ -455,7 +538,6 @@ class SchedulerSync
                     if (($p['playlist'] ?? null) !== $expPlaylist) {
                         continue;
                     }
-                    // Match date/time/day if present in projection
                     if (($p['day'] ?? null) !== $expDay) {
                         continue;
                     }
@@ -468,7 +550,6 @@ class SchedulerSync
                     $found = true;
                     break;
                 } else {
-                    // Command entry
                     if ($pType !== 'command') {
                         continue;
                     }
@@ -526,6 +607,78 @@ class SchedulerSync
 
         $decoded = json_decode($raw, true);
         return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Parse a datetime string in the canonical "Y-m-d H:i:s" format (or strtotime fallback).
+     *
+     * @param string $s
+     * @return DateTime|null
+     */
+    private function parseDateTime(string $s): ?DateTime
+    {
+        $s = trim($s);
+        if ($s === '') {
+            return null;
+        }
+
+        $dt = DateTime::createFromFormat('Y-m-d H:i:s', $s);
+        if ($dt instanceof DateTime) {
+            return $dt;
+        }
+
+        $ts = strtotime($s);
+        if ($ts !== false) {
+            return (new DateTime())->setTimestamp($ts);
+        }
+
+        return null;
+    }
+
+    /**
+     * Map known stopType strings to FPP numeric values.
+     * Conservative: unknown values fall back to provided default.
+     *
+     * @param string $s
+     * @param int $default
+     * @return int
+     */
+    private function mapStopTypeStringToInt(string $s, int $default): int
+    {
+        $v = strtolower(trim($s));
+        if ($v === '') {
+            return $default;
+        }
+
+        // Observed in FPP: 0 => Graceful
+        if ($v === 'graceful') {
+            return 0;
+        }
+
+        return $default;
+    }
+
+    /**
+     * Map known repeat strings to FPP numeric values.
+     * Conservative: unknown values fall back to provided default.
+     *
+     * @param string $s
+     * @param int $default
+     * @return int
+     */
+    private function mapRepeatStringToInt(string $s, int $default): int
+    {
+        $v = strtolower(trim($s));
+        if ($v === '') {
+            return $default;
+        }
+
+        // Intent "none" == no repeat
+        if ($v === 'none') {
+            return 0;
+        }
+
+        return $default;
     }
 
     private function coalesceString(array $src, array $keys, string $default): string
