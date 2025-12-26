@@ -463,43 +463,28 @@ class SchedulerSync
         $missing = [];
 
         foreach ($expected as $exp) {
-            $expPlaylist = (isset($exp['playlist']) && is_string($exp['playlist'])) ? $exp['playlist'] : '';
-            $expCommand  = (isset($exp['command']) && is_string($exp['command'])) ? $exp['command'] : '';
-            $expDay      = $exp['day'] ?? null;
-            $expStartDate= $exp['startDate'] ?? null;
-            $expStartTime= $exp['startTime'] ?? null;
-
-            $wantType = ($expPlaylist !== '') ? 'playlist' : 'command';
+            $expPlaylist = $exp['playlist'] ?? '';
+            $expCommand  = $exp['command'] ?? '';
+            $expStartDate = $exp['startDate'] ?? null;
+            $expStartTime = $exp['startTime'] ?? null;
 
             $found = false;
+
             foreach ($projectionEntries as $p) {
                 if (!is_array($p)) {
                     continue;
                 }
 
-                if (($p['type'] ?? null) !== $wantType) {
-                    continue;
-                }
-
-                if ($wantType === 'playlist') {
-                    if (($p['playlist'] ?? null) !== $expPlaylist) {
-                        continue;
-                    }
+                if ($expPlaylist !== '') {
+                    if (($p['type'] ?? null) !== 'playlist') continue;
+                    if (($p['playlist'] ?? null) !== $expPlaylist) continue;
                 } else {
-                    if (($p['command'] ?? null) !== $expCommand) {
-                        continue;
-                    }
+                    if (($p['type'] ?? null) !== 'command') continue;
+                    if (($p['command'] ?? null) !== $expCommand) continue;
                 }
 
-                if (($p['day'] ?? null) !== $expDay) {
-                    continue;
-                }
-                if (($p['startDate'] ?? null) !== $expStartDate) {
-                    continue;
-                }
-                if (($p['startTime'] ?? null) !== $expStartTime) {
-                    continue;
-                }
+                if (($p['startDate'] ?? null) !== $expStartDate) continue;
+                if (($p['startTime'] ?? null) !== $expStartTime) continue;
 
                 $found = true;
                 break;
@@ -507,10 +492,8 @@ class SchedulerSync
 
             if (!$found) {
                 $missing[] = [
-                    'type' => $wantType,
-                    'playlist' => $expPlaylist,
-                    'command' => $expCommand,
-                    'day' => $expDay,
+                    'playlist'  => $expPlaylist,
+                    'command'   => $expCommand,
                     'startDate' => $expStartDate,
                     'startTime' => $expStartTime,
                 ];
@@ -519,6 +502,7 @@ class SchedulerSync
 
         return $missing;
     }
+
 
     /**
      * GET a URL and decode JSON response.
