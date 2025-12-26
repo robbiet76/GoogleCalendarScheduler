@@ -5,6 +5,11 @@ class GcsIcsParser
     /**
      * Parse raw ICS into structured event records.
      *
+     * IMPORTANT (Phase 16.1 timezone rule):
+     * - Times in Google Calendar should match local times in FPP.
+     * - Therefore, all parsed DateTime values are normalized to the local timezone
+     *   (date_default_timezone_get()) before formatting into strings.
+     *
      * @param string        $ics
      * @param DateTime|null $now
      * @param DateTime      $horizonEnd
@@ -142,25 +147,83 @@ class GcsIcsParser
         return [$dt, $isAllDay];
     }
 
+    /**
+     * Parse an ICS datetime/date and normalize it to local (FPP) timezone.
+     *
+     * Supported forms:
+     * - YYYYMMDDTHHMMSSZ     => UTC instant, then converted to local timezone
+     * - YYYYMMDDTHHMMSS      => interpreted in TZID if supplied, else local timezone
+     * - YYYYMMDD             => date-only interpreted in local timezone
+     *
+     * @param string $raw
+     * @param string $params
+     * @return DateTime|null
+     */
     private function parseDate(string $raw, string $params = ''): ?DateTime
     {
         try {
+            $localTz = new DateTimeZone(date_default_timezone_get());
+            $paramTz = $this->extractTzid($params);
+            $eventTz = $paramTz ? new DateTimeZone($paramTz) : $localTz;
+
+            // UTC form
             if (preg_match('/^\d{8}T\d{6}Z$/', $raw)) {
-                return DateTime::createFromFormat(
+                $dt = DateTime::createFromFormat(
                     'Ymd\THis\Z',
                     $raw,
                     new DateTimeZone('UTC')
                 );
+                if (!$dt) {
+                    return null;
+                }
+                // Normalize to local wall-clock time
+                $dt->setTimezone($localTz);
+                return $dt;
             }
 
+            // Floating/localized time form (TZID or local)
             if (preg_match('/^\d{8}T\d{6}$/', $raw)) {
-                return DateTime::createFromFormat('Ymd\THis', $raw);
+                $dt = DateTime::createFromFormat('Ymd\THis', $raw, $eventTz);
+                if (!$dt) {
+                    return null;
+                }
+                // Normalize to local wall-clock time
+                $dt->setTimezone($localTz);
+                return $dt;
             }
 
+            // Date-only
             if (preg_match('/^\d{8}$/', $raw)) {
-                return DateTime::createFromFormat('Ymd', $raw);
+                $dt = DateTime::createFromFormat('Ymd', $raw, $localTz);
+                if (!$dt) {
+                    return null;
+                }
+                $dt->setTimezone($localTz);
+                return $dt;
             }
-        } catch (Throwable $ignored) {}
+        } catch (Throwable $ignored) {
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract TZID from ICS params, e.g. ";TZID=America/New_York" or "TZID=America/New_York"
+     *
+     * @param string $params
+     * @return string|null
+     */
+    private function extractTzid(string $params): ?string
+    {
+        if ($params === '') {
+            return null;
+        }
+
+        // Common patterns include leading ';' or other params before TZID
+        if (preg_match('/TZID=([^;:]+)/', $params, $m)) {
+            $tzid = trim($m[1]);
+            return $tzid !== '' ? $tzid : null;
+        }
 
         return null;
     }
