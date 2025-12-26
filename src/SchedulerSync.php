@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 /**
  * SchedulerSync
@@ -10,9 +11,8 @@
  *          with backup + atomic write + read-after-write verification.
  *
  * IMPORTANT CONSTRAINTS:
- * - Add-only (no updates/deletes/reordering)
+ * - Add-only (no updates/deletes/reordering) [for now]
  * - No scheduler logic/recurrence changes: we use whatever the intent already provides.
- * - No breaking config changes.
  */
 class SchedulerSync
 {
@@ -20,30 +20,85 @@ class SchedulerSync
 
     /**
      * FPP scheduler persistence file (canonical).
-     * NOTE: This is the authoritative scheduler storage on FPP.
      */
-    private const SCHEDULE_JSON_PATH = '/home/fpp/media/config/schedule.json';
+    public const SCHEDULE_JSON_PATH = '/home/fpp/media/config/schedule.json';
 
     /**
      * FPP projection endpoint (read-only) used for verification.
      */
     private const FPP_SCHEDULE_PROJECTION_URL = 'http://127.0.0.1/api/fppd/schedule';
 
-    /**
-     * @param bool $dryRun
-     */
     public function __construct(bool $dryRun = true)
     {
         $this->dryRun = (bool)$dryRun;
     }
 
     /**
-     * Sync resolved intents against the scheduler.
+     * PURE helper: read schedule.json (static).
      *
-     * Phase 16.2:
-     * - CREATE only (append-only)
-     * - No updates or deletes
-     * - Dry-run safe
+     * @return array<int,array<string,mixed>>
+     */
+    public static function readScheduleJsonStatic(string $path): array
+    {
+        if (!file_exists($path)) {
+            return [];
+        }
+
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
+            return [];
+        }
+
+        $rawTrim = trim($raw);
+        if ($rawTrim === '') {
+            return [];
+        }
+
+        $decoded = json_decode($rawTrim, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($decoded as $entry) {
+            if (is_array($entry)) {
+                $out[] = $entry;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * PURE helper: map intents -> schedule.json entries (static).
+     *
+     * @param array<int,array<string,mixed>> $intents
+     * @return array{entries: array<int,array<string,mixed>>, errors: array<int,string>}
+     */
+    public static function mapIntentsToScheduleEntries(array $intents): array
+    {
+        $entries = [];
+        $errors = [];
+
+        foreach ($intents as $idx => $intent) {
+            if (!is_array($intent)) {
+                $errors[] = "Intent #{$idx} is not an array";
+                continue;
+            }
+
+            $entryOrError = self::intentToScheduleEntryStatic($intent);
+            if (is_string($entryOrError)) {
+                $errors[] = "Intent #{$idx}: {$entryOrError}";
+                continue;
+            }
+
+            $entries[] = $entryOrError;
+        }
+
+        return ['entries' => $entries, 'errors' => $errors];
+    }
+
+    /**
+     * Sync resolved intents against the scheduler (write-capable if dryRun=false).
      *
      * @param array<int,array<string,mixed>> $intents
      * @return array<string,mixed>
@@ -64,7 +119,7 @@ class SchedulerSync
                 continue;
             }
 
-            $entryOrError = $this->intentToScheduleEntry($intent);
+            $entryOrError = self::intentToScheduleEntryStatic($intent);
             if (is_string($entryOrError)) {
                 $errors[] = "Intent #{$idx}: {$entryOrError}";
                 continue;
@@ -155,21 +210,12 @@ class SchedulerSync
     }
 
     /**
-     * Convert an intent array to a schedule.json entry array.
-     *
-     * Supports both schemas:
-     *  A) Flat intent (legacy):
-     *     ['type','target','start','end',...]
-     *  B) Consolidated intent (current):
-     *     ['template'=>{...flat...}, 'range'=>{'start','end','days'}]
-     *
-     * NO recurrence logic changes:
-     * - We only map fields already computed upstream.
+     * PURE mapping: intent -> schedule entry.
      *
      * @param array<string,mixed> $intent
      * @return array<string,mixed>|string
      */
-    private function intentToScheduleEntry(array $intent)
+    private static function intentToScheduleEntryStatic(array $intent)
     {
         $tpl = $intent;
         $range = null;
@@ -181,9 +227,8 @@ class SchedulerSync
             $range = $intent['range'];
         }
 
-        // Determine type + target
-        $type   = $this->coalesceString($tpl, ['type', 'entryType', 'intentType'], '');
-        $target = $this->coalesceString($tpl, ['target'], '');
+        $type   = self::coalesceString($tpl, ['type', 'entryType', 'intentType'], '');
+        $target = self::coalesceString($tpl, ['target'], '');
 
         if ($type !== 'playlist' && $type !== 'command') {
             return "Unable to determine schedule entry type (expected playlist or command); got '{$type}'";
@@ -192,12 +237,11 @@ class SchedulerSync
             return 'Missing target for intent (expected playlist name or command name)';
         }
 
-        // Times: derived from template start/end (already normalized upstream)
-        $startRaw = $this->coalesceString($tpl, ['start'], '');
-        $endRaw   = $this->coalesceString($tpl, ['end'], '');
+        $startRaw = self::coalesceString($tpl, ['start'], '');
+        $endRaw   = self::coalesceString($tpl, ['end'], '');
 
-        $startDt = $this->parseYmdHms($startRaw);
-        $endDt   = $this->parseYmdHms($endRaw);
+        $startDt = self::parseYmdHms($startRaw);
+        $endDt   = self::parseYmdHms($endRaw);
 
         if (!$startDt) {
             return "Invalid or missing template start (expected Y-m-d H:i:s): '{$startRaw}'";
@@ -209,7 +253,6 @@ class SchedulerSync
         $startTime = $startDt->format('H:i:s');
         $endTime   = $endDt->format('H:i:s');
 
-        // Dates/day mask: prefer consolidated range (authoritative for multi-day)
         $startDate = null;
         $endDate   = null;
         $dayMask   = null;
@@ -219,20 +262,14 @@ class SchedulerSync
             $rEnd   = isset($range['end']) ? (string)$range['end'] : '';
             $rDays  = isset($range['days']) ? (string)$range['days'] : '';
 
-            if ($this->isDateYmd($rStart)) {
-                $startDate = $rStart;
-            }
-            if ($this->isDateYmd($rEnd)) {
-                $endDate = $rEnd;
-            }
+            if (self::isDateYmd($rStart)) $startDate = $rStart;
+            if (self::isDateYmd($rEnd))   $endDate = $rEnd;
 
-            // "SuMoTuWeThFrSa" subset string -> weekday bitmask (existing helper)
             if ($rDays !== '') {
                 $dayMask = (int)GcsIntentConsolidator::shortDaysToWeekdayMask($rDays);
             }
         }
 
-        // Fall back to single-occurrence date if no range given
         if ($startDate === null) {
             $startDate = $startDt->format('Y-m-d');
         }
@@ -240,26 +277,20 @@ class SchedulerSync
             $endDate = $startDate;
         }
 
-        // Fall back day-of-week mask derived from startDt if no mask
         if ($dayMask === null || $dayMask === 0) {
             $dow = (int)$startDt->format('w'); // 0=Sun..6=Sat
             $dayMask = (1 << $dow);
         }
 
-        // stopType: default 0 (Graceful)
-        $stopType = $this->coalesceInt($tpl, ['stopType', 'stop_type'], 0);
+        $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
+        $repeat   = self::coalesceInt($tpl, ['repeat'], 0);
 
-        // repeat: default 0 (no repeat) — upstream recurrence expansion handles repeats separately
-        $repeat = $this->coalesceInt($tpl, ['repeat'], 0);
-
-        // Args for commands (optional)
         $args = [];
         if (isset($tpl['args']) && is_array($tpl['args'])) {
             $args = array_values($tpl['args']);
         }
 
-        // Multisync flags (optional)
-        $multisyncCommand = $this->coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
+        $multisyncCommand = self::coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
 
         $entry = [
             'enabled'          => 1,
@@ -288,30 +319,20 @@ class SchedulerSync
         return $entry;
     }
 
-    private function parseYmdHms(string $s): ?DateTime
+    private static function parseYmdHms(string $s): ?DateTime
     {
-        if ($s === '') {
-            return null;
-        }
+        if ($s === '') return null;
         $dt = DateTime::createFromFormat('Y-m-d H:i:s', $s);
         return ($dt instanceof DateTime) ? $dt : null;
     }
 
-    private function isDateYmd(string $s): bool
+    private static function isDateYmd(string $s): bool
     {
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $s)) {
-            return false;
-        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $s)) return false;
         $dt = DateTime::createFromFormat('Y-m-d', $s);
         return ($dt instanceof DateTime) && ($dt->format('Y-m-d') === $s);
     }
 
-    /**
-     * Read and decode schedule.json, returning an array of entries.
-     *
-     * @param string $path
-     * @return array<int,array<string,mixed>>
-     */
     private function readScheduleJsonOrThrow(string $path): array
     {
         if (!file_exists($path)) {
@@ -342,12 +363,6 @@ class SchedulerSync
         return $decoded;
     }
 
-    /**
-     * Create a timestamped backup of schedule.json.
-     *
-     * @param string $path
-     * @return string backup path
-     */
     private function backupScheduleFileOrThrow(string $path): string
     {
         $ts = date('Ymd-His');
@@ -360,13 +375,6 @@ class SchedulerSync
         return $backup;
     }
 
-    /**
-     * Atomically write schedule.json (temp file + rename).
-     *
-     * @param string $path
-     * @param array<int,array<string,mixed>> $data
-     * @return void
-     */
     private function writeScheduleJsonAtomicallyOrThrow(string $path, array $data): void
     {
         $dir = dirname($path);
@@ -380,7 +388,6 @@ class SchedulerSync
         if (!is_string($json) || $json === '') {
             throw new RuntimeException('Failed to encode schedule.json');
         }
-
         $json .= "\n";
 
         $written = @file_put_contents($tmp, $json, LOCK_EX);
@@ -398,18 +405,10 @@ class SchedulerSync
         }
     }
 
-    /**
-     * Verify that entries appear in the projection endpoint /api/fppd/schedule.
-     *
-     * Projection can lag behind schedule.json writes, so we retry reads.
-     *
-     * @param array<int,array<string,mixed>> $expectedEntries
-     * @return array<string,mixed>
-     */
     private function verifyEntriesPresent(array $expectedEntries): array
     {
         $attempts = 10;
-        $sleepUs = 500000; // 500ms (total ~5s)
+        $sleepUs = 500000; // 500ms
 
         for ($i = 1; $i <= $attempts; $i++) {
             $proj = $this->httpGetJson(self::FPP_SCHEDULE_PROJECTION_URL);
@@ -418,27 +417,13 @@ class SchedulerSync
                 if (is_array($entries)) {
                     $missing = $this->findMissingInProjection($expectedEntries, $entries);
                     if (count($missing) === 0) {
-                        return [
-                            'ok' => true,
-                            'attempts' => $i,
-                            'missing' => [],
-                        ];
+                        return ['ok' => true, 'attempts' => $i, 'missing' => []];
                     }
                     GcsLogger::instance()->warn('Scheduler projection missing expected entries', [
                         'attempt' => $i,
                         'missing' => $missing,
                     ]);
-                } else {
-                    GcsLogger::instance()->warn('Scheduler projection did not contain schedule.entries', [
-                        'attempt' => $i,
-                        'keys' => array_keys($proj),
-                    ]);
                 }
-            } else {
-                GcsLogger::instance()->warn('Scheduler projection read failed', [
-                    'attempt' => $i,
-                    'url' => self::FPP_SCHEDULE_PROJECTION_URL,
-                ]);
             }
 
             if ($i < $attempts) {
@@ -453,11 +438,6 @@ class SchedulerSync
         ];
     }
 
-    /**
-     * @param array<int,array<string,mixed>> $expected
-     * @param array<int,array<string,mixed>> $projectionEntries
-     * @return array<int,array<string,mixed>>
-     */
     private function findMissingInProjection(array $expected, array $projectionEntries): array
     {
         $missing = [];
@@ -471,9 +451,7 @@ class SchedulerSync
             $found = false;
 
             foreach ($projectionEntries as $p) {
-                if (!is_array($p)) {
-                    continue;
-                }
+                if (!is_array($p)) continue;
 
                 if ($expPlaylist !== '') {
                     if (($p['type'] ?? null) !== 'playlist') continue;
@@ -503,13 +481,6 @@ class SchedulerSync
         return $missing;
     }
 
-
-    /**
-     * GET a URL and decode JSON response.
-     *
-     * @param string $url
-     * @return array<string,mixed>|null
-     */
     private function httpGetJson(string $url): ?array
     {
         $ctx = stream_context_create([
@@ -529,7 +500,7 @@ class SchedulerSync
         return is_array($decoded) ? $decoded : null;
     }
 
-    private function coalesceString(array $src, array $keys, string $default): string
+    private static function coalesceString(array $src, array $keys, string $default): string
     {
         foreach ($keys as $k) {
             if (isset($src[$k]) && is_string($src[$k]) && $src[$k] !== '') {
@@ -539,7 +510,7 @@ class SchedulerSync
         return $default;
     }
 
-    private function coalesceInt(array $src, array $keys, int $default): int
+    private static function coalesceInt(array $src, array $keys, int $default): int
     {
         foreach ($keys as $k) {
             if (isset($src[$k]) && (is_int($src[$k]) || (is_string($src[$k]) && ctype_digit($src[$k])))) {
@@ -549,27 +520,19 @@ class SchedulerSync
         return $default;
     }
 
-    private function coalesceBool(array $src, array $keys, bool $default): bool
+    private static function coalesceBool(array $src, array $keys, bool $default): bool
     {
         foreach ($keys as $k) {
-            if (!isset($src[$k])) {
-                continue;
-            }
+            if (!isset($src[$k])) continue;
+
             $v = $src[$k];
-            if (is_bool($v)) {
-                return $v;
-            }
-            if (is_int($v)) {
-                return $v !== 0;
-            }
+            if (is_bool($v)) return $v;
+            if (is_int($v))  return $v !== 0;
+
             if (is_string($v)) {
                 $vv = strtolower(trim($v));
-                if ($vv === 'true' || $vv === '1' || $vv === 'yes' || $vv === 'on') {
-                    return true;
-                }
-                if ($vv === 'false' || $vv === '0' || $vv === 'no' || $vv === 'off') {
-                    return false;
-                }
+                if (in_array($vv, ['true','1','yes','on'], true)) return true;
+                if (in_array($vv, ['false','0','no','off'], true)) return false;
             }
         }
         return $default;

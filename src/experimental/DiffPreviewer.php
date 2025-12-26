@@ -4,161 +4,152 @@ declare(strict_types=1);
 /**
  * DiffPreviewer
  *
- * Phase 16.4 responsibilities:
- * - Provide a stable, UI-safe preview schema
- * - Never mutate scheduler state during preview
- * - Apply only when explicitly requested and guards pass
+ * Phase 16 structural refactor:
+ * - Preview MUST NOT call SchedulerSync (even in dry-run)
+ * - Preview computes diffs by:
+ *   1) planning intents (plan-only)
+ *   2) mapping intents -> would-be schedule.json entries (pure mapping)
+ *   3) reading schedule.json
+ *   4) computing creates/updates/deletes (currently: creates-only; updates/deletes scaffold)
  *
- * This class is the ONLY bridge between:
- *   UI (Preview / Apply buttons)
- *   and
- *   SchedulerRunner (real pipeline)
+ * Apply remains guarded and is the ONLY execution path that writes.
  */
 final class DiffPreviewer
 {
     /**
-     * Normalize any SchedulerRunner result into
-     * a UI-safe diff structure:
+     * Compute a diff preview using the plan-only pipeline.
      *
-     *   [
-     *     'creates' => array,
-     *     'updates' => array,
-     *     'deletes' => array,
-     *   ]
-     *
-     * Supported result shapes:
-     * - Phase 14–16: ['adds'=>n,'updates'=>n,'deletes'=>n]
-     * - Experimental: ['diff'=>['creates'=>[], ...]]
-     */
-    private static function normalize(array $result): array
-    {
-        $creates = [];
-        $updates = [];
-        $deletes = [];
-
-        /* ---------------------------------------------
-         * Preferred experimental schema
-         * -------------------------------------------*/
-        if (isset($result['diff']) && is_array($result['diff'])) {
-            $d = $result['diff'];
-
-            if (isset($d['creates']) && is_array($d['creates'])) {
-                $creates = $d['creates'];
-            }
-            if (isset($d['updates']) && is_array($d['updates'])) {
-                $updates = $d['updates'];
-            }
-            if (isset($d['deletes']) && is_array($d['deletes'])) {
-                $deletes = $d['deletes'];
-            }
-        }
-
-        /* ---------------------------------------------
-         * Fallback: numeric-only summaries
-         * -------------------------------------------*/
-        if (empty($creates) && isset($result['adds']) && is_numeric($result['adds'])) {
-            $creates = array_fill(0, (int)$result['adds'], '(create)');
-        }
-
-        if (empty($updates) && isset($result['updates']) && is_numeric($result['updates'])) {
-            $updates = array_fill(0, (int)$result['updates'], '(update)');
-        }
-
-        if (empty($deletes) && isset($result['deletes']) && is_numeric($result['deletes'])) {
-            $deletes = array_fill(0, (int)$result['deletes'], '(delete)');
-        }
-
-        return [
-            'creates' => $creates,
-            'updates' => $updates,
-            'deletes' => $deletes,
-        ];
-    }
-
-    /**
-     * PREVIEW
-     *
-     * - Always forces dry-run
-     * - Never mutates schedule.json
-     * - Safe to run automatically or repeatedly
-     *
-     * @param array $config
-     * @return array normalized diff
+     * Return shape:
+     *   ['creates'=>array, 'updates'=>array, 'deletes'=>array]
      */
     public static function preview(array $config): array
     {
         $horizonDays = GcsFppSchedulerHorizon::getDays();
 
-        // HARD OVERRIDE: preview is ALWAYS dry-run
-        $runner = new GcsSchedulerRunner(
-            $config,
-            $horizonDays,
-            true
-        );
+        // PLAN ONLY: no writes, no SchedulerSync construction
+        $runner = new GcsSchedulerRunner($config, $horizonDays, true);
+        $intents = $runner->plan();
 
-        $result = $runner->run();
+        // Map intents -> entries (pure)
+        $map = SchedulerSync::mapIntentsToScheduleEntries($intents);
+        $plannedEntries = $map['entries'] ?? [];
+        $errors = $map['errors'] ?? [];
 
-        return self::normalize(
-            is_array($result) ? $result : []
-        );
+        if (!empty($errors)) {
+            // If planning produced invalid entries, surface as "no preview"
+            // while still logging details.
+            GcsLogger::instance()->warn('Preview mapping errors', ['errors' => $errors]);
+            return [
+                'creates' => [],
+                'updates' => [],
+                'deletes' => [],
+            ];
+        }
+
+        // Read current schedule.json
+        $existing = SchedulerSync::readScheduleJsonStatic(SchedulerSync::SCHEDULE_JSON_PATH);
+
+        // Compute signature sets
+        $existingSigs = [];
+        foreach ($existing as $e) {
+            if (is_array($e)) {
+                $existingSigs[self::entrySignature($e)] = true;
+            }
+        }
+
+        $creates = [];
+        foreach ($plannedEntries as $p) {
+            if (!is_array($p)) continue;
+            $sig = self::entrySignature($p);
+            if (empty($existingSigs[$sig])) {
+                $creates[] = self::entryDescriptor($p);
+            }
+        }
+
+        // Phase 16: updates/deletes scaffolding (to be implemented next)
+        return [
+            'creates' => $creates,
+            'updates' => [],
+            'deletes' => [],
+        ];
     }
 
     /**
-     * APPLY
-     *
-     * - Executes the real pipeline
-     * - Writes to schedule.json
-     * - Protected by triple guard
-     *
-     * @param array $config
-     * @return array raw SchedulerRunner result
-     *
-     * @throws RuntimeException
+     * Apply scheduler changes using the real pipeline.
+     * (Guarded by config + dry-run gate)
      */
     public static function apply(array $config): array
     {
-        /* ---------------------------------------------
-         * Triple guard enforcement
-         * -------------------------------------------*/
         if (empty($config['experimental']['enabled'])) {
             throw new RuntimeException('Experimental mode is not enabled');
         }
-
         if (empty($config['experimental']['allow_apply'])) {
             throw new RuntimeException('Experimental apply is not allowed');
         }
-
         if (!empty($config['runtime']['dry_run'])) {
             throw new RuntimeException('Apply blocked while dry-run is enabled');
         }
 
         $horizonDays = GcsFppSchedulerHorizon::getDays();
+        $runner = new GcsSchedulerRunner($config, $horizonDays, false);
 
-        $runner = new GcsSchedulerRunner(
-            $config,
-            $horizonDays,
-            false
-        );
-
-        return $runner->run();
+        return $runner->apply();
     }
 
     /**
-     * Helper for UI apply responses
-     *
-     * Converts ANY result schema into numeric counts
-     *
-     * @param array $result
-     * @return array{creates:int,updates:int,deletes:int}
+     * Helper for endpoints/UI: compute counts from any result schema.
      */
     public static function countsFromResult(array $result): array
     {
-        $norm = self::normalize($result);
+        // Common result schema from SchedulerSync:
+        // { adds:n, updates:n, deletes:n, ... }
+        $adds = isset($result['adds']) && is_numeric($result['adds']) ? (int)$result['adds'] : 0;
+        $upd  = isset($result['updates']) && is_numeric($result['updates']) ? (int)$result['updates'] : 0;
+        $del  = isset($result['deletes']) && is_numeric($result['deletes']) ? (int)$result['deletes'] : 0;
 
         return [
-            'creates' => count($norm['creates']),
-            'updates' => count($norm['updates']),
-            'deletes' => count($norm['deletes']),
+            'creates' => $adds,
+            'updates' => $upd,
+            'deletes' => $del,
         ];
+    }
+
+    private static function entryDescriptor(array $e): array
+    {
+        $type = (!empty($e['playlist'])) ? 'playlist' : 'command';
+
+        return [
+            'type' => $type,
+            'playlist' => (string)($e['playlist'] ?? ''),
+            'command'  => (string)($e['command'] ?? ''),
+            'day'      => $e['day'] ?? null,
+            'startDate'=> $e['startDate'] ?? null,
+            'endDate'  => $e['endDate'] ?? null,
+            'startTime'=> $e['startTime'] ?? null,
+            'endTime'  => $e['endTime'] ?? null,
+        ];
+    }
+
+    private static function entrySignature(array $e): string
+    {
+        // Signature fields chosen to match FPP schedule identity (creates-only safety)
+        $type = (!empty($e['playlist'])) ? 'playlist' : 'command';
+        $name = ($type === 'playlist') ? (string)($e['playlist'] ?? '') : (string)($e['command'] ?? '');
+
+        $day = (string)($e['day'] ?? '');
+        $sd  = (string)($e['startDate'] ?? '');
+        $ed  = (string)($e['endDate'] ?? '');
+        $st  = (string)($e['startTime'] ?? '');
+        $et  = (string)($e['endTime'] ?? '');
+        $stop= (string)($e['stopType'] ?? '');
+        $rep = (string)($e['repeat'] ?? '');
+
+        // args can matter for command identity
+        $args = '';
+        if (isset($e['args']) && is_array($e['args'])) {
+            $args = json_encode(array_values($e['args']));
+        }
+
+        return implode('|', [$type, $name, $day, $sd, $ed, $st, $et, $stop, $rep, $args]);
     }
 }

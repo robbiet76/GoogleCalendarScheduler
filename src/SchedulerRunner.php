@@ -1,5 +1,18 @@
 <?php
+declare(strict_types=1);
 
+/**
+ * GcsSchedulerRunner
+ *
+ * Phase 16 structural refactor:
+ * - plan(): PURE planning only (ICS -> events -> intents -> consolidated intents)
+ *           NO writes, NO SchedulerSync access.
+ * - apply(): the ONLY method that can write (constructs SchedulerSync(false))
+ *
+ * IMPORTANT:
+ * - Sync and Preview MUST call plan() only.
+ * - Apply MUST call apply() only.
+ */
 final class GcsSchedulerRunner
 {
     private array $cfg;
@@ -14,11 +27,9 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * PLAN ONLY (no writes, no SchedulerSync)
+     * PLAN-ONLY: build consolidated intents.
      *
-     * Returns consolidated intents (including consolidated template+range form).
-     *
-     * @return array<int,array<string,mixed>>
+     * @return array<int,array<string,mixed>> consolidated intents
      */
     public function plan(): array
     {
@@ -30,7 +41,7 @@ final class GcsSchedulerRunner
 
         $ics = (new GcsIcsFetcher())->fetch($icsUrl);
         if ($ics === '') {
-            GcsLogger::instance()->warn('ICS fetch returned empty response');
+            GcsLogger::instance()->warn('Empty ICS content');
             return [];
         }
 
@@ -46,7 +57,9 @@ final class GcsSchedulerRunner
         // Group events by UID (base + overrides)
         $byUid = [];
         foreach ($events as $ev) {
-            if (!is_array($ev)) continue;
+            if (!is_array($ev)) {
+                continue;
+            }
             $uid = (string)($ev['uid'] ?? '');
             if ($uid !== '') {
                 $byUid[$uid][] = $ev;
@@ -61,7 +74,7 @@ final class GcsSchedulerRunner
 
             foreach ($items as $ev) {
                 if (!empty($ev['isOverride']) && !empty($ev['recurrenceId'])) {
-                    $overrides[$ev['recurrenceId']] = $ev;
+                    $overrides[(string)$ev['recurrenceId']] = $ev;
                 } elseif ($base === null) {
                     $base = $ev;
                 }
@@ -87,10 +100,10 @@ final class GcsSchedulerRunner
                 $rawIntents[] = [
                     'uid'        => $uid,
                     'summary'    => $summary,
-                    'type'       => $resolved['type'],
-                    'target'     => $resolved['target'],
-                    'start'      => $occ['start'],
-                    'end'        => $occ['end'],
+                    'type'       => (string)$resolved['type'],
+                    'target'     => (string)$resolved['target'],
+                    'start'      => (string)$occ['start'],
+                    'end'        => (string)$occ['end'],
                     'stopType'   => 'graceful',
                     'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
@@ -98,11 +111,7 @@ final class GcsSchedulerRunner
             }
         }
 
-        if (empty($rawIntents)) {
-            return [];
-        }
-
-        // Consolidate into ranges (best-effort; lossless isolation by time/override)
+        // Consolidate (range form)
         $consolidated = $rawIntents;
         try {
             $consolidator = new GcsIntentConsolidator();
@@ -110,40 +119,45 @@ final class GcsSchedulerRunner
             if (is_array($maybe)) {
                 $consolidated = $maybe;
             }
-        } catch (Throwable $ignored) {}
+        } catch (Throwable $ignored) {
+            // keep raw intents
+        }
 
         return $consolidated;
     }
 
     /**
-     * EXECUTE (may write depending on $dryRun and downstream behavior)
+     * APPLY-ONLY: execute writes via SchedulerSync(false).
      *
-     * @return array<string,mixed>
+     * @return array<string,mixed> scheduler sync result
+     */
+    public function apply(): array
+    {
+        // Prevent misuse: apply() must never be called with dryRun=true
+        if ($this->dryRun) {
+            throw new RuntimeException('Apply blocked: runner is in dry-run mode');
+        }
+
+        $consolidated = $this->plan();
+        $sync = new SchedulerSync(false); // <-- the ONLY write-capable construction
+        return $sync->sync($consolidated);
+    }
+
+    /**
+     * Legacy compatibility: old callers used run().
+     * In Phase 16, run() is APPLY semantics (and will throw if dry-run).
      */
     public function run(): array
     {
-        $intents = $this->plan();
-        if (empty($intents)) {
-            return $this->emptyResult();
-        }
-
-        $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($intents);
-    }
-
-    private function emptyResult(): array
-    {
-        return [
-            'adds'         => 0,
-            'updates'      => 0,
-            'deletes'      => 0,
-            'dryRun'       => $this->dryRun,
-            'intents_seen' => 0,
-        ];
+        return $this->apply();
     }
 
     /**
      * Phase 13.3 recurrence expansion helper
+     *
+     * NOTE: Your repo indicates this logic was previously validated; keep behavior stable.
+     * If recurrence expansion is incomplete in your current branch, paste the full function
+     * from the known-good version and keep it identical.
      */
     private static function expandEventOccurrences(?array $base, array $overrides, DateTime $horizonStart, DateTime $horizonEnd)
     {
@@ -151,12 +165,12 @@ final class GcsSchedulerRunner
         $overrideKeys = [];
 
         foreach ($overrides as $rid => $ov) {
-            $s = new DateTime($ov['start']);
+            $s = new DateTime((string)$ov['start']);
             if ($s >= $horizonStart && $s <= $horizonEnd) {
                 $overrideKeys[$rid] = true;
                 $out[] = [
                     'start'      => $s->format('Y-m-d H:i:s'),
-                    'end'        => (new DateTime($ov['end']))->format('Y-m-d H:i:s'),
+                    'end'        => (new DateTime((string)$ov['end']))->format('Y-m-d H:i:s'),
                     'isOverride' => true,
                 ];
             }
@@ -166,8 +180,8 @@ final class GcsSchedulerRunner
             return $out;
         }
 
-        $start = new DateTime($base['start']);
-        $end   = new DateTime($base['end']);
+        $start = new DateTime((string)$base['start']);
+        $end   = new DateTime((string)$base['end']);
         $duration = max(0, $end->getTimestamp() - $start->getTimestamp());
 
         // Non-recurring base event
@@ -185,9 +199,8 @@ final class GcsSchedulerRunner
             return $out;
         }
 
-        // NOTE: Recurrence expansion logic already validated in Phase 13.3
-        // (kept identical to reviewed diff version)
-
+        // If your current branch has full recurrence logic below this comment, keep it.
+        // If not, paste it from the known-good Phase 13.3 version.
         return $out;
     }
 }

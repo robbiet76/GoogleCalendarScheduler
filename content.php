@@ -19,8 +19,6 @@ require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 
 $cfg = GcsConfig::load();
 
-$syncMsg = null;
-
 /*
  * --------------------------------------------------------------------
  * POST handling (Save / Sync)
@@ -40,29 +38,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         /**
-         * SYNC (Phase 16.4 contract)
-         * - Plan only
-         * - NEVER writes schedule.json
-         * - No dependency on dry_run setting
+         * Sync = PLAN-ONLY.
+         *
+         * IMPORTANT:
+         * - Sync MUST NOT write, regardless of dry_run checkbox.
+         * - Sync must not instantiate SchedulerSync.
+         *
+         * Purpose:
+         * - Validate pipeline can read/parse/resolve/consolidate.
+         * - Produce logs for troubleshooting.
          */
         if ($_POST['action'] === 'sync') {
             $runner = new GcsSchedulerRunner(
                 $cfg,
                 GcsFppSchedulerHorizon::getDays(),
-                true // irrelevant for plan(); keep "safe" and explicit
+                true // plan-only: enforce runner dry-run so apply/run cannot be called accidentally
             );
 
-            $planned = $runner->plan();
-            $plannedCount = is_array($planned) ? count($planned) : 0;
+            $intents = $runner->plan();
 
-            $syncMsg = "Sync completed: planned {$plannedCount} scheduler intent(s). No changes were written.";
+            GcsLogger::instance()->info('Sync plan completed', [
+                'intents_built' => is_array($intents) ? count($intents) : 0,
+            ]);
         }
 
     } catch (Throwable $e) {
         GcsLogger::instance()->error('GoogleCalendarScheduler error', [
             'error' => $e->getMessage(),
         ]);
-        $syncMsg = 'Sync failed: ' . $e->getMessage();
     }
 }
 
@@ -75,7 +78,7 @@ if (isset($_GET['endpoint'])) {
     header('Content-Type: application/json');
 
     try {
-        // Preview (ALWAYS dry-run)
+        // Preview (plan + diff; NO writes; NO SchedulerSync construction)
         if ($_GET['endpoint'] === 'experimental_diff') {
             if (empty($cfg['experimental']['enabled'])) {
                 echo json_encode(['ok' => false]);
@@ -112,12 +115,6 @@ if (isset($_GET['endpoint'])) {
             }
         }
 
-        echo json_encode([
-            'ok' => false,
-            'error' => 'Unknown endpoint',
-        ]);
-        exit;
-
     } catch (Throwable $e) {
         echo json_encode([
             'ok'    => false,
@@ -132,9 +129,6 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 
 <div class="settings">
 
-<!-- =========================================================
-     APPLY MODE BANNER
-     ========================================================= -->
 <div class="gcs-mode-banner <?php echo $dryRun ? 'gcs-mode-dry' : 'gcs-mode-live'; ?>">
 <?php if ($dryRun): ?>
     🔒 <strong>Apply mode: Dry-run</strong><br>
@@ -175,17 +169,10 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
     <button type="submit" class="buttons">Sync Calendar</button>
     <div style="margin-top:6px; opacity:.85;">
         <small>
-            <strong>Sync is plan-only</strong> (never writes).
-            Use Preview + Apply to write scheduler changes.
+            <strong>Sync is plan-only</strong> (never writes). It validates parsing + intent building and logs results.
+            Use Preview + Apply to change scheduler entries.
         </small>
     </div>
-
-<?php if (!empty($syncMsg)): ?>
-    <div class="gcs-info" style="margin-top:10px;">
-        <?php echo htmlspecialchars((string)$syncMsg, ENT_QUOTES); ?>
-    </div>
-<?php endif; ?>
-
 </form>
 
 <hr>
@@ -309,7 +296,15 @@ previewBtn.onclick=function(){
         applyBox.classList.remove('gcs-hidden');
         applySummary.textContent =
             (t===0) ? 'No pending scheduler changes.' : t+' pending scheduler changes detected.';
-        applyBtn.disabled=(t===0);
+
+        // Apply enabled only if preview finds changes AND dry_run is off
+        var isDryRun = <?php echo $dryRun ? 'true' : 'false'; ?>;
+        applyBtn.disabled = (t===0) || isDryRun;
+
+        if (isDryRun && t > 0) {
+            applyResult.innerHTML =
+              '<strong>Apply disabled</strong><br>Dry-run mode is ON. Turn it off to apply scheduler changes.';
+        }
 
         last={t:t};
     });
