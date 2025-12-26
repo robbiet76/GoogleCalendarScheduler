@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 /**
  * GoogleCalendarScheduler
  * content.php
@@ -18,86 +20,14 @@ require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 $cfg = GcsConfig::load();
 
 /*
- * ============================================================
- * JSON ENDPOINT ROUTER
- * IMPORTANT: Must run before ANY HTML output
- * ============================================================
+ * --------------------------------------------------------------------
+ * POST handling (Save / Sync)
+ * --------------------------------------------------------------------
  */
-if (isset($_GET['endpoint'])) {
-    header('Content-Type: application/json');
-
-    try {
-        switch ($_GET['endpoint']) {
-
-            case 'experimental_diff': {
-                if (empty($cfg['experimental']['enabled'])) {
-                    echo json_encode([
-                        'ok' => false,
-                        'error' => 'experimental_disabled',
-                    ]);
-                    exit;
-                }
-
-                $diff = DiffPreviewer::preview($cfg);
-
-                echo json_encode([
-                    'ok'   => true,
-                    'diff' => $diff,
-                ]);
-                exit;
-            }
-
-            case 'experimental_apply': {
-                if (empty($cfg['experimental']['enabled'])) {
-                    echo json_encode([
-                        'status' => 'blocked',
-                        'reason' => 'experimental_disabled',
-                    ]);
-                    exit;
-                }
-
-                if (!empty($cfg['runtime']['dry_run'])) {
-                    echo json_encode([
-                        'status' => 'blocked',
-                        'reason' => 'dry_run_enabled',
-                    ]);
-                    exit;
-                }
-
-                $result = DiffPreviewer::apply($cfg);
-
-                echo json_encode([
-                    'ok'     => true,
-                    'counts' => DiffPreviewer::countsFromResult($result),
-                ]);
-                exit;
-            }
-
-            default:
-                echo json_encode([
-                    'ok' => false,
-                    'error' => 'unknown_endpoint',
-                ]);
-                exit;
-        }
-    } catch (Throwable $e) {
-        echo json_encode([
-            'ok'    => false,
-            'error' => $e->getMessage(),
-        ]);
-        exit;
-    }
-}
-
-/*
- * ============================================================
- * NORMAL UI FLOW (HTML BELOW)
- * ============================================================
- */
-
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
 
+        // Save settings
         if ($_POST['action'] === 'save') {
             $cfg['calendar']['ics_url'] = trim($_POST['ics_url'] ?? '');
             $cfg['runtime']['dry_run']  = !empty($_POST['dry_run']);
@@ -107,20 +37,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cfg = GcsConfig::load();
         }
 
+        // Sync = safe pipeline run (respects dry-run)
         if ($_POST['action'] === 'sync') {
-            // Sync button is ALWAYS dry-run safe
             $runner = new GcsSchedulerRunner(
                 $cfg,
                 GcsFppSchedulerHorizon::getDays(),
-                true
+                !empty($cfg['runtime']['dry_run'])
             );
             $runner->run();
         }
 
     } catch (Throwable $e) {
-        GcsLog::error('GoogleCalendarScheduler error', [
+        GcsLogger::instance()->error('GoogleCalendarScheduler error', [
             'error' => $e->getMessage(),
         ]);
+    }
+}
+
+/*
+ * --------------------------------------------------------------------
+ * AJAX endpoints (Preview / Apply)
+ * --------------------------------------------------------------------
+ */
+if (isset($_GET['endpoint'])) {
+    header('Content-Type: application/json');
+
+    try {
+        // Preview (ALWAYS dry-run)
+        if ($_GET['endpoint'] === 'experimental_diff') {
+            if (empty($cfg['experimental']['enabled'])) {
+                echo json_encode(['ok' => false]);
+                exit;
+            }
+
+            $diff = DiffPreviewer::preview($cfg);
+
+            echo json_encode([
+                'ok'   => true,
+                'diff' => $diff,
+            ]);
+            exit;
+        }
+
+        // Apply (guarded)
+        if ($_GET['endpoint'] === 'experimental_apply') {
+            try {
+                $result = DiffPreviewer::apply($cfg);
+                $counts = DiffPreviewer::countsFromResult($result);
+
+                echo json_encode([
+                    'ok'     => true,
+                    'counts' => $counts,
+                ]);
+                exit;
+
+            } catch (RuntimeException $e) {
+                echo json_encode([
+                    'ok'    => false,
+                    'error' => $e->getMessage(),
+                ]);
+                exit;
+            }
+        }
+
+    } catch (Throwable $e) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => $e->getMessage(),
+        ]);
+        exit;
     }
 }
 
@@ -172,7 +157,7 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
     <button type="submit" class="buttons">Sync Calendar</button>
     <div style="margin-top:6px; opacity:.85;">
         <small>
-            Sync Calendar runs the pipeline in <strong>dry-run</strong> for safety.
+            Sync runs the pipeline safely (respects dry-run).
             Use Preview + Apply to write scheduler changes.
         </small>
     </div>
@@ -183,12 +168,18 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 <div class="gcs-diff-preview">
     <h3>Scheduler Change Preview</h3>
 
+<?php if (empty($cfg['experimental']['enabled'])): ?>
+    <div class="gcs-info">
+        Experimental diff preview is currently disabled.
+    </div>
+<?php else: ?>
     <button type="button" class="buttons" id="gcs-preview-btn">
         Preview Changes
     </button>
 
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
     <div id="gcs-diff-results" style="margin-top:10px;"></div>
+<?php endif; ?>
 </div>
 
 <hr>
@@ -219,8 +210,9 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 .gcs-mode-banner { padding:10px; border-radius:6px; margin-bottom:12px; font-weight:bold; }
 .gcs-mode-dry { background:#eef5ff; border:1px solid #cfe2ff; }
 .gcs-mode-live { background:#e6f4ea; border:1px solid #b7e4c7; }
+.gcs-info { padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px; }
 .gcs-warning { padding:10px; background:#fff3cd; border:1px solid #ffeeba; border-radius:6px; }
-.gcs-diff-badges { display:flex; gap:10px; margin:8px 0; flex-wrap:wrap; }
+.gcs-diff-badges { display:flex; gap:10px; margin:8px 0; }
 .gcs-badge { padding:6px 10px; border-radius:12px; font-weight:bold; font-size:.9em; }
 .gcs-badge-create { background:#e6f4ea; color:#1e7e34; }
 .gcs-badge-update { background:#fff3cd; color:#856404; }
@@ -245,13 +237,15 @@ function getJSON(url, cb){
 
 function countArr(a){ return Array.isArray(a) ? a.length : 0; }
 
-var previewBtn=document.getElementById('gcs-preview-btn');
-var diffSummary=document.getElementById('gcs-diff-summary');
-var diffResults=document.getElementById('gcs-diff-results');
-var applyBox=document.getElementById('gcs-apply-container');
-var applySummary=document.getElementById('gcs-apply-summary');
-var applyBtn=document.getElementById('gcs-apply-btn');
-var applyResult=document.getElementById('gcs-apply-result');
+var previewBtn = document.getElementById('gcs-preview-btn');
+if(!previewBtn) return;
+
+var diffSummary = document.getElementById('gcs-diff-summary');
+var diffResults = document.getElementById('gcs-diff-results');
+var applyBox    = document.getElementById('gcs-apply-container');
+var applySummary= document.getElementById('gcs-apply-summary');
+var applyBtn    = document.getElementById('gcs-apply-btn');
+var applyResult = document.getElementById('gcs-apply-result');
 
 var last=null, armed=false;
 
@@ -288,8 +282,7 @@ previewBtn.onclick=function(){
 
         applyBox.classList.remove('gcs-hidden');
         applySummary.textContent =
-            (t===0) ? 'No pending scheduler changes.' :
-            t+' pending scheduler changes detected.';
+            (t===0) ? 'No pending scheduler changes.' : t+' pending scheduler changes detected.';
         applyBtn.disabled=(t===0);
 
         last={t:t};
@@ -297,7 +290,7 @@ previewBtn.onclick=function(){
 };
 
 applyBtn.onclick=function(){
-    if(!last||last.t===0) return;
+    if(!last || last.t===0) return;
 
     if(!armed){
         armed=true;
@@ -311,18 +304,21 @@ applyBtn.onclick=function(){
     applyResult.textContent='Applying scheduler changes…';
 
     getJSON(ENDPOINT+'&endpoint=experimental_apply',function(r){
-        if(!r || r.status==='blocked'){
-            applyResult.textContent='Apply blocked.';
+        if(!r || !r.ok){
+            applyBtn.textContent='Apply Blocked';
+            applyResult.textContent = r && r.error ? r.error : 'Apply failed.';
             return;
         }
 
         applyBtn.textContent='Apply Completed';
         applyResult.innerHTML =
           '<strong>Changes applied successfully</strong><br>'+
-          (r.counts?.creates ?? 0)+' scheduler entries were created.';
-        setTimeout(()=>previewBtn.click(),150);
+          r.counts.creates+' scheduler entries were created.';
+
+        setTimeout(() => previewBtn.click(), 150);
     });
 };
+
 })();
 </script>
 
