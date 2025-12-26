@@ -65,3 +65,10 @@ require_once __DIR__ . '/SchedulerSync.php';
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/SchedulerRunner.php';
+
+/*
+ * --------------------------------------------------------------------
+ * Planning-only entry point (Phase 16.5)
+ * --------------------------------------------------------------------
+ */
+require_once __DIR__ . '/SchedulerPlanner.php';

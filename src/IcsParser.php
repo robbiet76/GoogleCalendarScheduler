@@ -2,6 +2,15 @@
 
 class GcsIcsParser
 {
+    private ?DateTimeZone $calendarTz = null;
+    private DateTimeZone $fppTz;
+
+    public function __construct()
+    {
+        // FPP system timezone (authoritative for scheduler)
+        $this->fppTz = new DateTimeZone(date_default_timezone_get());
+    }
+
     /**
      * Parse raw ICS into structured event records.
      *
@@ -22,11 +31,31 @@ class GcsIcsParser
             if ($line === '') {
                 continue;
             }
-            if (!empty($unfolded) && (isset($line[0]) && ($line[0] === ' ' || $line[0] === "\t"))) {
+            if (!empty($unfolded) && ($line[0] === ' ' || $line[0] === "\t")) {
                 $unfolded[count($unfolded) - 1] .= substr($line, 1);
             } else {
                 $unfolded[] = $line;
             }
+        }
+
+        // Detect calendar timezone
+        foreach ($unfolded as $line) {
+            if (preg_match('/^X-WR-TIMEZONE:(.+)$/', $line, $m)) {
+                try {
+                    $this->calendarTz = new DateTimeZone(trim($m[1]));
+                } catch (Throwable $e) {
+                    $this->calendarTz = null;
+                }
+                break;
+            }
+        }
+
+        if (!$this->calendarTz) {
+            // Fallback (safe, logged)
+            $this->calendarTz = $this->fppTz;
+            GcsLogger::instance()->warn('ICS calendar timezone missing; defaulting to FPP timezone', [
+                'fpp_tz' => $this->fppTz->getName(),
+            ]);
         }
 
         $events = [];
@@ -43,13 +72,13 @@ class GcsIcsParser
             if ($line === 'END:VEVENT') {
                 $inEvent = false;
 
-                $uid          = null;
-                $summary      = '';
-                $dtstart      = null;
-                $dtend        = null;
-                $isAllDay     = false;
-                $rrule        = null;
-                $exDates      = [];
+                $uid     = null;
+                $summary = '';
+                $dtstart = null;
+                $dtend   = null;
+                $isAllDay = false;
+                $rrule   = null;
+                $exDates = [];
                 $recurrenceId = null;
 
                 if (preg_match('/UID:(.+)/', $raw, $m)) {
@@ -61,11 +90,11 @@ class GcsIcsParser
                 }
 
                 if (preg_match('/DTSTART([^:]*):(.+)/', $raw, $m)) {
-                    [$dtstart, $isAllDay] = $this->parseDateWithFlags($m[2], $m[1]);
+                    [$dtstart, $isAllDay] = $this->parseDateWithTimezone($m[2], $m[1]);
                 }
 
                 if (preg_match('/DTEND([^:]*):(.+)/', $raw, $m)) {
-                    [$dtend, $isAllDayEnd] = $this->parseDateWithFlags($m[2], $m[1]);
+                    [$dtend, $isAllDayEnd] = $this->parseDateWithTimezone($m[2], $m[1]);
                     $isAllDay = $isAllDay || $isAllDayEnd;
                 }
 
@@ -83,20 +112,13 @@ class GcsIcsParser
                 }
 
                 if (preg_match('/RECURRENCE-ID([^:]*):(.+)/', $raw, $m)) {
-                    $recurrenceId = $this->parseDate($m[2], $m[1]);
+                    $recurrenceId = $this->parseDateWithTimezone($m[2], $m[1])[0];
                 }
 
-                // Skip malformed events
                 if (!$uid || !$dtstart || !$dtend) {
                     continue;
                 }
 
-                /**
-                 * Phase 13.3:
-                 * - Non-recurring events that ended before "now" can be dropped.
-                 * - Recurring series MUST NOT be dropped here just because
-                 *   base DTSTART/DTEND is in the past.
-                 */
                 if ($now && $dtend < $now && empty($rrule)) {
                     continue;
                 }
@@ -108,16 +130,12 @@ class GcsIcsParser
                     'end'          => $dtend->format('Y-m-d H:i:s'),
                     'isAllDay'     => $isAllDay,
                     'rrule'        => $rrule,
-                    'exDates'      => array_map(
-                        fn(DateTime $d) => $d->format('Y-m-d H:i:s'),
-                        $exDates
-                    ),
+                    'exDates'      => array_map(fn($d) => $d->format('Y-m-d H:i:s'), $exDates),
                     'recurrenceId' => $recurrenceId
                         ? $recurrenceId->format('Y-m-d H:i:s')
                         : null,
                     'isOverride'   => ($recurrenceId !== null),
                 ];
-                continue;
             }
 
             if ($inEvent) {
@@ -128,41 +146,50 @@ class GcsIcsParser
         return $events;
     }
 
-    /* ----------------------------------------------------------------- */
+    /* ---------------------------------------------------------- */
 
-    private function parseDateWithFlags(string $value, string $params): array
+    private function parseDateWithTimezone(string $value, string $params): array
     {
         $isAllDay = str_contains($params, 'VALUE=DATE');
-        $dt = $this->parseDate($value, $params);
+        $tz = $this->extractTimezone($params, $value);
 
-        if ($dt && $isAllDay) {
-            $dt = $dt->setTime(0, 0, 0);
+        try {
+            if (preg_match('/^\d{8}T\d{6}Z$/', $value)) {
+                $dt = DateTime::createFromFormat('Ymd\THis\Z', $value, new DateTimeZone('UTC'));
+            } elseif (preg_match('/^\d{8}T\d{6}$/', $value)) {
+                $dt = DateTime::createFromFormat('Ymd\THis', $value, $tz);
+            } elseif (preg_match('/^\d{8}$/', $value)) {
+                $dt = DateTime::createFromFormat('Ymd', $value, $tz);
+            } else {
+                return [null, false];
+            }
+
+            // Normalize into FPP timezone
+            $dt->setTimezone($this->fppTz);
+
+            if ($isAllDay) {
+                $dt->setTime(0, 0, 0);
+            }
+
+            return [$dt, $isAllDay];
+        } catch (Throwable $e) {
+            return [null, false];
         }
-
-        return [$dt, $isAllDay];
     }
 
-    private function parseDate(string $raw, string $params = ''): ?DateTime
+    private function extractTimezone(string $params, string $value): DateTimeZone
     {
-        try {
-            if (preg_match('/^\d{8}T\d{6}Z$/', $raw)) {
-                return DateTime::createFromFormat(
-                    'Ymd\THis\Z',
-                    $raw,
-                    new DateTimeZone('UTC')
-                );
-            }
+        if (preg_match('/TZID=([^;:]+)/', $params, $m)) {
+            try {
+                return new DateTimeZone($m[1]);
+            } catch (Throwable $e) {}
+        }
 
-            if (preg_match('/^\d{8}T\d{6}$/', $raw)) {
-                return DateTime::createFromFormat('Ymd\THis', $raw);
-            }
+        if (str_ends_with($value, 'Z')) {
+            return new DateTimeZone('UTC');
+        }
 
-            if (preg_match('/^\d{8}$/', $raw)) {
-                return DateTime::createFromFormat('Ymd', $raw);
-            }
-        } catch (Throwable $ignored) {}
-
-        return null;
+        return $this->calendarTz ?? $this->fppTz;
     }
 
     private function parseRrule(string $raw): array
@@ -181,7 +208,7 @@ class GcsIcsParser
     {
         $dates = [];
         foreach (explode(',', trim($raw)) as $val) {
-            $dt = $this->parseDate($val, $params);
+            [$dt] = $this->parseDateWithTimezone($val, $params);
             if ($dt) {
                 $dates[] = $dt;
             }

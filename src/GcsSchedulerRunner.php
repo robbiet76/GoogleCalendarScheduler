@@ -1,5 +1,4 @@
 <?php
-declare(strict_types=1);
 
 final class GcsSchedulerRunner
 {
@@ -15,24 +14,24 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * Execute scheduler pipeline.
+     * PLAN ONLY (no writes, no SchedulerSync)
      *
-     * IMPORTANT (Phase 16):
-     * - This method MAY be used for planning (dry-run) or apply depending
-     *   on the injected $dryRun flag.
-     * - This class itself does NOT decide whether writes occur.
+     * Returns consolidated intents (including consolidated template+range form).
+     *
+     * @return array<int,array<string,mixed>>
      */
-    public function run(): array
+    public function plan(): array
     {
         $icsUrl = trim((string)($this->cfg['calendar']['ics_url'] ?? ''));
         if ($icsUrl === '') {
             GcsLogger::instance()->warn('No ICS URL configured');
-            return $this->emptyResult();
+            return [];
         }
 
         $ics = (new GcsIcsFetcher())->fetch($icsUrl);
         if ($ics === '') {
-            return $this->emptyResult();
+            GcsLogger::instance()->warn('ICS fetch returned empty response');
+            return [];
         }
 
         $now = new DateTime('now');
@@ -41,15 +40,13 @@ final class GcsSchedulerRunner
         $parser = new GcsIcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
         if (empty($events)) {
-            return $this->emptyResult();
+            return [];
         }
 
         // Group events by UID (base + overrides)
         $byUid = [];
         foreach ($events as $ev) {
-            if (!is_array($ev)) {
-                continue;
-            }
+            if (!is_array($ev)) continue;
             $uid = (string)($ev['uid'] ?? '');
             if ($uid !== '') {
                 $byUid[$uid][] = $ev;
@@ -81,14 +78,8 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            $occurrences = self::expandEventOccurrences(
-                $base,
-                $overrides,
-                $now,
-                $horizonEnd
-            );
-
-            if ($occurrences === false || empty($occurrences)) {
+            $occurrences = self::expandEventOccurrences($base, $overrides, $now, $horizonEnd);
+            if ($occurrences === false) {
                 continue;
             }
 
@@ -107,7 +98,11 @@ final class GcsSchedulerRunner
             }
         }
 
-        // Consolidate raw intents (multi-day, adjacency, overlaps)
+        if (empty($rawIntents)) {
+            return [];
+        }
+
+        // Consolidate into ranges (best-effort; lossless isolation by time/override)
         $consolidated = $rawIntents;
         try {
             $consolidator = new GcsIntentConsolidator();
@@ -117,10 +112,23 @@ final class GcsSchedulerRunner
             }
         } catch (Throwable $ignored) {}
 
-        // IMPORTANT:
-        // SchedulerSync is the ONLY place where writes can occur.
+        return $consolidated;
+    }
+
+    /**
+     * EXECUTE (may write depending on $dryRun and downstream behavior)
+     *
+     * @return array<string,mixed>
+     */
+    public function run(): array
+    {
+        $intents = $this->plan();
+        if (empty($intents)) {
+            return $this->emptyResult();
+        }
+
         $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($consolidated);
+        return $sync->sync($intents);
     }
 
     private function emptyResult(): array
@@ -136,16 +144,9 @@ final class GcsSchedulerRunner
 
     /**
      * Phase 13.3 recurrence expansion helper
-     *
-     * AUTHORITATIVE VERSION (from master)
-     * DO NOT MODIFY without re-validation.
      */
-    private static function expandEventOccurrences(
-        ?array $base,
-        array $overrides,
-        DateTime $horizonStart,
-        DateTime $horizonEnd
-    ) {
+    private static function expandEventOccurrences(?array $base, array $overrides, DateTime $horizonStart, DateTime $horizonEnd)
+    {
         $out = [];
         $overrideKeys = [];
 
