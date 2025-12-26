@@ -185,6 +185,7 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 .gcs-mode-banner { padding:10px; border-radius:6px; margin-bottom:12px; font-weight:bold; }
 .gcs-mode-dry { background:#eef5ff; border:1px solid #cfe2ff; }
 .gcs-mode-live { background:#e6f4ea; border:1px solid #b7e4c7; }
+
 .gcs-summary-row {
     display:flex;
     gap:24px;
@@ -274,11 +275,14 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
-            applyResult.innerHTML =
-                '✅ Apply complete<br>' +
-                'Creates: ' + d.counts.creates + ', ' +
-                'Updates: ' + d.counts.updates + ', ' +
-                'Deletes: ' + d.counts.deletes;
+            applyResult.innerHTML = `
+                <div><strong>Apply Complete</strong></div>
+                <div class="gcs-summary-row">
+                    <div class="gcs-summary-item">➕ Creates: <strong>${d.counts.creates}</strong></div>
+                    <div class="gcs-summary-item">✏️ Updates: <strong>${d.counts.updates}</strong></div>
+                    <div class="gcs-summary-item">🗑️ Deletes: <strong>${d.counts.deletes}</strong></div>
+                </div>
+            `;
         })
         .catch(err => {
             applyResult.innerHTML = '❌ Apply error: ' + err;
