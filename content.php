@@ -195,8 +195,18 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 var ENDPOINT =
   'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
 
-var statusBox = document.getElementById('gcs-sync-status');
+var statusBox  = document.getElementById('gcs-sync-status');
+var previewBtn = document.getElementById('gcs-preview-btn');
+var applyBtn   = document.getElementById('gcs-apply-btn');
 
+var diffSummary = document.getElementById('gcs-diff-summary');
+var diffResults = document.getElementById('gcs-diff-results');
+var applyBox    = document.getElementById('gcs-apply-container');
+var applyResult = document.getElementById('gcs-apply-result');
+
+var lastDiff = null;
+
+/* Auto status check */
 fetch(ENDPOINT + '&endpoint=experimental_plan_status')
   .then(r => r.json())
   .then(d => {
@@ -209,6 +219,69 @@ fetch(ENDPOINT + '&endpoint=experimental_plan_status')
             t + ' pending change(s) detected. Click <em>Preview Changes</em> to review.';
     }
   });
+
+/* Preview handler */
+previewBtn.addEventListener('click', function () {
+
+    fetch(ENDPOINT + '&endpoint=experimental_diff')
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.ok) {
+                diffResults.innerHTML = '❌ Failed to load preview.';
+                return;
+            }
+
+            lastDiff = d.diff;
+
+            var creates = d.diff.creates.length;
+            var updates = d.diff.updates.length;
+            var deletes = d.diff.deletes.length;
+            var total   = creates + updates + deletes;
+
+            diffSummary.classList.remove('gcs-hidden');
+            diffSummary.innerHTML =
+                '<strong>Preview Summary</strong><br>' +
+                'Creates: ' + creates + ', ' +
+                'Updates: ' + updates + ', ' +
+                'Deletes: ' + deletes;
+
+            diffResults.innerHTML =
+                '<pre>' + JSON.stringify(d.diff, null, 2) + '</pre>';
+
+            if (total > 0) {
+                applyBox.classList.remove('gcs-hidden');
+                applyBtn.disabled = false;
+            }
+        });
+});
+
+/* Apply handler */
+applyBtn.addEventListener('click', function () {
+
+    applyBtn.disabled = true;
+    applyResult.innerHTML = '⏳ Applying changes...';
+
+    fetch(ENDPOINT + '&endpoint=experimental_apply')
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.ok) {
+                applyResult.innerHTML =
+                    '❌ Apply failed: ' + (d && d.error ? d.error : 'unknown error');
+                applyBtn.disabled = false;
+                return;
+            }
+
+            applyResult.innerHTML =
+                '✅ Apply complete<br>' +
+                'Creates: ' + d.counts.creates + ', ' +
+                'Updates: ' + d.counts.updates + ', ' +
+                'Deletes: ' + d.counts.deletes;
+        })
+        .catch(err => {
+            applyResult.innerHTML = '❌ Apply error: ' + err;
+            applyBtn.disabled = false;
+        });
+});
 
 })();
 </script>
