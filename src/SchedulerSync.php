@@ -13,6 +13,10 @@ declare(strict_types=1);
  * IMPORTANT CONSTRAINTS:
  * - Add-only (no updates/deletes/reordering) [for now]
  * - No scheduler logic/recurrence changes: we use whatever the intent already provides.
+ *
+ * Phase 17.1:
+ * - Restore canonical GCS identity tag in scheduler entry playlist field:
+ *   |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
  */
 class SchedulerSync
 {
@@ -237,6 +241,12 @@ class SchedulerSync
             return 'Missing target for intent (expected playlist name or command name)';
         }
 
+        // UID may live on outer intent even when template/range is used
+        $uid = self::coalesceString($intent, ['uid'], '');
+        if ($uid === '') {
+            $uid = self::coalesceString($tpl, ['uid'], '');
+        }
+
         $startRaw = self::coalesceString($tpl, ['start'], '');
         $endRaw   = self::coalesceString($tpl, ['end'], '');
 
@@ -256,6 +266,7 @@ class SchedulerSync
         $startDate = null;
         $endDate   = null;
         $dayMask   = null;
+        $shortDays = '';
 
         if (is_array($range)) {
             $rStart = isset($range['start']) ? (string)$range['start'] : '';
@@ -266,6 +277,7 @@ class SchedulerSync
             if (self::isDateYmd($rEnd))   $endDate = $rEnd;
 
             if ($rDays !== '') {
+                $shortDays = $rDays;
                 $dayMask = (int)GcsIntentConsolidator::shortDaysToWeekdayMask($rDays);
             }
         }
@@ -281,6 +293,14 @@ class SchedulerSync
             $dow = (int)$startDt->format('w'); // 0=Sun..6=Sat
             $dayMask = (1 << $dow);
         }
+
+        if ($shortDays === '') {
+            // Convert mask to short-days string for tag parity with legacy mapper
+            $shortDays = (string)GcsIntentConsolidator::weekdayMaskToShortDays((int)$dayMask);
+        }
+
+        // Canonical legacy identity tag (stored in playlist field)
+        $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
 
         $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
         $repeat   = self::coalesceInt($tpl, ['repeat'], 0);
@@ -311,12 +331,28 @@ class SchedulerSync
         ];
 
         if ($type === 'playlist') {
-            $entry['playlist'] = $target;
+            // Legacy behavior: append tag to playlist name
+            $entry['playlist'] = $target . $tag;
         } else {
-            $entry['command'] = $target;
+            // Legacy behavior: store tag in playlist field for command entries
+            $entry['command']  = $target;
+            $entry['playlist'] = $tag;
         }
 
         return $entry;
+    }
+
+    /**
+     * Build canonical v1 GCS identity tag exactly like legacy mapper.
+     */
+    private static function buildGcsV1Tag(string $uid, string $startDate, string $endDate, string $days): string
+    {
+        if ($uid === '') {
+            // No UID => no tag (keeps behavior safe; identity system can ignore)
+            return '';
+        }
+        $range = $startDate . '..' . $endDate;
+        return '|GCS:v1|uid=' . $uid . '|range=' . $range . '|days=' . $days;
     }
 
     private static function parseYmdHms(string $s): ?DateTime
@@ -408,10 +444,9 @@ class SchedulerSync
     private function verifyEntriesPresent(array $expectedEntries): array
     {
         $attempts = 10;
-        $sleepUs = 500000;      // 500ms between attempts
-        $initialSleepUs = 750000; // NEW: allow scheduler to settle after schedule.json write
+        $sleepUs = 500000;        // 500ms between attempts
+        $initialSleepUs = 750000; // allow scheduler to settle after schedule.json write
 
-        // NEW: initial settle pause before first projection fetch
         usleep($initialSleepUs);
 
         for ($i = 1; $i <= $attempts; $i++) {
@@ -459,7 +494,6 @@ class SchedulerSync
             foreach ($projectionEntries as $p) {
                 if (!is_array($p)) continue;
 
-                // Type can vary by FPP version; infer if absent.
                 $pTypeRaw = $p['type'] ?? null;
                 $pType = is_string($pTypeRaw) ? strtolower($pTypeRaw) : '';
                 if ($pType === '') {
@@ -481,7 +515,6 @@ class SchedulerSync
                 if ($expStartTimeNorm !== null && $pStartTimeNorm !== null) {
                     if ($pStartTimeNorm !== $expStartTimeNorm) continue;
                 } else {
-                    // Fallback to strict compare if normalization couldn't run
                     if (($p['startTime'] ?? null) !== $expStartTime) continue;
                 }
 
@@ -502,16 +535,12 @@ class SchedulerSync
         return $missing;
     }
 
-    /**
-     * Normalize times to "HH:MM" for tolerant comparison across FPP versions.
-     */
     private static function normalizeTimeToHm(?string $t): ?string
     {
         if ($t === null) return null;
         $tt = trim($t);
         if ($tt === '') return null;
 
-        // Accept HH:MM or HH:MM:SS; normalize both to HH:MM
         if (preg_match('/^\d{2}:\d{2}/', $tt) === 1) {
             return substr($tt, 0, 5);
         }
