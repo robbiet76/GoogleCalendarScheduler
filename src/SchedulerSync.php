@@ -15,8 +15,9 @@ declare(strict_types=1);
  * - No scheduler logic/recurrence changes: we use whatever the intent already provides.
  *
  * Phase 17.1:
- * - Restore canonical GCS identity tag in scheduler entry playlist field:
- *   |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
+ * - Preserve canonical GCS identity tag, but store it in args[] (NOT in playlist name)
+ *   so the FPP UI can still resolve and display the real playlist/sequence name.
+ * - Tag format (unchanged): |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
  */
 class SchedulerSync
 {
@@ -299,7 +300,7 @@ class SchedulerSync
             $shortDays = (string)GcsIntentConsolidator::weekdayMaskToShortDays((int)$dayMask);
         }
 
-        // Canonical legacy identity tag (stored in playlist field)
+        // Canonical legacy identity tag (now stored in args[] for UI compatibility)
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
 
         $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
@@ -308,6 +309,11 @@ class SchedulerSync
         $args = [];
         if (isset($tpl['args']) && is_array($tpl['args'])) {
             $args = array_values($tpl['args']);
+        }
+
+        // Add tag to args exactly once (avoid duplicates if caller provided it)
+        if ($tag !== '' && !self::argsContainsGcsV1Tag($args)) {
+            $args[] = $tag;
         }
 
         $multisyncCommand = self::coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
@@ -331,12 +337,12 @@ class SchedulerSync
         ];
 
         if ($type === 'playlist') {
-            // Legacy behavior: append tag to playlist name
-            $entry['playlist'] = $target . $tag;
+            // Keep playlist name clean so FPP UI can resolve it
+            $entry['playlist'] = $target;
         } else {
-            // Legacy behavior: store tag in playlist field for command entries
+            // Command entries keep command name; playlist remains empty
             $entry['command']  = $target;
-            $entry['playlist'] = $tag;
+            $entry['playlist'] = '';
         }
 
         return $entry;
@@ -353,6 +359,22 @@ class SchedulerSync
         }
         $range = $startDate . '..' . $endDate;
         return '|GCS:v1|uid=' . $uid . '|range=' . $range . '|days=' . $days;
+    }
+
+    /**
+     * True if args already contains a GCS v1 tag.
+     *
+     * @param array<int,mixed> $args
+     */
+    private static function argsContainsGcsV1Tag(array $args): bool
+    {
+        foreach ($args as $a) {
+            if (!is_string($a)) continue;
+            if (strpos($a, '|GCS:v1|') !== false) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static function parseYmdHms(string $s): ?DateTime
