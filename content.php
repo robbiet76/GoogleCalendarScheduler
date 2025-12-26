@@ -18,10 +18,83 @@ require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 $cfg = GcsConfig::load();
 
 /*
- * --------------------------------------------------------------------
- * POST handling (normal UI flow)
- * --------------------------------------------------------------------
+ * ============================================================
+ * JSON ENDPOINT ROUTER
+ * IMPORTANT: Must run before ANY HTML output
+ * ============================================================
  */
+if (isset($_GET['endpoint'])) {
+    header('Content-Type: application/json');
+
+    try {
+        switch ($_GET['endpoint']) {
+
+            case 'experimental_diff': {
+                if (empty($cfg['experimental']['enabled'])) {
+                    echo json_encode([
+                        'ok' => false,
+                        'error' => 'experimental_disabled',
+                    ]);
+                    exit;
+                }
+
+                $diff = DiffPreviewer::preview($cfg);
+
+                echo json_encode([
+                    'ok'   => true,
+                    'diff' => $diff,
+                ]);
+                exit;
+            }
+
+            case 'experimental_apply': {
+                if (empty($cfg['experimental']['enabled'])) {
+                    echo json_encode([
+                        'status' => 'blocked',
+                        'reason' => 'experimental_disabled',
+                    ]);
+                    exit;
+                }
+
+                if (!empty($cfg['runtime']['dry_run'])) {
+                    echo json_encode([
+                        'status' => 'blocked',
+                        'reason' => 'dry_run_enabled',
+                    ]);
+                    exit;
+                }
+
+                $result = DiffPreviewer::apply($cfg);
+
+                echo json_encode([
+                    'ok'     => true,
+                    'counts' => DiffPreviewer::countsFromResult($result),
+                ]);
+                exit;
+            }
+
+            default:
+                echo json_encode([
+                    'ok' => false,
+                    'error' => 'unknown_endpoint',
+                ]);
+                exit;
+        }
+    } catch (Throwable $e) {
+        echo json_encode([
+            'ok'    => false,
+            'error' => $e->getMessage(),
+        ]);
+        exit;
+    }
+}
+
+/*
+ * ============================================================
+ * NORMAL UI FLOW (HTML BELOW)
+ * ============================================================
+ */
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
 
@@ -30,25 +103,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cfg['runtime']['dry_run']  = !empty($_POST['dry_run']);
 
             GcsConfig::save($cfg);
-
-            // Force reload so UI reflects updated state immediately
             clearstatcache();
             $cfg = GcsConfig::load();
         }
 
-        /**
-         * IMPORTANT SAFETY RULE:
-         * The "Sync Calendar" button must NEVER apply changes.
-         * It should only run the pipeline in DRY-RUN mode.
-         *
-         * Apply must be explicit and only occur via the experimental_apply endpoint
-         * (which has the triple-guard).
-         */
         if ($_POST['action'] === 'sync') {
+            // Sync button is ALWAYS dry-run safe
             $runner = new GcsSchedulerRunner(
                 $cfg,
                 GcsFppSchedulerHorizon::getDays(),
-                true // FORCE dry-run no matter what
+                true
             );
             $runner->run();
         }
@@ -61,7 +125,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 $dryRun = !empty($cfg['runtime']['dry_run']);
-$expEnabled = !empty($cfg['experimental']['enabled']);
 ?>
 
 <div class="settings">
@@ -120,18 +183,12 @@ $expEnabled = !empty($cfg['experimental']['enabled']);
 <div class="gcs-diff-preview">
     <h3>Scheduler Change Preview</h3>
 
-<?php if (!$expEnabled): ?>
-    <div class="gcs-info">
-        Experimental diff preview is currently disabled.
-    </div>
-<?php else: ?>
     <button type="button" class="buttons" id="gcs-preview-btn">
         Preview Changes
     </button>
 
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
     <div id="gcs-diff-results" style="margin-top:10px;"></div>
-<?php endif; ?>
 </div>
 
 <hr>
@@ -150,10 +207,7 @@ $expEnabled = !empty($cfg['experimental']['enabled']);
         type="button"
         class="buttons"
         id="gcs-apply-btn"
-        disabled
-        title="<?php echo $dryRun
-            ? 'Apply is disabled while dry-run mode is enabled.'
-            : 'Apply pending changes to the FPP scheduler.'; ?>">
+        disabled>
         Apply Changes
     </button>
 
@@ -162,42 +216,17 @@ $expEnabled = !empty($cfg['experimental']['enabled']);
 
 <style>
 .gcs-hidden { display:none; }
-
-.gcs-mode-banner {
-    padding:10px;
-    border-radius:6px;
-    margin-bottom:12px;
-    font-weight:bold;
-}
-.gcs-mode-dry {
-    background:#eef5ff;
-    border:1px solid #cfe2ff;
-}
-.gcs-mode-live {
-    background:#e6f4ea;
-    border:1px solid #b7e4c7;
-}
-
-.gcs-info {
-    padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px;
-}
-.gcs-warning {
-    padding:10px; background:#fff3cd; border:1px solid #ffeeba; border-radius:6px;
-}
+.gcs-mode-banner { padding:10px; border-radius:6px; margin-bottom:12px; font-weight:bold; }
+.gcs-mode-dry { background:#eef5ff; border:1px solid #cfe2ff; }
+.gcs-mode-live { background:#e6f4ea; border:1px solid #b7e4c7; }
+.gcs-warning { padding:10px; background:#fff3cd; border:1px solid #ffeeba; border-radius:6px; }
 .gcs-diff-badges { display:flex; gap:10px; margin:8px 0; flex-wrap:wrap; }
 .gcs-badge { padding:6px 10px; border-radius:12px; font-weight:bold; font-size:.9em; }
 .gcs-badge-create { background:#e6f4ea; color:#1e7e34; }
 .gcs-badge-update { background:#fff3cd; color:#856404; }
 .gcs-badge-delete { background:#f8d7da; color:#721c24; }
-.gcs-section { margin-top:10px; border-top:1px solid #ddd; padding-top:6px; }
-.gcs-section h4 { cursor:pointer; margin:6px 0; }
-.gcs-section ul { margin:6px 0 6px 18px; }
-.gcs-empty {
-    padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px;
-}
-.gcs-apply-panel {
-    padding:10px; border:1px solid #ddd; border-radius:6px;
-}
+.gcs-empty { padding:10px; background:#eef5ff; border:1px solid #cfe2ff; border-radius:6px; }
+.gcs-apply-panel { padding:10px; border:1px solid #ddd; border-radius:6px; }
 </style>
 
 <script>
@@ -207,53 +236,16 @@ $expEnabled = !empty($cfg['experimental']['enabled']);
 var ENDPOINT =
   'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
 
-var IS_DRY_RUN = <?php echo $dryRun ? 'true' : 'false'; ?>;
-
 function getJSON(url, cb){
     fetch(url, {credentials:'same-origin'})
-        .then(function(r){ return r.json(); })
-        .then(function(j){ cb(j); })
-        .catch(function(){ cb(null); });
+        .then(r => r.json())
+        .then(j => cb(j))
+        .catch(() => cb(null));
 }
 
 function countArr(a){ return Array.isArray(a) ? a.length : 0; }
 
-/**
- * Accept multiple backend schemas:
- * A) { ok:true, diff:{ creates:[], updates:[], deletes:[] } }
- * B) { creates:[], updates:[], deletes:[] }
- * C) Legacy/summaries should be treated as unavailable here.
- */
-function normalizeDiffPayload(d){
-    if(!d) return null;
-
-    // Schema A
-    if (d.ok && d.diff && typeof d.diff === 'object') {
-        return {
-            creates: Array.isArray(d.diff.creates) ? d.diff.creates : [],
-            updates: Array.isArray(d.diff.updates) ? d.diff.updates : [],
-            deletes: Array.isArray(d.diff.deletes) ? d.diff.deletes : []
-        };
-    }
-
-    // Schema B
-    var hasAny =
-        Array.isArray(d.creates) || Array.isArray(d.updates) || Array.isArray(d.deletes);
-
-    if (hasAny) {
-        return {
-            creates: Array.isArray(d.creates) ? d.creates : [],
-            updates: Array.isArray(d.updates) ? d.updates : [],
-            deletes: Array.isArray(d.deletes) ? d.deletes : []
-        };
-    }
-
-    return null;
-}
-
 var previewBtn=document.getElementById('gcs-preview-btn');
-if(!previewBtn) return;
-
 var diffSummary=document.getElementById('gcs-diff-summary');
 var diffResults=document.getElementById('gcs-diff-results');
 var applyBox=document.getElementById('gcs-apply-container');
@@ -263,33 +255,23 @@ var applyResult=document.getElementById('gcs-apply-result');
 
 var last=null, armed=false;
 
-function setApplyDisabled(disabled){
-    applyBtn.disabled = !!disabled;
-    if (IS_DRY_RUN) {
-        applyBtn.title = 'Apply is disabled while dry-run mode is enabled.';
-    }
-}
-
 previewBtn.onclick=function(){
     armed=false;
-    setApplyDisabled(true);
+    applyBtn.disabled=true;
     applyBtn.textContent='Apply Changes';
     applyResult.textContent='';
     diffResults.textContent='Loading preview…';
 
     getJSON(ENDPOINT+'&endpoint=experimental_diff',function(d){
-        var norm = normalizeDiffPayload(d);
-        if(!norm){
+        if(!d || !d.ok || !d.diff){
             diffResults.textContent='Preview unavailable.';
-            // Keep apply hidden/disabled if preview can't be computed
             applyBox.classList.add('gcs-hidden');
-            last=null;
             return;
         }
 
-        var c=countArr(norm.creates),
-            u=countArr(norm.updates),
-            x=countArr(norm.deletes),
+        var c=countArr(d.diff.creates),
+            u=countArr(d.diff.updates),
+            x=countArr(d.diff.deletes),
             t=c+u+x;
 
         diffSummary.classList.remove('gcs-hidden');
@@ -306,35 +288,15 @@ previewBtn.onclick=function(){
 
         applyBox.classList.remove('gcs-hidden');
         applySummary.textContent =
-            (t===0)
-            ? 'No pending scheduler changes.'
-            : t+' pending scheduler changes detected.';
+            (t===0) ? 'No pending scheduler changes.' :
+            t+' pending scheduler changes detected.';
+        applyBtn.disabled=(t===0);
 
-        // Apply enabled ONLY if:
-        // - preview found changes
-        // - NOT in dry-run mode
-        setApplyDisabled(IS_DRY_RUN || (t===0));
-
-        if (IS_DRY_RUN && t > 0) {
-            applyResult.innerHTML =
-                '<strong>Apply disabled</strong><br>' +
-                'Dry-run mode is ON. Turn it off to apply scheduler changes.';
-        } else {
-            applyResult.textContent = '';
-        }
-
-        last={c:c,u:u,x:x,t:t};
+        last={t:t};
     });
 };
 
 applyBtn.onclick=function(){
-    if(IS_DRY_RUN){
-        applyResult.innerHTML =
-          '<strong>Apply blocked</strong><br>'+
-          'Dry-run mode is ON. No scheduler changes were made.';
-        return;
-    }
-
     if(!last||last.t===0) return;
 
     if(!armed){
@@ -344,55 +306,23 @@ applyBtn.onclick=function(){
         return;
     }
 
-    setApplyDisabled(true);
+    applyBtn.disabled=true;
     applyBtn.textContent='Applying…';
     applyResult.textContent='Applying scheduler changes…';
 
     getJSON(ENDPOINT+'&endpoint=experimental_apply',function(r){
-        if(!r){
-            applyBtn.textContent='Apply Failed';
-            applyResult.textContent='Apply failed.';
+        if(!r || r.status==='blocked'){
+            applyResult.textContent='Apply blocked.';
             return;
-        }
-
-        // Common blocked shapes
-        if(r.status==='blocked' || r.blocked === true){
-            applyBtn.textContent='Apply Blocked';
-            applyResult.innerHTML =
-              '<strong>Apply blocked</strong><br>'+
-              'Apply is disabled because dry-run mode is ON.<br>'+
-              'No scheduler changes were made.';
-            return;
-        }
-
-        // Support multiple success schemas:
-        // A) { ok:true, counts:{creates,updates,deletes} }
-        // B) { creates:[], updates:[], deletes:[] }
-        // C) { adds:n, updates:n, deletes:n }
-        var createdCount = 0;
-
-        if (r.counts && typeof r.counts === 'object') {
-            createdCount = (typeof r.counts.creates === 'number') ? r.counts.creates : 0;
-        } else if (Array.isArray(r.creates)) {
-            createdCount = r.creates.length;
-        } else if (typeof r.adds === 'number') {
-            createdCount = r.adds;
         }
 
         applyBtn.textContent='Apply Completed';
         applyResult.innerHTML =
           '<strong>Changes applied successfully</strong><br>'+
-          createdCount+' scheduler entries were created.<br>'+
-          'Re-running preview now should show no remaining changes.';
-
-        // Re-run preview automatically to refresh UI state
-        armed=false;
-        setTimeout(function(){
-            previewBtn.click();
-        }, 150);
+          (r.counts?.creates ?? 0)+' scheduler entries were created.';
+        setTimeout(()=>previewBtn.click(),150);
     });
 };
-
 })();
 </script>
 
