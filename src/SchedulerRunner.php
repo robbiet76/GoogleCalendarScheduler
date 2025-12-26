@@ -13,17 +13,25 @@ final class GcsSchedulerRunner
         $this->dryRun = (bool)$dryRun;
     }
 
-    public function run(): array
+    /**
+     * PLAN ONLY (no writes, no SchedulerSync)
+     *
+     * Returns consolidated intents (including consolidated template+range form).
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function plan(): array
     {
         $icsUrl = trim((string)($this->cfg['calendar']['ics_url'] ?? ''));
         if ($icsUrl === '') {
             GcsLogger::instance()->warn('No ICS URL configured');
-            return $this->emptyResult();
+            return [];
         }
 
         $ics = (new GcsIcsFetcher())->fetch($icsUrl);
         if ($ics === '') {
-            return $this->emptyResult();
+            GcsLogger::instance()->warn('ICS fetch returned empty response');
+            return [];
         }
 
         $now = new DateTime('now');
@@ -32,7 +40,7 @@ final class GcsSchedulerRunner
         $parser = new GcsIcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
         if (empty($events)) {
-            return $this->emptyResult();
+            return [];
         }
 
         // Group events by UID (base + overrides)
@@ -90,6 +98,11 @@ final class GcsSchedulerRunner
             }
         }
 
+        if (empty($rawIntents)) {
+            return [];
+        }
+
+        // Consolidate into ranges (best-effort; lossless isolation by time/override)
         $consolidated = $rawIntents;
         try {
             $consolidator = new GcsIntentConsolidator();
@@ -99,8 +112,23 @@ final class GcsSchedulerRunner
             }
         } catch (Throwable $ignored) {}
 
+        return $consolidated;
+    }
+
+    /**
+     * EXECUTE (may write depending on $dryRun and downstream behavior)
+     *
+     * @return array<string,mixed>
+     */
+    public function run(): array
+    {
+        $intents = $this->plan();
+        if (empty($intents)) {
+            return $this->emptyResult();
+        }
+
         $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($consolidated);
+        return $sync->sync($intents);
     }
 
     private function emptyResult(): array
