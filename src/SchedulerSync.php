@@ -3,16 +3,31 @@
 /**
  * SchedulerSync
  *
- * Phase 13 behavior:
+ * Phase 15.3 behavior:
  * - Accept resolved scheduler intents
- * - Report what *would* be created/updated/deleted
- * - Do NOT modify the scheduler yet
+ * - DRY-RUN: report what would be created/updated/deleted (no writes)
+ * - APPLY: append new entries to FPP scheduler persistence file schedule.json
+ *          with backup + atomic write + read-after-write verification.
  *
- * This class is intentionally conservative and dry-run safe.
+ * IMPORTANT CONSTRAINTS:
+ * - Add-only (no updates/deletes/reordering)
+ * - No scheduler logic/recurrence changes: we use whatever the intent already provides.
+ * - No breaking config changes.
  */
 class SchedulerSync
 {
     private bool $dryRun;
+
+    /**
+     * FPP scheduler persistence file (canonical).
+     * NOTE: This is the authoritative scheduler storage on FPP.
+     */
+    private const SCHEDULE_JSON_PATH = '/home/fpp/media/config/schedule.json';
+
+    /**
+     * FPP projection endpoint (read-only) used for verification.
+     */
+    private const FPP_SCHEDULE_PROJECTION_URL = 'http://127.0.0.1/api/fppd/schedule';
 
     /**
      * @param bool $dryRun
@@ -25,10 +40,10 @@ class SchedulerSync
     /**
      * Sync resolved intents against the scheduler.
      *
-     * CURRENT PHASE 13 LOGIC:
-     * - Scheduler is treated as empty
-     * - Each intent represents a CREATE
-     * - No updates or deletes yet
+     * Phase 15.3:
+     * - CREATE only (append-only)
+     * - No updates or deletes
+     * - Dry-run safe
      *
      * @param array<int,array<string,mixed>> $intents
      * @return array<string,mixed>
@@ -36,30 +51,533 @@ class SchedulerSync
     public function sync(array $intents): array
     {
         $adds = 0;
+        $errors = [];
 
-        foreach ($intents as $intent) {
-            // Log every intent for visibility (dry-run safe)
+        // Normalize + validate intents into schedule.json entries (without writing yet)
+        $entriesToAppend = [];
+        foreach ($intents as $idx => $intent) {
+            // Log every intent for visibility (still safe)
             GcsLogger::instance()->info(
                 $this->dryRun ? 'Scheduler intent (dry-run)' : 'Scheduler intent',
                 is_array($intent) ? $intent : ['intent' => $intent]
             );
 
-            $adds++;
+            if (!is_array($intent)) {
+                $errors[] = "Intent #{$idx} is not an array";
+                continue;
+            }
+
+            $entryOrError = $this->intentToScheduleEntry($intent);
+            if (is_string($entryOrError)) {
+                $errors[] = "Intent #{$idx}: {$entryOrError}";
+                continue;
+            }
+
+            $entriesToAppend[] = $entryOrError;
         }
 
-        /*
-         * Phase 13 return schema (summary-only)
-         *
-         * DiffPreviewer is responsible for normalizing this
-         * into UI-friendly creates/updates/deletes arrays.
-         */
+        // If dry-run: report what would be added; do not touch schedule.json
+        if ($this->dryRun) {
+            $adds = count($entriesToAppend);
+
+            // Helpful dry-run logging: show normalized entries
+            foreach ($entriesToAppend as $eIdx => $entry) {
+                GcsLogger::instance()->info('Scheduler normalized entry (dry-run)', [
+                    'index' => $eIdx,
+                    'entry' => $entry,
+                ]);
+            }
+
+            return [
+                'adds'         => $adds,
+                'updates'      => 0,
+                'deletes'      => 0,
+                'dryRun'       => true,
+                'intents_seen' => count($intents),
+                'errors'       => $errors,
+            ];
+        }
+
+        // Apply path: if we had validation errors, fail loudly (truth gate)
+        if (!empty($errors)) {
+            $msg = 'Scheduler apply aborted due to intent validation errors';
+            GcsLogger::instance()->error($msg, ['errors' => $errors]);
+            throw new RuntimeException($msg . ': ' . implode('; ', $errors));
+        }
+
+        // Nothing to append: no-op success
+        if (count($entriesToAppend) === 0) {
+            return [
+                'adds'         => 0,
+                'updates'      => 0,
+                'deletes'      => 0,
+                'dryRun'       => false,
+                'intents_seen' => count($intents),
+                'errors'       => [],
+            ];
+        }
+
+        // Load existing schedule.json
+        $existing = $this->readScheduleJsonOrThrow(self::SCHEDULE_JSON_PATH);
+        $beforeCount = count($existing);
+
+        // Append-only (no reordering, no updates)
+        $newSchedule = array_merge($existing, $entriesToAppend);
+
+        // Backup + atomic write
+        $backupPath = $this->backupScheduleFileOrThrow(self::SCHEDULE_JSON_PATH);
+        $this->writeScheduleJsonAtomicallyOrThrow(self::SCHEDULE_JSON_PATH, $newSchedule);
+
+        // Verify read-after-write via projection API
+        $verification = $this->verifyEntriesPresent($entriesToAppend);
+
+        if (!$verification['ok']) {
+            $msg = 'Scheduler apply verification failed (schedule.json written but projection did not reflect expected entries)';
+            GcsLogger::instance()->error($msg, [
+                'backup' => $backupPath,
+                'beforeCount' => $beforeCount,
+                'afterCount' => count($newSchedule),
+                'verification' => $verification,
+            ]);
+
+            // Truth gate: fail the apply
+            throw new RuntimeException($msg . ': ' . ($verification['message'] ?? 'unknown'));
+        }
+
+        $adds = count($entriesToAppend);
+
+        GcsLogger::instance()->info('Scheduler apply completed', [
+            'adds' => $adds,
+            'backup' => $backupPath,
+            'beforeCount' => $beforeCount,
+            'afterCount' => count($newSchedule),
+            'verification' => $verification,
+        ]);
+
         return [
             'adds'         => $adds,
             'updates'      => 0,
             'deletes'      => 0,
-            'dryRun'       => $this->dryRun,
-            'intents_seen' => $adds,
+            'dryRun'       => false,
+            'intents_seen' => count($intents),
+            'errors'       => [],
         ];
+    }
+
+    /**
+     * Convert an intent array to a schedule.json entry array.
+     *
+     * NO recurrence logic changes: we simply map fields if present, otherwise use safe defaults.
+     *
+     * Returns:
+     * - array<string,mixed> schedule entry on success
+     * - string error message on failure
+     *
+     * @param array<string,mixed> $intent
+     * @return array<string,mixed>|string
+     */
+    private function intentToScheduleEntry(array $intent)
+    {
+        // Determine type: playlist or command
+        $type = $this->coalesceString($intent, ['type', 'entryType', 'intentType'], '');
+        $playlist = $this->coalesceString($intent, ['playlist', 'playlistName', 'name'], '');
+        $command  = $this->coalesceString($intent, ['command', 'commandName'], '');
+
+        // If "type" absent, infer:
+        if ($type === '') {
+            if ($playlist !== '') {
+                $type = 'playlist';
+            } elseif ($command !== '') {
+                $type = 'command';
+            }
+        }
+
+        if ($type !== 'playlist' && $type !== 'command') {
+            return 'Unable to determine schedule entry type (expected playlist or command)';
+        }
+
+        // Required time/date fields for scheduler persistence.
+        // Use the intent-provided values; do not synthesize recurrence.
+        $startTime = $this->coalesceString($intent, ['startTime', 'start_time'], '');
+        $endTime   = $this->coalesceString($intent, ['endTime', 'end_time'], $startTime);
+
+        // For date range, FPP accepts "0000-01-01" .. "0000-12-31" as "always"
+        $startDate = $this->coalesceString($intent, ['startDate', 'start_date'], '0000-01-01');
+        $endDate   = $this->coalesceString($intent, ['endDate', 'end_date'], '0000-12-31');
+
+        // Day mask: observed values include 7 for Everyday. Use intent value or default to 7.
+        $day = $this->coalesceInt($intent, ['day', 'dayMask', 'day_mask'], 7);
+
+        // Repeat: default 0 unless intent says otherwise
+        $repeat = $this->coalesceInt($intent, ['repeat'], 0);
+
+        // stopType: default 0 (Graceful per projection examples)
+        $stopType = $this->coalesceInt($intent, ['stopType', 'stop_type'], 0);
+
+        // Validate time format (basic): HH:MM:SS
+        if (!$this->isTimeHms($startTime)) {
+            return "Invalid or missing startTime (expected HH:MM:SS): '{$startTime}'";
+        }
+        if (!$this->isTimeHms($endTime)) {
+            return "Invalid endTime (expected HH:MM:SS): '{$endTime}'";
+        }
+
+        // Args for commands
+        $args = [];
+        if (isset($intent['args']) && is_array($intent['args'])) {
+            $args = array_values($intent['args']);
+        }
+
+        // Multisync flags (optional)
+        $multisyncCommand = $this->coalesceBool($intent, ['multisyncCommand', 'multisync_command'], false);
+
+        // Common required fields in schedule.json
+        $entry = [
+            'enabled'         => 1,
+            'sequence'        => 0,
+            'day'             => $day,
+            'startTime'       => $startTime,
+            'startTimeOffset' => 0,
+            'endTime'         => $endTime,
+            'endTimeOffset'   => 0,
+            'repeat'          => $repeat,
+            'startDate'       => $startDate,
+            'endDate'         => $endDate,
+            'stopType'        => $stopType,
+            'playlist'        => '',
+            'command'         => '',
+            'args'            => $args,
+            'multisyncCommand'=> $multisyncCommand,
+        ];
+
+        if ($type === 'playlist') {
+            if ($playlist === '') {
+                return 'Playlist schedule entry missing playlist name';
+            }
+            $entry['playlist'] = $playlist;
+            $entry['command']  = '';
+        } else {
+            if ($command === '') {
+                return 'Command schedule entry missing command name';
+            }
+            $entry['playlist'] = '';
+            $entry['command']  = $command;
+        }
+
+        return $entry;
+    }
+
+    /**
+     * Read and decode schedule.json, returning an array of entries.
+     *
+     * @param string $path
+     * @return array<int,array<string,mixed>>
+     */
+    private function readScheduleJsonOrThrow(string $path): array
+    {
+        if (!file_exists($path)) {
+            throw new RuntimeException("schedule.json not found at '{$path}'");
+        }
+
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
+            throw new RuntimeException("Unable to read schedule.json at '{$path}'");
+        }
+
+        $rawTrim = trim($raw);
+        if ($rawTrim === '') {
+            return [];
+        }
+
+        $decoded = json_decode($rawTrim, true);
+        if (!is_array($decoded)) {
+            throw new RuntimeException("schedule.json is not valid JSON array at '{$path}'");
+        }
+
+        // Ensure each element is an array
+        foreach ($decoded as $i => $entry) {
+            if (!is_array($entry)) {
+                throw new RuntimeException("schedule.json entry #{$i} is not an object/array");
+            }
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Create a timestamped backup of schedule.json.
+     *
+     * @param string $path
+     * @return string backup path
+     */
+    private function backupScheduleFileOrThrow(string $path): string
+    {
+        $ts = date('Ymd-His');
+        $backup = $path . '.bak-' . $ts;
+
+        if (!@copy($path, $backup)) {
+            throw new RuntimeException("Failed to create backup '{$backup}' from '{$path}'");
+        }
+
+        return $backup;
+    }
+
+    /**
+     * Atomically write schedule.json (temp file + rename).
+     *
+     * @param string $path
+     * @param array<int,array<string,mixed>> $data
+     * @return void
+     */
+    private function writeScheduleJsonAtomicallyOrThrow(string $path, array $data): void
+    {
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            throw new RuntimeException("schedule.json directory not found: '{$dir}'");
+        }
+
+        $tmp = $path . '.tmp-' . getmypid();
+
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json) || $json === '') {
+            throw new RuntimeException('Failed to encode schedule.json');
+        }
+
+        // Ensure trailing newline (nice + consistent)
+        $json .= "\n";
+
+        $written = @file_put_contents($tmp, $json, LOCK_EX);
+        if ($written === false) {
+            throw new RuntimeException("Failed to write temp schedule file '{$tmp}'");
+        }
+
+        // Best effort: preserve permissions from original if exists
+        if (file_exists($path)) {
+            @chmod($tmp, fileperms($path) & 0777);
+        }
+
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new RuntimeException("Failed to replace schedule.json atomically at '{$path}'");
+        }
+    }
+
+    /**
+     * Verify that entries appear in the projection endpoint /api/fppd/schedule.
+     *
+     * We do not retry writes. We allow brief read retries because projection may lag.
+     *
+     * @param array<int,array<string,mixed>> $expectedEntries
+     * @return array<string,mixed>
+     */
+    private function verifyEntriesPresent(array $expectedEntries): array
+    {
+        $attempts = 3;
+        $sleepUs = 200000; // 200ms
+
+        for ($i = 1; $i <= $attempts; $i++) {
+            $proj = $this->httpGetJson(self::FPP_SCHEDULE_PROJECTION_URL);
+            if (!is_array($proj)) {
+                // keep trying; final failure below
+                GcsLogger::instance()->warn('Scheduler projection read failed', [
+                    'attempt' => $i,
+                    'url' => self::FPP_SCHEDULE_PROJECTION_URL,
+                ]);
+            } else {
+                $entries = $proj['schedule']['entries'] ?? null;
+                if (is_array($entries)) {
+                    $missing = $this->findMissingInProjection($expectedEntries, $entries);
+                    if (count($missing) === 0) {
+                        return [
+                            'ok' => true,
+                            'attempts' => $i,
+                            'missing' => [],
+                        ];
+                    }
+
+                    GcsLogger::instance()->warn('Scheduler projection missing expected entries', [
+                        'attempt' => $i,
+                        'missing' => $missing,
+                    ]);
+                } else {
+                    GcsLogger::instance()->warn('Scheduler projection did not contain schedule.entries', [
+                        'attempt' => $i,
+                        'keys' => array_keys($proj),
+                    ]);
+                }
+            }
+
+            if ($i < $attempts) {
+                usleep($sleepUs);
+            }
+        }
+
+        return [
+            'ok' => false,
+            'attempts' => $attempts,
+            'message' => 'Expected entries not found in projection after retries',
+        ];
+    }
+
+    /**
+     * Determine which expected schedule.json entries are missing from the projection entries list.
+     *
+     * @param array<int,array<string,mixed>> $expected
+     * @param array<int,array<string,mixed>> $projectionEntries
+     * @return array<int,array<string,mixed>> missing expected entries (as small descriptors)
+     */
+    private function findMissingInProjection(array $expected, array $projectionEntries): array
+    {
+        $missing = [];
+
+        foreach ($expected as $exp) {
+            $expIsPlaylist = isset($exp['playlist']) && is_string($exp['playlist']) && $exp['playlist'] !== '';
+            $expPlaylist = $expIsPlaylist ? $exp['playlist'] : '';
+            $expCommand  = (!$expIsPlaylist && isset($exp['command']) && is_string($exp['command'])) ? $exp['command'] : '';
+            $expDay      = $exp['day'] ?? null;
+            $expStartDate= $exp['startDate'] ?? null;
+            $expStartTime= $exp['startTime'] ?? null;
+
+            $found = false;
+
+            foreach ($projectionEntries as $p) {
+                if (!is_array($p)) {
+                    continue;
+                }
+
+                // Projection entries have "type": "playlist" or contain "command"
+                $pType = $p['type'] ?? null;
+
+                if ($expIsPlaylist) {
+                    if ($pType !== 'playlist') {
+                        continue;
+                    }
+                    if (($p['playlist'] ?? null) !== $expPlaylist) {
+                        continue;
+                    }
+                    // Match date/time/day if present in projection
+                    if (($p['day'] ?? null) !== $expDay) {
+                        continue;
+                    }
+                    if (($p['startDate'] ?? null) !== $expStartDate) {
+                        continue;
+                    }
+                    if (($p['startTime'] ?? null) !== $expStartTime) {
+                        continue;
+                    }
+                    $found = true;
+                    break;
+                } else {
+                    // Command entry
+                    if ($pType !== 'command') {
+                        continue;
+                    }
+                    if (($p['command'] ?? null) !== $expCommand) {
+                        continue;
+                    }
+                    if (($p['day'] ?? null) !== $expDay) {
+                        continue;
+                    }
+                    if (($p['startDate'] ?? null) !== $expStartDate) {
+                        continue;
+                    }
+                    if (($p['startTime'] ?? null) !== $expStartTime) {
+                        continue;
+                    }
+                    $found = true;
+                    break;
+                }
+            }
+
+            if (!$found) {
+                $missing[] = [
+                    'playlist' => $expPlaylist,
+                    'command' => $expCommand,
+                    'day' => $expDay,
+                    'startDate' => $expStartDate,
+                    'startTime' => $expStartTime,
+                ];
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * GET a URL and decode JSON response.
+     *
+     * @param string $url
+     * @return array<string,mixed>|null
+     */
+    private function httpGetJson(string $url): ?array
+    {
+        $ctx = stream_context_create([
+            'http' => [
+                'method'  => 'GET',
+                'timeout' => 2,
+                'header'  => "Accept: application/json\r\n",
+            ]
+        ]);
+
+        $raw = @file_get_contents($url, false, $ctx);
+        if ($raw === false || trim($raw) === '') {
+            return null;
+        }
+
+        $decoded = json_decode($raw, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    private function coalesceString(array $src, array $keys, string $default): string
+    {
+        foreach ($keys as $k) {
+            if (isset($src[$k]) && is_string($src[$k]) && $src[$k] !== '') {
+                return $src[$k];
+            }
+        }
+        return $default;
+    }
+
+    private function coalesceInt(array $src, array $keys, int $default): int
+    {
+        foreach ($keys as $k) {
+            if (isset($src[$k]) && (is_int($src[$k]) || (is_string($src[$k]) && ctype_digit($src[$k])))) {
+                return (int)$src[$k];
+            }
+        }
+        return $default;
+    }
+
+    private function coalesceBool(array $src, array $keys, bool $default): bool
+    {
+        foreach ($keys as $k) {
+            if (!isset($src[$k])) {
+                continue;
+            }
+            $v = $src[$k];
+            if (is_bool($v)) {
+                return $v;
+            }
+            if (is_int($v)) {
+                return $v !== 0;
+            }
+            if (is_string($v)) {
+                $vv = strtolower(trim($v));
+                if ($vv === 'true' || $vv === '1' || $vv === 'yes' || $vv === 'on') {
+                    return true;
+                }
+                if ($vv === 'false' || $vv === '0' || $vv === 'no' || $vv === 'off') {
+                    return false;
+                }
+            }
+        }
+        return $default;
+    }
+
+    private function isTimeHms(string $t): bool
+    {
+        // Basic HH:MM:SS validation
+        return (bool)preg_match('/^\d{2}:\d{2}:\d{2}$/', $t);
     }
 }
 
