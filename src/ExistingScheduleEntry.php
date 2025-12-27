@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * Wrapper for an existing FPP scheduler entry.
  *
- * Phase 17 behavior:
+ * Phase 17+ behavior:
  * - Identity is derived from GCS tag stored in args[]
  */
 final class GcsExistingScheduleEntry
@@ -44,5 +44,25 @@ final class GcsExistingScheduleEntry
     public function raw(): array
     {
         return $this->raw;
+    }
+
+    /**
+     * UI-safe representation of this scheduler entry.
+     * Ensures no objects leak into JSON preview output.
+     *
+     * @return array<string,mixed>
+     */
+    public function toPreviewArray(): array
+    {
+        return [
+            'uid'       => $this->getGcsUid(),
+            'playlist'  => isset($this->raw['playlist']) ? (string)$this->raw['playlist'] : '',
+            'command'   => isset($this->raw['command']) ? (string)$this->raw['command'] : '',
+            'startDate' => $this->raw['startDate'] ?? null,
+            'startTime' => $this->raw['startTime'] ?? null,
+            'endDate'   => $this->raw['endDate'] ?? null,
+            'endTime'   => $this->raw['endTime'] ?? null,
+            'managed'   => $this->isGcsManaged(),
+        ];
     }
 }
