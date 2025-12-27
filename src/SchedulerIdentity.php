@@ -4,14 +4,19 @@ declare(strict_types=1);
 /**
  * Scheduler identity helper.
  *
- * CANONICAL OWNERSHIP RULE (Phase 17.x):
+ * CANONICAL OWNERSHIP RULE (Phase 17+):
  * - An entry is GCS-managed if it contains a GCS v1 tag in args[]
  * - Tag format:
  *     |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
  *
- * IDENTITY:
- * - UID ONLY
- * - range/days are informational
+ * IDENTITY (Apply boundary):
+ * - FULL GCS TAG STRING
+ *   (uid + range + days)
+ *
+ * RATIONALE:
+ * - UID-only identity is insufficient once recurring events
+ *   expand into multiple scheduler entries.
+ * - Apply must reason about exact raw scheduler entries.
  */
 final class GcsSchedulerIdentity
 {
@@ -20,21 +25,15 @@ final class GcsSchedulerIdentity
     /**
      * Canonical identity extractor.
      *
+     * IMPORTANT:
+     * - Identity is the FULL GCS tag string.
+     * - Returning UID-only breaks delete semantics.
+     *
      * @param array<string,mixed> $entry
      */
     public static function extractKey(array $entry): ?string
     {
-        $tag = self::extractTag($entry);
-        if ($tag === null) {
-            return null;
-        }
-
-        if (!preg_match('/\|GCS:v1\|uid=([^|]+)/', $tag, $m)) {
-            return null;
-        }
-
-        $uid = $m[1] ?? '';
-        return $uid !== '' ? $uid : null;
+        return self::extractTag($entry);
     }
 
     /**
@@ -69,7 +68,9 @@ final class GcsSchedulerIdentity
             if (!is_string($arg)) {
                 continue;
             }
-            if (strpos($arg, self::TAG_MARKER) !== false) {
+
+            // Tag must start with the marker to be canonical
+            if (strpos($arg, self::TAG_MARKER) === 0) {
                 return $arg;
             }
         }

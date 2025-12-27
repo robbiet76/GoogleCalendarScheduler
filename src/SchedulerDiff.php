@@ -39,7 +39,7 @@ final class GcsSchedulerDiff
                 continue;
             }
 
-            $uid = GcsSchedulerIdentity::extractUid($desiredEntry);
+            $uid = GcsSchedulerIdentity::extractKey($desiredEntry);
             if ($uid === null) {
                 // Desired entry without GCS identity is ignored
                 continue;

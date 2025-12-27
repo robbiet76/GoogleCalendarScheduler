@@ -135,7 +135,7 @@ final class SchedulerSync
         $present = [];
         foreach ($after as $e) {
             if (!is_array($e)) continue;
-            $k = GcsSchedulerIdentity::extractUid($e);
+            $k = GcsSchedulerIdentity::extractKey($e);
             if ($k !== null) $present[$k] = true;
         }
 

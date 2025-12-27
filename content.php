@@ -65,18 +65,20 @@ if (isset($_GET['endpoint'])) {
                 exit;
             }
 
-            $diff = SchedulerPlanner::plan($cfg);
+            $plan = SchedulerPlanner::plan($cfg);
+            $norm = DiffPreviewer::normalizeResultForUi(['diff' => $plan]);
 
             echo json_encode([
                 'ok' => true,
                 'counts' => [
-                    'creates' => count($diff['creates']),
-                    'updates' => count($diff['updates']),
-                    'deletes' => count($diff['deletes']),
+                    'creates' => count($norm['creates']),
+                    'updates' => count($norm['updates']),
+                    'deletes' => count($norm['deletes']),
                 ],
             ]);
             exit;
         }
+
 
         // Preview (plan-only)
         if ($_GET['endpoint'] === 'experimental_diff') {
@@ -85,26 +87,30 @@ if (isset($_GET['endpoint'])) {
                 exit;
             }
 
-            $diff = SchedulerPlanner::plan($cfg);
+            $plan = SchedulerPlanner::plan($cfg);
 
+            // Always return full plan payload (Phase 18 debugging + apply parity)
             echo json_encode([
                 'ok'   => true,
-                'diff' => $diff,
+                'diff' => [
+                    'creates'        => (isset($plan['creates']) && is_array($plan['creates'])) ? $plan['creates'] : [],
+                    'updates'        => (isset($plan['updates']) && is_array($plan['updates'])) ? $plan['updates'] : [],
+                    'deletes'        => (isset($plan['deletes']) && is_array($plan['deletes'])) ? $plan['deletes'] : [],
+                    'desiredEntries' => (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [],
+                    'existingRaw'    => (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [],
+                ],
             ]);
             exit;
         }
 
         // Apply (ONLY write path)
         if ($_GET['endpoint'] === 'experimental_apply') {
-            $result = GcsSchedulerApply::applyFromConfig($cfg);
+            $result = DiffPreviewer::apply($cfg);
+            $counts = DiffPreviewer::countsFromResult($result);
 
             echo json_encode([
-                'ok'     => !empty($result['ok']),
-                'counts' => $result['counts'] ?? ['creates'=>0,'updates'=>0,'deletes'=>0],
-                'dryRun' => $result['dryRun'] ?? null,
-                'backup' => $result['backup'] ?? null,
-                'noop'   => $result['noop'] ?? null,
-                'error'  => $result['error'] ?? null,
+                'ok'     => true,
+                'counts' => $counts,
             ]);
             exit;
         }

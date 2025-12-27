@@ -8,14 +8,15 @@ declare(strict_types=1);
  *
  * RULES:
  * - Preview ALWAYS uses SchedulerPlanner (plan-only)
- * - Apply is the ONLY place allowed to execute writes
+ * - Apply is the ONLY place allowed to execute writes (via GcsSchedulerApply)
+ * - Creates / Updates / Deletes MUST normalize to the same preview shape
  */
 final class DiffPreviewer
 {
     /**
-     * Normalize any scheduler result into UI-friendly arrays.
+     * Normalize planner/apply results into UI-friendly arrays.
      *
-     * @internal Used by planner + apply
+     * @internal Used by preview + apply
      */
     public static function normalizeResultForUi(array $result): array
     {
@@ -24,33 +25,31 @@ final class DiffPreviewer
         $deletes = [];
 
         if (isset($result['diff']) && is_array($result['diff'])) {
-            $creates = $result['diff']['creates'] ?? $result['diff']['create'] ?? [];
-            $updates = $result['diff']['updates'] ?? $result['diff']['update'] ?? [];
-            $deletes = $result['diff']['deletes'] ?? $result['diff']['delete'] ?? [];
+            $creates = self::normalizeCreateRows($result['diff']['creates'] ?? []);
+            $updates = self::normalizeUpdateRows($result['diff']['updates'] ?? []);
+            $deletes = self::normalizeDeleteRows($result['diff']['deletes'] ?? []);
         }
 
-        // Summary-only fallback
-        if (empty($creates) && isset($result['adds'])) {
-            $creates = array_fill(0, (int)$result['adds'], '(create)');
+        // Summary-only fallback (legacy safety)
+        if (empty($creates) && isset($result['adds']) && is_numeric($result['adds'])) {
+            $creates = array_fill(0, (int)$result['adds'], ['type' => 'create']);
         }
         if (empty($updates) && isset($result['updates']) && is_numeric($result['updates'])) {
-            $updates = array_fill(0, (int)$result['updates'], '(update)');
+            $updates = array_fill(0, (int)$result['updates'], ['type' => 'update']);
         }
         if (empty($deletes) && isset($result['deletes']) && is_numeric($result['deletes'])) {
-            $deletes = array_fill(0, (int)$result['deletes'], '(delete)');
+            $deletes = array_fill(0, (int)$result['deletes'], ['type' => 'delete']);
         }
 
         return [
-            'creates' => is_array($creates) ? $creates : [],
-            'updates' => is_array($updates) ? $updates : [],
-            'deletes' => is_array($deletes) ? $deletes : [],
+            'creates' => $creates,
+            'updates' => $updates,
+            'deletes' => $deletes,
         ];
     }
 
     /**
      * Preview scheduler changes (PLAN ONLY).
-     *
-     * @param array $config
      */
     public static function preview(array $config): array
     {
@@ -59,6 +58,10 @@ final class DiffPreviewer
 
     /**
      * Apply scheduler changes (EXECUTION PATH).
+     *
+     * IMPORTANT:
+     * - Preview and Apply must operate on the same plan representation for UI parity.
+     * - Writes MUST happen only via GcsSchedulerApply (Phase 17+ contract).
      *
      * @throws RuntimeException if blocked
      */
@@ -76,13 +79,30 @@ final class DiffPreviewer
             throw new RuntimeException('Apply blocked while dry-run is enabled');
         }
 
-        $runner = new GcsSchedulerRunner(
-            $config,
-            GcsFppSchedulerHorizon::getDays(),
-            false
-        );
+        // Use the same planner output shape that preview returns
+        $plan = SchedulerPlanner::plan($config);
 
-        return $runner->run();
+        // If planner reports no changes, do not write
+        $creates = (isset($plan['creates']) && is_array($plan['creates'])) ? count($plan['creates']) : 0;
+        $updates = (isset($plan['updates']) && is_array($plan['updates'])) ? count($plan['updates']) : 0;
+        $deletes = (isset($plan['deletes']) && is_array($plan['deletes'])) ? count($plan['deletes']) : 0;
+
+        if (($creates + $updates + $deletes) === 0) {
+            return [
+                'ok'   => true,
+                'diff' => $plan,
+                'noop' => true,
+            ];
+        }
+
+        // Execute the only permitted write boundary
+        $applyResult = GcsSchedulerApply::applyFromConfig($config);
+
+        return [
+            'ok'    => true,
+            'diff'  => $plan,
+            'apply' => $applyResult,
+        ];
     }
 
     /**
@@ -96,6 +116,64 @@ final class DiffPreviewer
             'creates' => count($norm['creates']),
             'updates' => count($norm['updates']),
             'deletes' => count($norm['deletes']),
+        ];
+    }
+
+    /* -----------------------------------------------------------------
+     * Normalization helpers
+     * ----------------------------------------------------------------- */
+
+    private static function normalizeCreateRows(array $rows): array
+    {
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = self::normalizeEntryRow($row, 'create');
+            }
+        }
+        return $out;
+    }
+
+    private static function normalizeUpdateRows(array $rows): array
+    {
+        $out = [];
+        foreach ($rows as $row) {
+            if (isset($row['desired']) && is_array($row['desired'])) {
+                $out[] = self::normalizeEntryRow($row['desired'], 'update');
+            }
+        }
+        return $out;
+    }
+
+    private static function normalizeDeleteRows(array $rows): array
+    {
+        $out = [];
+        foreach ($rows as $row) {
+            if ($row instanceof GcsExistingScheduleEntry) {
+                $out[] = self::normalizeEntryRow($row->raw(), 'delete');
+            } elseif (is_array($row)) {
+                $out[] = self::normalizeEntryRow($row, 'delete');
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Normalize a scheduler entry into a single preview row.
+     */
+    private static function normalizeEntryRow(array $entry, string $type): array
+    {
+        $uid = GcsSchedulerIdentity::extractKey($entry);
+
+        return [
+            'type'      => $type,
+            'mode'      => !empty($entry['command']) ? 'command' : 'playlist',
+            'target'    => !empty($entry['command']) ? $entry['command'] : $entry['playlist'],
+            'startDate' => $entry['startDate'] ?? null,
+            'endDate'   => $entry['endDate'] ?? null,
+            'startTime' => $entry['startTime'] ?? null,
+            'endTime'   => $entry['endTime'] ?? null,
+            'uid'       => $uid,
         ];
     }
 }

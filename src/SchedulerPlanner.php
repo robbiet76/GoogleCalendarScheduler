@@ -4,81 +4,71 @@ declare(strict_types=1);
 /**
  * SchedulerPlanner
  *
- * Pure planner:
- * - Calendar ingestion -> intents
- * - Intents -> desired scheduler entries
- * - Load existing schedule.json
- * - Compute diff
+ * Planning-only entry point for scheduler diffs.
  *
- * NEVER writes; NEVER uses dryRun.
+ * Responsibilities:
+ * - Fetch Google Calendar
+ * - Resolve desired scheduler entries
+ * - Load existing scheduler state
+ * - Compute create/update/delete diff
+ *
+ * GUARANTEES:
+ * - NEVER writes to FPP scheduler
  */
 final class SchedulerPlanner
 {
     /**
+     * Compute a scheduler plan (diff) without side effects.
+     *
      * @param array $config
-     * @return array<string,mixed>
+     * @return array{creates:array,updates:array,deletes:array,desiredEntries:array,existingRaw:array}
      */
     public static function plan(array $config): array
     {
-        // 1) Ingest calendar -> intents
+        // 1. Calendar ingestion → intents
         $runner = new GcsSchedulerRunner(
             $config,
             GcsFppSchedulerHorizon::getDays()
         );
+
         $runnerResult = $runner->run();
 
-        $intents = (isset($runnerResult['intents']) && is_array($runnerResult['intents']))
-            ? $runnerResult['intents']
-            : [];
+        // 2. Desired schedule entries
+        $desired = [];
 
-        // 2) Map intents -> desired scheduler entries
-        $desiredEntries = [];
-        $errors = [];
-
-        foreach ($intents as $idx => $intent) {
-            if (!is_array($intent)) {
-                $errors[] = "Intent #{$idx} is not an array";
-                continue;
+        if (!empty($runnerResult['intents']) && is_array($runnerResult['intents'])) {
+            foreach ($runnerResult['intents'] as $intent) {
+                $entry = SchedulerSync::intentToScheduleEntryPublic($intent);
+                if (is_array($entry)) {
+                    $desired[] = $entry;
+                }
             }
-
-            $entryOrError = SchedulerSync::intentToScheduleEntryPublic($intent);
-            if (is_string($entryOrError)) {
-                $errors[] = "Intent #{$idx}: {$entryOrError}";
-                continue;
-            }
-
-            $desiredEntries[] = $entryOrError;
         }
 
-        // 3) Load existing schedule.json (raw + wrappers)
+        // 3. Load existing schedule.json
         $existingRaw = SchedulerSync::readScheduleJsonStatic(
             SchedulerSync::SCHEDULE_JSON_PATH
         );
 
-        $existing = [];
+        $existingEntries = [];
         foreach ($existingRaw as $row) {
             if (is_array($row)) {
-                $existing[] = new GcsExistingScheduleEntry($row);
+                $existingEntries[] = new GcsExistingScheduleEntry($row);
             }
         }
 
-        // 4) Compute diff
-        $state = new GcsSchedulerState($existing);
-        $diff  = new GcsSchedulerDiff($desiredEntries, $state);
-        $res   = $diff->compute();
+        // 4. Immutable scheduler state
+        $state = new GcsSchedulerState($existingEntries);
 
-        // Preserve UI response shape (top-level creates/updates/deletes)
+        // 5. Compute diff
+        $diff = (new GcsSchedulerDiff($desired, $state))->compute();
+
         return [
-            'ok' => empty($errors),
-            'errors' => $errors,
-
-            'creates' => $res->creates(),
-            'updates' => $res->updates(),
-            'deletes' => $res->deletes(),
-
-            // Expose for apply path
-            'desiredEntries' => $desiredEntries,
-            'existingRaw' => $existingRaw,
+            'creates'        => $diff->creates(),
+            'updates'        => $diff->updates(),
+            'deletes'        => $diff->deletes(),
+            'desiredEntries' => $desired,
+            'existingRaw'    => $existingRaw,
         ];
     }
 }
