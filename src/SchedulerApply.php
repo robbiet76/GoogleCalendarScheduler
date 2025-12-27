@@ -1,4 +1,8 @@
 <?php
+GcsLogger::instance()->info('GCS APPLY ENTERED', [
+    'dryRun' => !empty($cfg['runtime']['dry_run']),
+]);
+
 declare(strict_types=1);
 
 final class GcsSchedulerApply
