@@ -2,41 +2,23 @@
 declare(strict_types=1);
 
 /**
- * SchedulerSync
+ * SchedulerSync (Phase 17+)
  *
- * Phase 17.1+:
- * - Preserve canonical GCS identity tag in args[] (NOT in playlist name)
- *   so the FPP UI still resolves and displays the real playlist/sequence name.
+ * New contract (Option B):
+ * - No dryRun flag
+ * - No diff computation
+ * - No apply policy
  *
- * Phase 17.7:
- * - DRY-RUN now returns real diff {creates, updates, deletes}
- * - APPLY now performs create/update/delete for GCS-managed entries
- *
- * OWNERSHIP RULE:
- * - If a schedule.json entry has a GCS identity key, the plugin OWNS it.
- * - Entries without a GCS key are NEVER modified.
+ * Responsibilities now:
+ * - schedule.json I/O helpers
+ * - canonical intent -> schedule entry mapping
  */
-class SchedulerSync
+final class SchedulerSync
 {
-    private bool $dryRun;
-
-    /**
-     * FPP scheduler persistence file (canonical).
-     */
     public const SCHEDULE_JSON_PATH = '/home/fpp/media/config/schedule.json';
 
     /**
-     * FPP projection endpoint (read-only) used for verification.
-     */
-    private const FPP_SCHEDULE_PROJECTION_URL = 'http://127.0.0.1/api/fppd/schedule';
-
-    public function __construct(bool $dryRun = true)
-    {
-        $this->dryRun = (bool)$dryRun;
-    }
-
-    /**
-     * PURE helper: read schedule.json (static).
+     * PURE helper: read schedule.json.
      *
      * @return array<int,array<string,mixed>>
      */
@@ -61,288 +43,83 @@ class SchedulerSync
     }
 
     /**
-     * Sync resolved intents against the scheduler.
+     * STRICT helper: read schedule.json or throw.
      *
-     * @param array<int,array<string,mixed>> $intents
-     * @return array<string,mixed>
+     * @return array<int,array<string,mixed>>
      */
-    public function sync(array $intents): array
+    public static function readScheduleJsonOrThrow(string $path): array
     {
-        $errors = [];
-        $desiredEntries = [];
+        if (!file_exists($path)) {
+            throw new RuntimeException("schedule.json not found at '{$path}'");
+        }
 
-        foreach ($intents as $idx => $intent) {
-            GcsLogger::instance()->info(
-                $this->dryRun ? 'Scheduler intent (dry-run)' : 'Scheduler intent',
-                is_array($intent) ? $intent : ['intent' => $intent]
-            );
+        $raw = @file_get_contents($path);
+        if ($raw === false) {
+            throw new RuntimeException("Unable to read schedule.json at '{$path}'");
+        }
 
-            if (!is_array($intent)) {
-                $errors[] = "Intent #{$idx} is not an array";
-                continue;
+        $rawTrim = trim($raw);
+        if ($rawTrim === '') {
+            return [];
+        }
+
+        $decoded = json_decode($rawTrim, true);
+        if (!is_array($decoded)) {
+            throw new RuntimeException("schedule.json is not valid JSON array at '{$path}'");
+        }
+
+        foreach ($decoded as $i => $entry) {
+            if (!is_array($entry)) {
+                throw new RuntimeException("schedule.json entry #{$i} is not an object/array");
             }
-
-            $entryOrError = self::intentToScheduleEntryStatic($intent);
-            if (is_string($entryOrError)) {
-                $errors[] = "Intent #{$idx}: {$entryOrError}";
-                continue;
-            }
-
-            $desiredEntries[] = $entryOrError;
         }
 
-        // DRY-RUN: compute real diff vs schedule.json and return under ['diff']
-        if ($this->dryRun) {
-            foreach ($desiredEntries as $eIdx => $entry) {
-                GcsLogger::instance()->info('Scheduler normalized entry (dry-run)', [
-                    'index' => $eIdx,
-                    'entry' => $entry,
-                ]);
-            }
+        return $decoded;
+    }
 
-            $diff = $this->computeDiffAgainstExisting($desiredEntries);
+    public static function backupScheduleFileOrThrow(string $path): string
+    {
+        $ts = date('Ymd-His');
+        $backup = $path . '.bak-' . $ts;
 
-            return [
-                'ok'           => true,
-                'diff'         => $diff,
-                'adds'         => count($diff['creates']),
-                'updates'      => count($diff['updates']),
-                'deletes'      => count($diff['deletes']),
-                'dryRun'       => true,
-                'intents_seen' => count($intents),
-                'errors'       => $errors,
-            ];
+        if (!@copy($path, $backup)) {
+            throw new RuntimeException("Failed to create backup '{$backup}' from '{$path}'");
         }
 
-        // APPLY: must pass validation
-        if (!empty($errors)) {
-            $msg = 'Scheduler apply aborted due to intent validation errors';
-            GcsLogger::instance()->error($msg, ['errors' => $errors]);
-            throw new RuntimeException($msg . ': ' . implode('; ', $errors));
-        }
-
-        // Load existing schedule.json
-        $existing = $this->readScheduleJsonOrThrow(self::SCHEDULE_JSON_PATH);
-        $beforeCount = count($existing);
-
-        // Build apply plan and new schedule content
-        $plan = $this->planApply($existing, $desiredEntries);
-
-        // If no changes, return noop
-        if (count($plan['creates']) === 0 && count($plan['updates']) === 0 && count($plan['deletes']) === 0) {
-            return [
-                'adds'         => 0,
-                'updates'      => 0,
-                'deletes'      => 0,
-                'dryRun'       => false,
-                'intents_seen' => count($intents),
-                'errors'       => [],
-            ];
-        }
-
-        // Backup + atomic write
-        $backupPath = $this->backupScheduleFileOrThrow(self::SCHEDULE_JSON_PATH);
-        $this->writeScheduleJsonAtomicallyOrThrow(self::SCHEDULE_JSON_PATH, $plan['newSchedule']);
-
-        // Local verification (authoritative)
-        $this->verifyScheduleJsonKeysOrThrow($plan['expectedManagedKeys'], $plan['expectedDeletedKeys']);
-
-        // Projection verification (tolerant lag) for creates/updates only
-        $verification = $this->verifyEntriesPresent(array_merge($plan['createsExpectedEntries'], $plan['updatesExpectedEntries']));
-        if (!$verification['ok']) {
-            $msg = 'Scheduler apply verification failed (schedule.json written but projection did not reflect expected entries)';
-            GcsLogger::instance()->error($msg, [
-                'backup'       => $backupPath,
-                'beforeCount'  => $beforeCount,
-                'afterCount'   => count($plan['newSchedule']),
-                'verification' => $verification,
-            ]);
-            throw new RuntimeException($msg . ': ' . ($verification['message'] ?? 'unknown'));
-        }
-
-        GcsLogger::instance()->info('Scheduler apply completed', [
-            'creates'      => count($plan['creates']),
-            'updates'      => count($plan['updates']),
-            'deletes'      => count($plan['deletes']),
-            'backup'       => $backupPath,
-            'beforeCount'  => $beforeCount,
-            'afterCount'   => count($plan['newSchedule']),
-            'verification' => $verification,
-        ]);
-
-        return [
-            'adds'         => count($plan['creates']),
-            'updates'      => count($plan['updates']),
-            'deletes'      => count($plan['deletes']),
-            'dryRun'       => false,
-            'intents_seen' => count($intents),
-            'errors'       => [],
-        ];
+        return $backup;
     }
 
     /**
-     * Compute diff between desired entries and existing schedule.json using identity key.
-     *
-     * Returns arrays compatible with DiffPreviewer::normalizeResultForUi:
-     *   ['creates'=>[], 'updates'=>[], 'deletes'=>[]]
-     *
-     * @param array<int,array<string,mixed>> $desiredEntries
-     * @return array{creates: array<int,mixed>, updates: array<int,mixed>, deletes: array<int,mixed>}
+     * @param array<int,array<string,mixed>> $data
      */
-    private function computeDiffAgainstExisting(array $desiredEntries): array
+    public static function writeScheduleJsonAtomicallyOrThrow(string $path, array $data): void
     {
-        $existingRaw = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
-
-        $existingByKey = [];
-        foreach ($existingRaw as $ex) {
-            $key = GcsSchedulerIdentity::extractUid($ex);
-            if ($key === null) continue;
-            $existingByKey[$key] = $ex;
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            throw new RuntimeException("schedule.json directory not found: '{$dir}'");
         }
 
-        $creates = [];
-        $updates = [];
-        $seenKeys = [];
+        $tmp = $path . '.tmp-' . getmypid();
 
-        foreach ($desiredEntries as $d) {
-            $key = GcsSchedulerIdentity::extractUid($d);
-            if ($key === null) {
-                // Desired entry without identity is ignored
-                continue;
-            }
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json) || $json === '') {
+            throw new RuntimeException('Failed to encode schedule.json');
+        }
+        $json .= "\n";
 
-            $seenKeys[$key] = true;
-
-            if (!isset($existingByKey[$key])) {
-                $creates[] = '(create)';
-                continue;
-            }
-
-            if (!self::entriesEquivalentForCompare($existingByKey[$key], $d)) {
-                $updates[] = '(update)';
-            }
+        $written = @file_put_contents($tmp, $json, LOCK_EX);
+        if ($written === false) {
+            throw new RuntimeException("Failed to write temp schedule file '{$tmp}'");
         }
 
-        $deletes = [];
-        foreach ($existingByKey as $key => $_ex) {
-            if (!isset($seenKeys[$key])) {
-                $deletes[] = '(delete)';
-            }
+        if (file_exists($path)) {
+            @chmod($tmp, fileperms($path) & 0777);
         }
 
-        return [
-            'creates' => $creates,
-            'updates' => $updates,
-            'deletes' => $deletes,
-        ];
-    }
-
-    /**
-     * Plan apply: compute create/update/delete and build next schedule.json.
-     *
-     * OWNERSHIP:
-     * - Unmanaged entries (no key) are preserved exactly.
-     * - Managed entries are replaced by desired if present, else removed.
-     *
-     * @param array<int,array<string,mixed>> $existing
-     * @param array<int,array<string,mixed>> $desired
-     * @return array<string,mixed>
-     */
-    private function planApply(array $existing, array $desired): array
-    {
-        // Desired entries by key (keep insertion order for appends)
-        $desiredByKey = [];
-        $desiredKeysInOrder = [];
-        foreach ($desired as $d) {
-            $k = GcsSchedulerIdentity::extractUid($d);
-            if ($k === null) continue;
-            if (!isset($desiredByKey[$k])) {
-                $desiredKeysInOrder[] = $k;
-            }
-            $desiredByKey[$k] = $d;
+        if (!@rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new RuntimeException("Failed to replace schedule.json atomically at '{$path}'");
         }
-
-        // Existing managed entries by key
-        $existingManagedByKey = [];
-        foreach ($existing as $ex) {
-            $k = GcsSchedulerIdentity::extractUid($ex);
-            if ($k === null) continue;
-            $existingManagedByKey[$k] = $ex;
-        }
-
-        $createsKeys = [];
-        $updatesKeys = [];
-        $deletesKeys = [];
-
-        foreach ($desiredByKey as $k => $d) {
-            if (!isset($existingManagedByKey[$k])) {
-                $createsKeys[] = $k;
-                continue;
-            }
-            if (!self::entriesEquivalentForCompare($existingManagedByKey[$k], $d)) {
-                $updatesKeys[] = $k;
-            }
-        }
-
-        foreach ($existingManagedByKey as $k => $_ex) {
-            if (!isset($desiredByKey[$k])) {
-                $deletesKeys[] = $k;
-            }
-        }
-
-        // Build new schedule content
-        $newSchedule = [];
-        $writtenKeys = [];
-
-        foreach ($existing as $ex) {
-            $k = GcsSchedulerIdentity::extractUid($ex);
-            if ($k === null) {
-                // Unmanaged: keep as-is
-                $newSchedule[] = $ex;
-                continue;
-            }
-
-            if (!isset($desiredByKey[$k])) {
-                // Managed and no longer desired: delete
-                continue;
-            }
-
-            // Managed and desired: replace with desired (update) or same (noop)
-            $newSchedule[] = $desiredByKey[$k];
-            $writtenKeys[$k] = true;
-        }
-
-        // Append new creates (desired keys not already written)
-        foreach ($desiredKeysInOrder as $k) {
-            if (!isset($writtenKeys[$k])) {
-                $newSchedule[] = $desiredByKey[$k];
-                $writtenKeys[$k] = true;
-            }
-        }
-
-        // Verification key sets
-        $expectedManagedKeys = array_keys($desiredByKey);
-
-        // Projection verification uses full entries (creates+updates only)
-        $createsExpectedEntries = [];
-        foreach ($createsKeys as $k) {
-            $createsExpectedEntries[] = $desiredByKey[$k];
-        }
-        $updatesExpectedEntries = [];
-        foreach ($updatesKeys as $k) {
-            $updatesExpectedEntries[] = $desiredByKey[$k];
-        }
-
-        return [
-            'creates'                => $createsKeys,
-            'updates'                => $updatesKeys,
-            'deletes'                => $deletesKeys,
-            'newSchedule'            => $newSchedule,
-            'expectedManagedKeys'    => $expectedManagedKeys,
-            'expectedDeletedKeys'    => $deletesKeys,
-            'createsExpectedEntries' => $createsExpectedEntries,
-            'updatesExpectedEntries' => $updatesExpectedEntries,
-        ];
     }
 
     /**
@@ -351,7 +128,7 @@ class SchedulerSync
      * @param array<int,string> $expectedManagedKeys
      * @param array<int,string> $expectedDeletedKeys
      */
-    private function verifyScheduleJsonKeysOrThrow(array $expectedManagedKeys, array $expectedDeletedKeys): void
+    public static function verifyScheduleJsonKeysOrThrow(array $expectedManagedKeys, array $expectedDeletedKeys): void
     {
         $after = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
 
@@ -376,25 +153,14 @@ class SchedulerSync
     }
 
     /**
-     * Compare entries ignoring non-semantic fields.
+     * Public wrapper for canonical intent -> schedule entry mapping.
      *
-     * @param array<string,mixed> $a
-     * @param array<string,mixed> $b
+     * @param array<string,mixed> $intent
+     * @return array<string,mixed>|string
      */
-    private static function entriesEquivalentForCompare(array $a, array $b): bool
+    public static function intentToScheduleEntryPublic(array $intent)
     {
-        unset($a['id'], $a['lastRun'], $b['id']);
-        return self::normalizeEntryForCompare($a) === self::normalizeEntryForCompare($b);
-    }
-
-    /**
-     * @param array<string,mixed> $entry
-     * @return array<string,mixed>
-     */
-    private static function normalizeEntryForCompare(array $entry): array
-    {
-        ksort($entry);
-        return $entry;
+        return self::intentToScheduleEntryStatic($intent);
     }
 
     /**
@@ -556,200 +322,6 @@ class SchedulerSync
         return ($dt instanceof DateTime) && ($dt->format('Y-m-d') === $s);
     }
 
-    private function readScheduleJsonOrThrow(string $path): array
-    {
-        if (!file_exists($path)) {
-            throw new RuntimeException("schedule.json not found at '{$path}'");
-        }
-
-        $raw = @file_get_contents($path);
-        if ($raw === false) {
-            throw new RuntimeException("Unable to read schedule.json at '{$path}'");
-        }
-
-        $rawTrim = trim($raw);
-        if ($rawTrim === '') {
-            return [];
-        }
-
-        $decoded = json_decode($rawTrim, true);
-        if (!is_array($decoded)) {
-            throw new RuntimeException("schedule.json is not valid JSON array at '{$path}'");
-        }
-
-        foreach ($decoded as $i => $entry) {
-            if (!is_array($entry)) {
-                throw new RuntimeException("schedule.json entry #{$i} is not an object/array");
-            }
-        }
-
-        return $decoded;
-    }
-
-    private function backupScheduleFileOrThrow(string $path): string
-    {
-        $ts = date('Ymd-His');
-        $backup = $path . '.bak-' . $ts;
-
-        if (!@copy($path, $backup)) {
-            throw new RuntimeException("Failed to create backup '{$backup}' from '{$path}'");
-        }
-
-        return $backup;
-    }
-
-    private function writeScheduleJsonAtomicallyOrThrow(string $path, array $data): void
-    {
-        $dir = dirname($path);
-        if (!is_dir($dir)) {
-            throw new RuntimeException("schedule.json directory not found: '{$dir}'");
-        }
-
-        $tmp = $path . '.tmp-' . getmypid();
-
-        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-        if (!is_string($json) || $json === '') {
-            throw new RuntimeException('Failed to encode schedule.json');
-        }
-        $json .= "\n";
-
-        $written = @file_put_contents($tmp, $json, LOCK_EX);
-        if ($written === false) {
-            throw new RuntimeException("Failed to write temp schedule file '{$tmp}'");
-        }
-
-        if (file_exists($path)) {
-            @chmod($tmp, fileperms($path) & 0777);
-        }
-
-        if (!@rename($tmp, $path)) {
-            @unlink($tmp);
-            throw new RuntimeException("Failed to replace schedule.json atomically at '{$path}'");
-        }
-    }
-
-    private function verifyEntriesPresent(array $expectedEntries): array
-    {
-        if (count($expectedEntries) === 0) {
-            return ['ok' => true, 'attempts' => 0, 'missing' => []];
-        }
-
-        $attempts = 10;
-        $sleepUs = 500000;        // 500ms between attempts
-        $initialSleepUs = 750000; // settle after schedule.json write
-
-        usleep($initialSleepUs);
-
-        for ($i = 1; $i <= $attempts; $i++) {
-            $proj = $this->httpGetJson(self::FPP_SCHEDULE_PROJECTION_URL);
-            if (is_array($proj)) {
-                $entries = $proj['schedule']['entries'] ?? null;
-                if (is_array($entries)) {
-                    $missing = $this->findMissingInProjection($expectedEntries, $entries);
-                    if (count($missing) === 0) {
-                        return ['ok' => true, 'attempts' => $i, 'missing' => []];
-                    }
-                    GcsLogger::instance()->warn('Scheduler projection missing expected entries', [
-                        'attempt' => $i,
-                        'missing' => $missing,
-                    ]);
-                }
-            }
-
-            if ($i < $attempts) usleep($sleepUs);
-        }
-
-        return [
-            'ok' => false,
-            'attempts' => $attempts,
-            'message' => 'Expected entries not found in projection after retries',
-        ];
-    }
-
-    private function findMissingInProjection(array $expected, array $projectionEntries): array
-    {
-        $missing = [];
-
-        foreach ($expected as $exp) {
-            $expPlaylist  = (string)($exp['playlist'] ?? '');
-            $expCommand   = (string)($exp['command'] ?? '');
-            $expStartDate = $exp['startDate'] ?? null;
-            $expStartTime = $exp['startTime'] ?? null;
-
-            $expStartTimeNorm = self::normalizeTimeToHm(is_string($expStartTime) ? $expStartTime : null);
-
-            $found = false;
-
-            foreach ($projectionEntries as $p) {
-                if (!is_array($p)) continue;
-
-                $pTypeRaw = $p['type'] ?? null;
-                $pType = is_string($pTypeRaw) ? strtolower($pTypeRaw) : '';
-                if ($pType === '') {
-                    if (!empty($p['playlist'])) $pType = 'playlist';
-                    if (!empty($p['command']))  $pType = 'command';
-                }
-
-                if ($expPlaylist !== '') {
-                    if ($pType !== 'playlist') continue;
-                    if ((string)($p['playlist'] ?? '') !== $expPlaylist) continue;
-                } else {
-                    if ($pType !== 'command') continue;
-                    if ((string)($p['command'] ?? '') !== $expCommand) continue;
-                }
-
-                if (($p['startDate'] ?? null) !== $expStartDate) continue;
-
-                $pStartTimeNorm = self::normalizeTimeToHm(is_string($p['startTime'] ?? null) ? (string)$p['startTime'] : null);
-                if ($expStartTimeNorm !== null && $pStartTimeNorm !== null) {
-                    if ($pStartTimeNorm !== $expStartTimeNorm) continue;
-                } else {
-                    if (($p['startTime'] ?? null) !== $expStartTime) continue;
-                }
-
-                $found = true;
-                break;
-            }
-
-            if (!$found) {
-                $missing[] = [
-                    'playlist'  => $expPlaylist,
-                    'command'   => $expCommand,
-                    'startDate' => $expStartDate,
-                    'startTime' => $expStartTime,
-                ];
-            }
-        }
-
-        return $missing;
-    }
-
-    private static function normalizeTimeToHm(?string $t): ?string
-    {
-        if ($t === null) return null;
-        $tt = trim($t);
-        if ($tt === '') return null;
-        if (preg_match('/^\d{2}:\d{2}/', $tt) === 1) return substr($tt, 0, 5);
-        return null;
-    }
-
-    private function httpGetJson(string $url): ?array
-    {
-        $ctx = stream_context_create([
-            'http' => [
-                'method'  => 'GET',
-                'timeout' => 3,
-                'header'  => "Accept: application/json\r\n",
-            ]
-        ]);
-
-        $raw = @file_get_contents($url, false, $ctx);
-        if ($raw === false || trim($raw) === '') return null;
-
-        $decoded = json_decode($raw, true);
-        return is_array($decoded) ? $decoded : null;
-    }
-
     private static function coalesceString(array $src, array $keys, string $default): string
     {
         foreach ($keys as $k) {
@@ -788,6 +360,6 @@ class SchedulerSync
 }
 
 /**
- * Compatibility alias
+ * Compatibility alias (kept for now)
  */
 class GcsSchedulerSync extends SchedulerSync {}
