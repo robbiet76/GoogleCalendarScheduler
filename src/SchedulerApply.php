@@ -55,6 +55,16 @@ final class GcsSchedulerApply
             ];
         }
 
+        GcsLogger::instance()->info('GCS APPLY DEBUG', [
+            'existingRawCount' => count($existing),
+            'desiredCount'     => count($desired),
+            'creates'          => $applyPlan['creates'],
+            'updates'          => $applyPlan['updates'],
+            'deletes'          => $applyPlan['deletes'],
+            'newScheduleCount' => count($applyPlan['newSchedule']),
+        ]);
+
+
         // Backup + atomic write
         $backupPath = SchedulerSync::backupScheduleFileOrThrow(SchedulerSync::SCHEDULE_JSON_PATH);
         SchedulerSync::writeScheduleJsonAtomicallyOrThrow(SchedulerSync::SCHEDULE_JSON_PATH, $applyPlan['newSchedule']);
