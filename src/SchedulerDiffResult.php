@@ -1,59 +1,59 @@
 <?php
+declare(strict_types=1);
 
+/**
+ * Scheduler diff result.
+ *
+ * Immutable value object representing scheduler changes.
+ */
 final class GcsSchedulerDiffResult
 {
     /** @var array<int,array<string,mixed>> */
-    private array $toCreate = [];
+    private array $toCreate;
+
     /** @var array<int,array<string,mixed>> */
-    private array $toUpdate = [];
-    /** @var array<int,array<string,mixed>> */
-    private array $toDelete = [];
+    private array $toUpdate;
+
+    /** @var array<int,GcsExistingScheduleEntry> */
+    private array $toDelete;
 
     /**
-     * @param array<int,array<string,mixed>> $create
-     * @param array<int,array<string,mixed>> $update
-     * @param array<int,array<string,mixed>> $delete
+     * @param array<int,array<string,mixed>>      $toCreate
+     * @param array<int,array<string,mixed>>      $toUpdate
+     * @param array<int,GcsExistingScheduleEntry> $toDelete
      */
-    public function __construct(array $create, array $update, array $delete)
+    public function __construct(array $toCreate, array $toUpdate, array $toDelete)
     {
-        $this->toCreate = $create;
-        $this->toUpdate = $update;
-        $this->toDelete = $delete;
+        $this->toCreate = $toCreate;
+        $this->toUpdate = $toUpdate;
+        $this->toDelete = $toDelete;
     }
 
-    /**
-     * @return array<int,array<string,mixed>>
-     */
-    public function getToCreate(): array
+    /** @return array<int,array<string,mixed>> */
+    public function creates(): array
     {
         return $this->toCreate;
     }
 
-    /**
-     * @return array<int,array<string,mixed>>
-     */
-    public function getToUpdate(): array
+    /** @return array<int,array<string,mixed>> */
+    public function updates(): array
     {
         return $this->toUpdate;
     }
 
-    /**
-     * @return array<int,array<string,mixed>>
-     */
-    public function getToDelete(): array
+    /** @return array<int,GcsExistingScheduleEntry> */
+    public function deletes(): array
     {
         return $this->toDelete;
     }
 
-    /**
-     * @return array<string,mixed>
-     */
-    public function toArray(): array
+    /** Convenience counts (optional but useful) */
+    public function counts(): array
     {
         return [
-            'create' => $this->toCreate,
-            'update' => $this->toUpdate,
-            'delete' => $this->toDelete,
+            'creates' => count($this->toCreate),
+            'updates' => count($this->toUpdate),
+            'deletes' => count($this->toDelete),
         ];
     }
 }

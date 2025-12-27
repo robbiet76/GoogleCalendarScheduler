@@ -1,29 +1,189 @@
 <?php
+declare(strict_types=1);
 
 final class GcsSchedulerApply
 {
-    private bool $dryRun;
-
-    public function __construct(bool $dryRun)
+    /**
+     * Apply the current plan.
+     *
+     * dryRun is ONLY respected here (apply boundary).
+     *
+     * @param array $cfg
+     * @return array<string,mixed>
+     */
+    public static function applyFromConfig(array $cfg): array
     {
-        $this->dryRun = $dryRun;
+        $plan = SchedulerPlanner::plan($cfg);
+
+        $dryRun = !empty($cfg['runtime']['dry_run']);
+
+        // Counts from the planner diff (authoritative preview)
+        $counts = [
+            'creates' => isset($plan['creates']) && is_array($plan['creates']) ? count($plan['creates']) : 0,
+            'updates' => isset($plan['updates']) && is_array($plan['updates']) ? count($plan['updates']) : 0,
+            'deletes' => isset($plan['deletes']) && is_array($plan['deletes']) ? count($plan['deletes']) : 0,
+        ];
+
+        // If dry-run, do NOT write; just return counts and plan state
+        if ($dryRun) {
+            return [
+                'ok' => true,
+                'dryRun' => true,
+                'counts' => $counts,
+            ];
+        }
+
+        // Live apply: build new schedule.json from existingRaw + desiredEntries (single truth)
+        $existing = (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [];
+        $desired  = (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [];
+
+        $applyPlan = self::planApply($existing, $desired);
+
+        // If no changes, return noop
+        if (count($applyPlan['creates']) === 0 && count($applyPlan['updates']) === 0 && count($applyPlan['deletes']) === 0) {
+            return [
+                'ok' => true,
+                'dryRun' => false,
+                'counts' => ['creates' => 0, 'updates' => 0, 'deletes' => 0],
+                'noop' => true,
+            ];
+        }
+
+        // Backup + atomic write
+        $backupPath = SchedulerSync::backupScheduleFileOrThrow(SchedulerSync::SCHEDULE_JSON_PATH);
+        SchedulerSync::writeScheduleJsonAtomicallyOrThrow(SchedulerSync::SCHEDULE_JSON_PATH, $applyPlan['newSchedule']);
+
+        // Verify schedule.json keys match expected result
+        SchedulerSync::verifyScheduleJsonKeysOrThrow($applyPlan['expectedManagedKeys'], $applyPlan['expectedDeletedKeys']);
+
+        return [
+            'ok' => true,
+            'dryRun' => false,
+            'counts' => [
+                'creates' => count($applyPlan['creates']),
+                'updates' => count($applyPlan['updates']),
+                'deletes' => count($applyPlan['deletes']),
+            ],
+            'backup' => $backupPath,
+        ];
     }
 
     /**
-     * Apply a computed diff.
+     * Plan apply: compute create/update/delete and build next schedule.json.
      *
+     * OWNERSHIP:
+     * - Unmanaged entries (no key) are preserved exactly.
+     * - Managed entries are replaced by desired if present, else removed.
+     *
+     * @param array<int,array<string,mixed>> $existing
+     * @param array<int,array<string,mixed>> $desired
      * @return array<string,mixed>
      */
-    public function apply(GcsSchedulerDiffResult $diff): array
+    private static function planApply(array $existing, array $desired): array
     {
-        // Baseline apply logic is validated; Phase 11 item #2 changes naming only.
-        // Keep behavior identical.
+        // Desired entries by key (keep insertion order for appends)
+        $desiredByKey = [];
+        $desiredKeysInOrder = [];
+        foreach ($desired as $d) {
+            if (!is_array($d)) continue;
+            $k = GcsSchedulerIdentity::extractUid($d);
+            if ($k === null) continue;
+            if (!isset($desiredByKey[$k])) {
+                $desiredKeysInOrder[] = $k;
+            }
+            $desiredByKey[$k] = $d;
+        }
+
+        // Existing managed entries by key
+        $existingManagedByKey = [];
+        foreach ($existing as $ex) {
+            if (!is_array($ex)) continue;
+            $k = GcsSchedulerIdentity::extractUid($ex);
+            if ($k === null) continue;
+            $existingManagedByKey[$k] = $ex;
+        }
+
+        $createsKeys = [];
+        $updatesKeys = [];
+        $deletesKeys = [];
+
+        foreach ($desiredByKey as $k => $d) {
+            if (!isset($existingManagedByKey[$k])) {
+                $createsKeys[] = $k;
+                continue;
+            }
+            if (!self::entriesEquivalentForCompare($existingManagedByKey[$k], $d)) {
+                $updatesKeys[] = $k;
+            }
+        }
+
+        foreach ($existingManagedByKey as $k => $_ex) {
+            if (!isset($desiredByKey[$k])) {
+                $deletesKeys[] = $k;
+            }
+        }
+
+        // Build new schedule content
+        $newSchedule = [];
+        $writtenKeys = [];
+
+        foreach ($existing as $ex) {
+            if (!is_array($ex)) continue;
+
+            $k = GcsSchedulerIdentity::extractUid($ex);
+            if ($k === null) {
+                // Unmanaged: keep as-is
+                $newSchedule[] = $ex;
+                continue;
+            }
+
+            if (!isset($desiredByKey[$k])) {
+                // Managed and no longer desired: delete
+                continue;
+            }
+
+            // Managed and desired: replace with desired (update) or same (noop)
+            $newSchedule[] = $desiredByKey[$k];
+            $writtenKeys[$k] = true;
+        }
+
+        // Append new creates (desired keys not already written)
+        foreach ($desiredKeysInOrder as $k) {
+            if (!isset($writtenKeys[$k])) {
+                $newSchedule[] = $desiredByKey[$k];
+                $writtenKeys[$k] = true;
+            }
+        }
 
         return [
-            'dryRun'  => $this->dryRun,
-            'create'  => count($diff->getToCreate()),
-            'update'  => count($diff->getToUpdate()),
-            'delete'  => count($diff->getToDelete()),
+            'creates'             => $createsKeys,
+            'updates'             => $updatesKeys,
+            'deletes'             => $deletesKeys,
+            'newSchedule'         => $newSchedule,
+            'expectedManagedKeys' => array_keys($desiredByKey),
+            'expectedDeletedKeys' => $deletesKeys,
         ];
+    }
+
+    /**
+     * Compare entries ignoring non-semantic fields.
+     *
+     * @param array<string,mixed> $a
+     * @param array<string,mixed> $b
+     */
+    private static function entriesEquivalentForCompare(array $a, array $b): bool
+    {
+        unset($a['id'], $a['lastRun'], $b['id']);
+        return self::normalizeEntryForCompare($a) === self::normalizeEntryForCompare($b);
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private static function normalizeEntryForCompare(array $entry): array
+    {
+        ksort($entry);
+        return $entry;
     }
 }

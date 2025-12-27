@@ -96,12 +96,15 @@ if (isset($_GET['endpoint'])) {
 
         // Apply (ONLY write path)
         if ($_GET['endpoint'] === 'experimental_apply') {
-            $result = DiffPreviewer::apply($cfg);
-            $counts = DiffPreviewer::countsFromResult($result);
+            $result = GcsSchedulerApply::applyFromConfig($cfg);
 
             echo json_encode([
-                'ok'     => true,
-                'counts' => $counts,
+                'ok'     => !empty($result['ok']),
+                'counts' => $result['counts'] ?? ['creates'=>0,'updates'=>0,'deletes'=>0],
+                'dryRun' => $result['dryRun'] ?? null,
+                'backup' => $result['backup'] ?? null,
+                'noop'   => $result['noop'] ?? null,
+                'error'  => $result['error'] ?? null,
             ]);
             exit;
         }

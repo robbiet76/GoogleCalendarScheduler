@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 final class GcsSchedulerDiff
 {
@@ -18,7 +19,9 @@ final class GcsSchedulerDiff
 
     public function compute(): GcsSchedulerDiffResult
     {
+        // Index existing entries by GCS UID
         $existingByUid = [];
+
         foreach ($this->state->getEntries() as $entry) {
             $uid = $entry->getGcsUid();
             if ($uid !== null) {
@@ -28,16 +31,21 @@ final class GcsSchedulerDiff
 
         $toCreate = [];
         $toUpdate = [];
-        $seen     = [];
+        $seenUids = [];
 
+        // Process desired entries
         foreach ($this->desired as $desiredEntry) {
+            if (!is_array($desiredEntry)) {
+                continue;
+            }
+
             $uid = GcsSchedulerIdentity::extractUid($desiredEntry);
             if ($uid === null) {
                 // Desired entry without GCS identity is ignored
                 continue;
             }
 
-            $seen[$uid] = true;
+            $seenUids[$uid] = true;
 
             if (!isset($existingByUid[$uid])) {
                 $toCreate[] = $desiredEntry;
@@ -54,9 +62,11 @@ final class GcsSchedulerDiff
             }
         }
 
+        // Anything existing but not seen in desired must be deleted
         $toDelete = [];
+
         foreach ($existingByUid as $uid => $entry) {
-            if (!isset($seen[$uid])) {
+            if (!isset($seenUids[$uid])) {
                 $toDelete[] = $entry;
             }
         }

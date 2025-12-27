@@ -1,21 +1,17 @@
 <?php
+declare(strict_types=1);
 
 final class GcsSchedulerState
 {
     /** @var array<int,GcsExistingScheduleEntry> */
-    private array $entries = [];
+    private array $entries;
 
-    public static function load(int $horizonDays): self
+    /**
+     * @param array<int,GcsExistingScheduleEntry> $entries
+     */
+    public function __construct(array $entries)
     {
-        $self = new self();
-
-        // NOTE: existing scheduler read logic lives here.
-        // It is already implemented/validated in Phase 8–10 baseline.
-
-        // Keep current behavior: placeholder remains minimal in this snippet.
-        // (No behavior changes intended in Phase 11 item #2.)
-
-        return $self;
+        $this->entries = $entries;
     }
 
     /**

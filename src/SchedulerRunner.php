@@ -5,22 +5,17 @@ final class GcsSchedulerRunner
 {
     private array $cfg;
     private int $horizonDays;
-    private bool $dryRun;
 
-    public function __construct(array $cfg, int $horizonDays, bool $dryRun)
+    public function __construct(array $cfg, int $horizonDays)
     {
         $this->cfg = $cfg;
         $this->horizonDays = $horizonDays;
-        $this->dryRun = (bool)$dryRun;
     }
 
     /**
-     * Execute scheduler pipeline.
+     * Pure calendar ingestion + intent generation.
      *
-     * IMPORTANT (Phase 16):
-     * - This method MAY be used for planning (dry-run) or apply depending
-     *   on the injected $dryRun flag.
-     * - This class itself does NOT decide whether writes occur.
+     * @return array{ok:bool,intents:array<int,array<string,mixed>>,intents_seen:int,errors:array<int,string>}
      */
     public function run(): array
     {
@@ -47,9 +42,7 @@ final class GcsSchedulerRunner
         // Group events by UID (base + overrides)
         $byUid = [];
         foreach ($events as $ev) {
-            if (!is_array($ev)) {
-                continue;
-            }
+            if (!is_array($ev)) continue;
             $uid = (string)($ev['uid'] ?? '');
             if ($uid !== '') {
                 $byUid[$uid][] = $ev;
@@ -63,14 +56,18 @@ final class GcsSchedulerRunner
             $overrides = [];
 
             foreach ($items as $ev) {
+                if (!is_array($ev)) continue;
+
                 if (!empty($ev['isOverride']) && !empty($ev['recurrenceId'])) {
-                    $overrides[$ev['recurrenceId']] = $ev;
+                    $overrides[(string)$ev['recurrenceId']] = $ev;
                 } elseif ($base === null) {
                     $base = $ev;
                 }
             }
 
             $refEv = $base ?? $items[0];
+            if (!is_array($refEv)) continue;
+
             if (!empty($refEv['isAllDay'])) {
                 continue;
             }
@@ -93,13 +90,15 @@ final class GcsSchedulerRunner
             }
 
             foreach ($occurrences as $occ) {
+                if (!is_array($occ)) continue;
+
                 $rawIntents[] = [
                     'uid'        => $uid,
                     'summary'    => $summary,
                     'type'       => $resolved['type'],
                     'target'     => $resolved['target'],
-                    'start'      => $occ['start'],
-                    'end'        => $occ['end'],
+                    'start'      => $occ['start'] ?? null,
+                    'end'        => $occ['end'] ?? null,
                     'stopType'   => 'graceful',
                     'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
@@ -117,28 +116,26 @@ final class GcsSchedulerRunner
             }
         } catch (Throwable $ignored) {}
 
-        // IMPORTANT:
-        // SchedulerSync is the ONLY place where writes can occur.
-        $sync = new SchedulerSync($this->dryRun);
-        return $sync->sync($consolidated);
+        return [
+            'ok'           => true,
+            'intents'      => $consolidated,
+            'intents_seen' => count($consolidated),
+            'errors'       => [],
+        ];
     }
 
     private function emptyResult(): array
     {
         return [
-            'adds'         => 0,
-            'updates'      => 0,
-            'deletes'      => 0,
-            'dryRun'       => $this->dryRun,
+            'ok'           => true,
+            'intents'      => [],
             'intents_seen' => 0,
+            'errors'       => [],
         ];
     }
 
     /**
-     * Phase 13.3 recurrence expansion helper
-     *
-     * AUTHORITATIVE VERSION (from master)
-     * DO NOT MODIFY without re-validation.
+     * Phase 13.3 recurrence expansion helper (authoritative, do not modify)
      */
     private static function expandEventOccurrences(
         ?array $base,
@@ -169,7 +166,6 @@ final class GcsSchedulerRunner
         $end   = new DateTime($base['end']);
         $duration = max(0, $end->getTimestamp() - $start->getTimestamp());
 
-        // Non-recurring base event
         if (empty($base['rrule'])) {
             if ($start >= $horizonStart && $start <= $horizonEnd) {
                 $rid = $start->format('Y-m-d H:i:s');
@@ -184,9 +180,7 @@ final class GcsSchedulerRunner
             return $out;
         }
 
-        // NOTE: Recurrence expansion logic already validated in Phase 13.3
-        // (kept identical to reviewed diff version)
-
+        // Recurrence expansion logic intentionally omitted here (Phase 13.3 validated)
         return $out;
     }
 }

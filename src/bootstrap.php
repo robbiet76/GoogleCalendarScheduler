@@ -30,17 +30,23 @@ require_once __DIR__ . '/IcsParser.php';
 
 /*
  * --------------------------------------------------------------------
- * Intent + mapping pipeline
+ * Intent + metadata resolution
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/TargetResolver.php';
 require_once __DIR__ . '/IntentConsolidator.php';
 require_once __DIR__ . '/YamlMetadata.php';
+
+/*
+ * --------------------------------------------------------------------
+ * Legacy mapper (kept for compatibility; not used in new pipeline)
+ * --------------------------------------------------------------------
+ */
 require_once __DIR__ . '/FppScheduleMapper.php';
 
 /*
  * --------------------------------------------------------------------
- * Scheduler identity + comparison (Phase 11)
+ * Scheduler identity + comparison (Phase 11+)
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/SchedulerIdentity.php';
@@ -48,7 +54,7 @@ require_once __DIR__ . '/SchedulerComparator.php';
 
 /*
  * --------------------------------------------------------------------
- * Scheduler state + diff + apply
+ * Scheduler state + diff primitives (PURE)
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/ExistingScheduleEntry.php';
@@ -56,19 +62,31 @@ require_once __DIR__ . '/ComparableScheduleEntry.php';
 require_once __DIR__ . '/SchedulerState.php';
 require_once __DIR__ . '/SchedulerDiffResult.php';
 require_once __DIR__ . '/SchedulerDiff.php';
-require_once __DIR__ . '/SchedulerApply.php';
+
+/*
+ * --------------------------------------------------------------------
+ * Scheduler helpers (PURE I/O + mapping only)
+ * --------------------------------------------------------------------
+ */
 require_once __DIR__ . '/SchedulerSync.php';
 
 /*
  * --------------------------------------------------------------------
- * Runner (top-level orchestrator)
+ * Calendar ingestion runner (PURE)
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/SchedulerRunner.php';
 
 /*
  * --------------------------------------------------------------------
- * Planning-only entry point (Phase 16.5)
+ * Planner (PURE: desired + existing + diff)
  * --------------------------------------------------------------------
  */
 require_once __DIR__ . '/SchedulerPlanner.php';
+
+/*
+ * --------------------------------------------------------------------
+ * Apply (ONLY write path; dry-run boundary)
+ * --------------------------------------------------------------------
+ */
+require_once __DIR__ . '/SchedulerApply.php';
