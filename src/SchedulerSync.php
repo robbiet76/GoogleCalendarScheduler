@@ -18,6 +18,11 @@ declare(strict_types=1);
  * - Preserve canonical GCS identity tag, but store it in args[] (NOT in playlist name)
  *   so the FPP UI can still resolve and display the real playlist/sequence name.
  * - Tag format (unchanged): |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
+ *
+ * Phase 17.2:
+ * - Dry-run now computes a real diff against existing schedule.json using canonical identity key
+ *   (via GcsSchedulerIdentity::extractKey), and returns it under result['diff'] so preview
+ *   converges with apply.
  */
 class SchedulerSync
 {
@@ -111,7 +116,7 @@ class SchedulerSync
     public function sync(array $intents): array
     {
         $errors = [];
-        $entriesToAppend = [];
+        $entriesDesired = [];
 
         foreach ($intents as $idx => $intent) {
             GcsLogger::instance()->info(
@@ -130,25 +135,29 @@ class SchedulerSync
                 continue;
             }
 
-            $entriesToAppend[] = $entryOrError;
+            $entriesDesired[] = $entryOrError;
         }
 
-        // Dry-run path: never throw; just report
+        // Dry-run path: compute real diff against existing schedule.json and return under ['diff']
         if ($this->dryRun) {
-            foreach ($entriesToAppend as $eIdx => $entry) {
+            foreach ($entriesDesired as $eIdx => $entry) {
                 GcsLogger::instance()->info('Scheduler normalized entry (dry-run)', [
                     'index' => $eIdx,
                     'entry' => $entry,
                 ]);
             }
 
+            $diff = $this->computeDiffAgainstExisting($entriesDesired);
+
             return [
-                'adds'         => count($entriesToAppend),
-                'updates'      => 0,
-                'deletes'      => 0,
-                'dryRun'       => true,
-                'intents_seen' => count($intents),
-                'errors'       => $errors,
+                'ok'          => true,
+                'diff'        => $diff,
+                'adds'        => count($diff['creates']),
+                'updates'     => count($diff['updates']),
+                'deletes'     => count($diff['deletes']),
+                'dryRun'      => true,
+                'intents_seen'=> count($intents),
+                'errors'      => $errors,
             ];
         }
 
@@ -159,7 +168,7 @@ class SchedulerSync
             throw new RuntimeException($msg . ': ' . implode('; ', $errors));
         }
 
-        if (count($entriesToAppend) === 0) {
+        if (count($entriesDesired) === 0) {
             return [
                 'adds'         => 0,
                 'updates'      => 0,
@@ -175,14 +184,14 @@ class SchedulerSync
         $beforeCount = count($existing);
 
         // Append-only
-        $newSchedule = array_merge($existing, $entriesToAppend);
+        $newSchedule = array_merge($existing, $entriesDesired);
 
         // Backup + atomic write
         $backupPath = $this->backupScheduleFileOrThrow(self::SCHEDULE_JSON_PATH);
         $this->writeScheduleJsonAtomicallyOrThrow(self::SCHEDULE_JSON_PATH, $newSchedule);
 
         // Verify read-after-write via projection API
-        $verification = $this->verifyEntriesPresent($entriesToAppend);
+        $verification = $this->verifyEntriesPresent($entriesDesired);
 
         if (!$verification['ok']) {
             $msg = 'Scheduler apply verification failed (schedule.json written but projection did not reflect expected entries)';
@@ -197,7 +206,7 @@ class SchedulerSync
         }
 
         GcsLogger::instance()->info('Scheduler apply completed', [
-            'adds' => count($entriesToAppend),
+            'adds' => count($entriesDesired),
             'backup' => $backupPath,
             'beforeCount' => $beforeCount,
             'afterCount' => count($newSchedule),
@@ -205,13 +214,103 @@ class SchedulerSync
         ]);
 
         return [
-            'adds'         => count($entriesToAppend),
+            'adds'         => count($entriesDesired),
             'updates'      => 0,
             'deletes'      => 0,
             'dryRun'       => false,
             'intents_seen' => count($intents),
             'errors'       => [],
         ];
+    }
+
+    /**
+     * Compute diff between desired entries and existing schedule.json using canonical identity key.
+     *
+     * Returns arrays compatible with DiffPreviewer::normalizeResultForUi:
+     *   ['creates'=>[], 'updates'=>[], 'deletes'=>[]]
+     *
+     * For now this returns placeholder strings '(create)/(update)/(delete)' rather than full objects,
+     * keeping preview output lightweight.
+     *
+     * @param array<int,array<string,mixed>> $desiredEntries
+     * @return array{creates: array<int,mixed>, updates: array<int,mixed>, deletes: array<int,mixed>}
+     */
+    private function computeDiffAgainstExisting(array $desiredEntries): array
+    {
+        $existingRaw = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
+
+        $existingByKey = [];
+        foreach ($existingRaw as $ex) {
+            if (!is_array($ex)) continue;
+
+            $key = GcsSchedulerIdentity::extractKey($ex);
+            if ($key === null) continue;
+
+            // last one wins if duplicates; that's fine for preview purposes
+            $existingByKey[$key] = $ex;
+        }
+
+        $creates = [];
+        $updates = [];
+        $seenKeys = [];
+
+        foreach ($desiredEntries as $d) {
+            if (!is_array($d)) continue;
+
+            $key = GcsSchedulerIdentity::extractKey($d);
+            if ($key === null) {
+                // Desired entry without identity is ignored by diffing rules
+                continue;
+            }
+
+            $seenKeys[$key] = true;
+
+            if (!isset($existingByKey[$key])) {
+                $creates[] = '(create)';
+                continue;
+            }
+
+            $existing = $existingByKey[$key];
+
+            if (!self::entriesEquivalentForPreview($existing, $d)) {
+                $updates[] = '(update)';
+            }
+        }
+
+        $deletes = [];
+        foreach ($existingByKey as $key => $_ex) {
+            if (!isset($seenKeys[$key])) {
+                $deletes[] = '(delete)';
+            }
+        }
+
+        return [
+            'creates' => $creates,
+            'updates' => $updates,
+            'deletes' => $deletes,
+        ];
+    }
+
+    /**
+     * Preview equivalence: compare normalized structures, ignoring non-semantic fields.
+     *
+     * @param array<string,mixed> $a
+     * @param array<string,mixed> $b
+     */
+    private static function entriesEquivalentForPreview(array $a, array $b): bool
+    {
+        unset($a['id'], $a['lastRun'], $b['id']);
+        return self::normalizeEntryForCompare($a) === self::normalizeEntryForCompare($b);
+    }
+
+    /**
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private static function normalizeEntryForCompare(array $entry): array
+    {
+        ksort($entry);
+        return $entry;
     }
 
     /**
