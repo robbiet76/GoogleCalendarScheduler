@@ -1,8 +1,4 @@
 <?php
-GcsLogger::instance()->info('GCS APPLY ENTERED', [
-    'dryRun' => !empty($cfg['runtime']['dry_run']),
-]);
-
 declare(strict_types=1);
 
 final class GcsSchedulerApply
@@ -17,6 +13,11 @@ final class GcsSchedulerApply
      */
     public static function applyFromConfig(array $cfg): array
     {
+        // Safe: cfg exists, bootstrap already loaded via content.php
+        GcsLogger::instance()->info('GCS APPLY ENTERED', [
+            'dryRun' => !empty($cfg['runtime']['dry_run']),
+        ]);
+
         $plan = SchedulerPlanner::plan($cfg);
 
         $dryRun = !empty($cfg['runtime']['dry_run']);
@@ -25,7 +26,7 @@ final class GcsSchedulerApply
         $existing = (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [];
         $desired  = (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [];
 
-        // Planner diff counts (preview-oriented)
+        // Planner diff counts (preview-oriented / authoritative)
         $previewCounts = [
             'creates' => (isset($plan['creates']) && is_array($plan['creates'])) ? count($plan['creates']) : 0,
             'updates' => (isset($plan['updates']) && is_array($plan['updates'])) ? count($plan['updates']) : 0,
@@ -35,14 +36,14 @@ final class GcsSchedulerApply
         // If dry-run, do NOT write; just return counts and plan state (useful for debugging)
         if ($dryRun) {
             return [
-                'ok'            => true,
-                'dryRun'        => true,
-                'counts'        => $previewCounts,
-                'creates'       => $plan['creates'] ?? [],
-                'updates'       => $plan['updates'] ?? [],
-                'deletes'       => $plan['deletes'] ?? [],
-                'desiredEntries'=> $desired,
-                'existingRaw'   => $existing,
+                'ok'             => true,
+                'dryRun'         => true,
+                'counts'         => $previewCounts,
+                'creates'        => $plan['creates'] ?? [],
+                'updates'        => $plan['updates'] ?? [],
+                'deletes'        => $plan['deletes'] ?? [],
+                'desiredEntries' => $desired,
+                'existingRaw'    => $existing,
             ];
         }
 
@@ -59,6 +60,7 @@ final class GcsSchedulerApply
             ];
         }
 
+        // Debug info for apply correctness (safe; runs only when apply has changes)
         GcsLogger::instance()->info('GCS APPLY DEBUG', [
             'existingRawCount' => count($existing),
             'desiredCount'     => count($desired),
@@ -68,7 +70,6 @@ final class GcsSchedulerApply
             'newScheduleCount' => count($applyPlan['newSchedule']),
         ]);
 
-
         // Backup + atomic write
         $backupPath = SchedulerSync::backupScheduleFileOrThrow(SchedulerSync::SCHEDULE_JSON_PATH);
         SchedulerSync::writeScheduleJsonAtomicallyOrThrow(SchedulerSync::SCHEDULE_JSON_PATH, $applyPlan['newSchedule']);
@@ -76,14 +77,12 @@ final class GcsSchedulerApply
         // Verify schedule.json keys match expected result
         SchedulerSync::verifyScheduleJsonKeysOrThrow($applyPlan['expectedManagedKeys'], $applyPlan['expectedDeletedKeys']);
 
+        // IMPORTANT: Return COUNTS that match the *planner* (UI expectation),
+        // not the applyPlan keys list, because planner deletes may be normalized objects.
         return [
             'ok'     => true,
             'dryRun' => false,
-            'counts' => [
-                'creates' => count($applyPlan['creates']),
-                'updates' => count($applyPlan['updates']),
-                'deletes' => count($applyPlan['deletes']),
-            ],
+            'counts' => $previewCounts,
             'backup' => $backupPath,
         ];
     }
