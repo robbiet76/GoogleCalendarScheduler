@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 final class GcsExistingScheduleEntry
 {
@@ -14,21 +15,7 @@ final class GcsExistingScheduleEntry
     }
 
     /**
-     * Extract canonical GCS identity key for this entry.
-     *
-     * Phase 17.2:
-     * - Prefer canonical v1 args tag (uid+range+days)
-     * - Legacy tag field supported for uid-only entries
-     */
-    public function getGcsKey(): ?string
-    {
-        return GcsSchedulerIdentity::extractKey($this->raw);
-    }
-
-    /**
-     * Extract GCS UID (best-effort).
-     *
-     * Kept for compatibility with older code paths that only care about UID.
+     * Extract GCS UID from scheduler entry using canonical identity helper.
      */
     public function getGcsUid(): ?string
     {

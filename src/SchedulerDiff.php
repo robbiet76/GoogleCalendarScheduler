@@ -1,4 +1,5 @@
 <?php
+declare(strict_types=1);
 
 final class GcsSchedulerDiff
 {
@@ -18,34 +19,40 @@ final class GcsSchedulerDiff
 
     public function compute(): GcsSchedulerDiffResult
     {
-        // Map existing entries by canonical identity key
-        $existingByKey = [];
+        // Index existing entries by GCS UID
+        $existingByUid = [];
+
         foreach ($this->state->getEntries() as $entry) {
-            $key = $entry->getGcsKey();
-            if ($key !== null) {
-                $existingByKey[$key] = $entry;
+            $uid = $entry->getGcsUid();
+            if ($uid !== null) {
+                $existingByUid[$uid] = $entry;
             }
         }
 
         $toCreate = [];
         $toUpdate = [];
-        $seen     = [];
+        $seenUids = [];
 
+        // Process desired entries
         foreach ($this->desired as $desiredEntry) {
-            $key = GcsSchedulerIdentity::extractKey($desiredEntry);
-            if ($key === null) {
+            if (!is_array($desiredEntry)) {
+                continue;
+            }
+
+            $uid = GcsSchedulerIdentity::extractUid($desiredEntry);
+            if ($uid === null) {
                 // Desired entry without GCS identity is ignored
                 continue;
             }
 
-            $seen[$key] = true;
+            $seenUids[$uid] = true;
 
-            if (!isset($existingByKey[$key])) {
+            if (!isset($existingByUid[$uid])) {
                 $toCreate[] = $desiredEntry;
                 continue;
             }
 
-            $existing = $existingByKey[$key];
+            $existing = $existingByUid[$uid];
 
             if (!GcsSchedulerComparator::isEquivalent($existing, $desiredEntry)) {
                 $toUpdate[] = [
@@ -55,9 +62,11 @@ final class GcsSchedulerDiff
             }
         }
 
+        // Anything existing but not seen in desired must be deleted
         $toDelete = [];
-        foreach ($existingByKey as $key => $entry) {
-            if (!isset($seen[$key])) {
+
+        foreach ($existingByUid as $uid => $entry) {
+            if (!isset($seenUids[$uid])) {
                 $toDelete[] = $entry;
             }
         }
