@@ -168,6 +168,7 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
 
     <div id="gcs-preview-actions" class="gcs-hidden" style="margin-top:12px;">
+        <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
 </div>
@@ -218,6 +219,7 @@ var diffSummary = document.getElementById('gcs-diff-summary');
 
 var previewActions = document.getElementById('gcs-preview-actions');
 var applyBtn = document.getElementById('gcs-apply-btn');
+var closePreviewBtn = document.getElementById('gcs-close-preview-btn');
 
 function gcsSetStatus(level, message) {
     var bar = document.getElementById('gcs-status-bar');
@@ -249,14 +251,12 @@ function hidePreviewButton() {
     previewBtn.classList.add('gcs-hidden');
 }
 
-/* Plan status check -> drives status bar + preview visibility */
+/* Plan status check */
 function runPlanStatus() {
     return fetch(ENDPOINT + '&endpoint=experimental_plan_status')
         .then(r => r.json())
         .then(d => {
-            if (!d || !d.ok) {
-                return { ok: false };
-            }
+            if (!d || !d.ok) return;
 
             var t = d.counts.creates + d.counts.updates + d.counts.deletes;
 
@@ -269,24 +269,20 @@ function runPlanStatus() {
                 showPreviewButton();
                 hidePreviewUi();
             }
-
-            return { ok: true, total: t };
         })
         .catch(() => {
             gcsSetStatus('error', 'Error communicating with Google Calendar.');
             hidePreviewButton();
             hidePreviewUi();
-            return { ok: false };
         });
 }
 
-/* Initial planner-driven status + visibility */
+/* Initial state */
 runPlanStatus();
 
 /* Preview handler */
 previewBtn.addEventListener('click', function () {
 
-    // Hide Preview button once preview is open (Phase 19.4.x)
     hidePreviewButton();
 
     fetch(ENDPOINT + '&endpoint=experimental_diff')
@@ -315,15 +311,18 @@ previewBtn.addEventListener('click', function () {
             if (total > 0) {
                 previewActions.classList.remove('gcs-hidden');
                 applyBtn.disabled = false;
-            } else {
-                hidePreviewUi();
-                runPlanStatus();
             }
         })
         .catch(() => {
             hidePreviewUi();
             gcsSetStatus('error', 'Error communicating with Google Calendar.');
         });
+});
+
+/* Close Preview handler */
+closePreviewBtn.addEventListener('click', function () {
+    hidePreviewUi();
+    runPlanStatus();
 });
 
 /* Apply handler */
