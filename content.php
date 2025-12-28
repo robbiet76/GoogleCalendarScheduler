@@ -79,7 +79,6 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
-
         // Preview (plan-only)
         if ($_GET['endpoint'] === 'experimental_diff') {
             if (empty($cfg['experimental']['enabled'])) {
@@ -89,7 +88,7 @@ if (isset($_GET['endpoint'])) {
 
             $plan = SchedulerPlanner::plan($cfg);
 
-            // Always return full plan payload (Phase 18 debugging + apply parity)
+            // Always return full plan payload
             echo json_encode([
                 'ok'   => true,
                 'diff' => [
@@ -129,15 +128,23 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 
 <div class="settings">
 
+<!-- ========================================================= -->
+<!-- Phase 19.1: Authoritative Status Bar (UI only, additive) -->
+<!-- ========================================================= -->
+<div id="gcs-status-bar" class="gcs-status gcs-status--info">
+    <span class="gcs-status-dot"></span>
+    <span class="gcs-status-text">Ready — calendar configured</span>
+</div>
+
 <div id="gcs-sync-status" class="gcs-hidden gcs-warning" style="margin-bottom:12px;"></div>
 
 <!-- APPLY MODE BANNER -->
 <div class="gcs-mode-banner <?php echo $dryRun ? 'gcs-mode-dry' : 'gcs-mode-live'; ?>">
 <?php if ($dryRun): ?>
-    🔒 <strong>Apply mode: Dry-run</strong><br>
+    ⚠️ <strong>Apply mode: Dry-run</strong><br>
     Scheduler changes will <strong>NOT</strong> be written.
 <?php else: ?>
-    🔓 <strong>Apply mode: Live</strong><br>
+    ✅ <strong>Apply mode: Live</strong><br>
     Scheduler changes <strong>WILL</strong> be written (only when you click Apply).
 <?php endif; ?>
 </div>
@@ -191,6 +198,7 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 <style>
 .gcs-hidden { display:none; }
 .gcs-warning { padding:10px; background:#fff3cd; border:1px solid #ffeeba; border-radius:6px; }
+
 .gcs-mode-banner { padding:10px; border-radius:6px; margin-bottom:12px; font-weight:bold; }
 .gcs-mode-dry { background:#eef5ff; border:1px solid #cfe2ff; }
 .gcs-mode-live { background:#e6f4ea; border:1px solid #b7e4c7; }
@@ -203,6 +211,27 @@ $dryRun = !empty($cfg['runtime']['dry_run']);
 .gcs-summary-item {
     white-space:nowrap;
 }
+
+/* Phase 19.1 Status Bar */
+.gcs-status {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:6px 10px;
+    margin:8px 0 12px 0;
+    border-radius:6px;
+    font-weight:600;
+}
+.gcs-status-dot {
+    width:10px;
+    height:10px;
+    border-radius:50%;
+    background:currentColor;
+}
+.gcs-status--info    { background:#eef4ff; color:#1d4ed8; }
+.gcs-status--success { background:#e6f6ea; color:#1e7f43; }
+.gcs-status--warning { background:#fff4e5; color:#9a5b00; }
+.gcs-status--error   { background:#fdecea; color:#b42318; }
 </style>
 
 <script>
@@ -219,6 +248,22 @@ var applyBtn   = document.getElementById('gcs-apply-btn');
 var diffSummary = document.getElementById('gcs-diff-summary');
 var applyBox    = document.getElementById('gcs-apply-container');
 var applyResult = document.getElementById('gcs-apply-result');
+
+/* Phase 19.1 status helper (UI only) */
+function gcsSetStatus(level, message) {
+    var bar = document.getElementById('gcs-status-bar');
+    var text = bar.querySelector('.gcs-status-text');
+
+    bar.classList.remove(
+        'gcs-status--info',
+        'gcs-status--success',
+        'gcs-status--warning',
+        'gcs-status--error'
+    );
+
+    bar.classList.add('gcs-status--' + level);
+    text.textContent = message;
+}
 
 /* Auto status check */
 fetch(ENDPOINT + '&endpoint=experimental_plan_status')
