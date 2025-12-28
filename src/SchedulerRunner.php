@@ -85,7 +85,7 @@ final class GcsSchedulerRunner
                 $horizonEnd
             );
 
-            if ($occurrences === false || empty($occurrences)) {
+            if (empty($occurrences)) {
                 continue;
             }
 
@@ -97,8 +97,8 @@ final class GcsSchedulerRunner
                     'summary'    => $summary,
                     'type'       => $resolved['type'],
                     'target'     => $resolved['target'],
-                    'start'      => $occ['start'] ?? null,
-                    'end'        => $occ['end'] ?? null,
+                    'start'      => $occ['start'],
+                    'end'        => $occ['end'],
                     'stopType'   => 'graceful',
                     'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
@@ -135,17 +135,20 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * Phase 13.3 recurrence expansion helper (authoritative, do not modify)
+     * Recurrence expansion helper.
+     *
+     * Generates concrete occurrences intersecting the horizon.
      */
     private static function expandEventOccurrences(
         ?array $base,
         array $overrides,
         DateTime $horizonStart,
         DateTime $horizonEnd
-    ) {
+    ): array {
         $out = [];
         $overrideKeys = [];
 
+        // Include overrides first
         foreach ($overrides as $rid => $ov) {
             $s = new DateTime($ov['start']);
             if ($s >= $horizonStart && $s <= $horizonEnd) {
@@ -166,6 +169,7 @@ final class GcsSchedulerRunner
         $end   = new DateTime($base['end']);
         $duration = max(0, $end->getTimestamp() - $start->getTimestamp());
 
+        // Non-recurring
         if (empty($base['rrule'])) {
             if ($start >= $horizonStart && $start <= $horizonEnd) {
                 $rid = $start->format('Y-m-d H:i:s');
@@ -180,7 +184,129 @@ final class GcsSchedulerRunner
             return $out;
         }
 
-        // Recurrence expansion logic intentionally omitted here (Phase 13.3 validated)
+        $rrule = $base['rrule'];
+        $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
+        $interval = max(1, (int)($rrule['INTERVAL'] ?? 1));
+
+        $until = null;
+        if (!empty($rrule['UNTIL'])) {
+            $until = self::parseRruleUntil((string)$rrule['UNTIL']);
+        }
+
+        $countLimit = isset($rrule['COUNT']) ? max(1, (int)$rrule['COUNT']) : null;
+
+        $exDates = [];
+        if (!empty($base['exDates'])) {
+            foreach ($base['exDates'] as $ex) {
+                $exDates[$ex] = true;
+            }
+        }
+
+        $addOccurrence = function(DateTime $s) use (
+            &$out,
+            $duration,
+            $horizonStart,
+            $horizonEnd,
+            $until,
+            &$countLimit,
+            &$overrideKeys,
+            &$exDates
+        ): bool {
+            if ($s < $horizonStart || $s > $horizonEnd) return true;
+            if ($until && $s > $until) return false;
+
+            $rid = $s->format('Y-m-d H:i:s');
+            if (!empty($overrideKeys[$rid]) || !empty($exDates[$rid])) return true;
+
+            $out[] = [
+                'start'      => $rid,
+                'end'        => (clone $s)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
+                'isOverride' => false,
+            ];
+
+            if ($countLimit !== null && --$countLimit <= 0) {
+                return false;
+            }
+            return true;
+        };
+
+        $h = (int)$start->format('H');
+        $i = (int)$start->format('i');
+        $s = (int)$start->format('s');
+
+        if ($freq === 'DAILY') {
+            $cursor = clone $start;
+            while ($cursor < $horizonStart) {
+                $cursor->modify("+{$interval} days");
+            }
+            while ($cursor <= $horizonEnd) {
+                $cursor->setTime($h, $i, $s);
+                if (!$addOccurrence($cursor)) break;
+                $cursor->modify("+{$interval} days");
+            }
+            return $out;
+        }
+
+        if ($freq === 'WEEKLY') {
+            $byday = [];
+            if (!empty($rrule['BYDAY'])) {
+                foreach (explode(',', strtoupper($rrule['BYDAY'])) as $tok) {
+                    $d = self::byDayToDow($tok);
+                    if ($d !== null) $byday[] = $d;
+                }
+            }
+            if (empty($byday)) {
+                $byday[] = (int)$start->format('w');
+            }
+
+            $weekCursor = clone $start;
+            while ($weekCursor < $horizonStart) {
+                $weekCursor->modify("+{$interval} weeks");
+            }
+
+            while ($weekCursor <= $horizonEnd) {
+                foreach ($byday as $dow) {
+                    $occ = (clone $weekCursor)->modify("sunday this week +{$dow} days");
+                    $occ->setTime($h, $i, $s);
+                    if ($occ < $start) continue;
+                    if (!$addOccurrence($occ)) return $out;
+                }
+                $weekCursor->modify("+{$interval} weeks");
+            }
+            return $out;
+        }
+
         return $out;
+    }
+
+    private static function byDayToDow(string $tok): ?int
+    {
+        $tok = preg_replace('/^[+-]?\d+/', '', $tok);
+        return match ($tok) {
+            'SU' => 0,
+            'MO' => 1,
+            'TU' => 2,
+            'WE' => 3,
+            'TH' => 4,
+            'FR' => 5,
+            'SA' => 6,
+            default => null,
+        };
+    }
+
+    private static function parseRruleUntil(string $raw): ?DateTime
+    {
+        try {
+            if (preg_match('/^\d{8}$/', $raw)) {
+                return (new DateTime($raw))->setTime(23, 59, 59);
+            }
+            if (preg_match('/^\d{8}T\d{6}Z$/', $raw)) {
+                return new DateTime($raw, new DateTimeZone('UTC'));
+            }
+            if (preg_match('/^\d{8}T\d{6}$/', $raw)) {
+                return new DateTime($raw);
+            }
+        } catch (Throwable) {}
+        return null;
     }
 }
