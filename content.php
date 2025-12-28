@@ -201,6 +201,12 @@ $canSave    = ($isEmpty || $isIcsValid);
 </div>
 
 <style>
+/* Anchor container */
+.settings {
+    position: relative;
+    padding-bottom: 36px; /* space for dev toggle */
+}
+
 .gcs-hidden { display:none; }
 .gcs-summary-row { display:flex; gap:24px; margin-top:6px; }
 .gcs-summary-item { white-space:nowrap; }
@@ -221,8 +227,9 @@ $canSave    = ($isEmpty || $isIcsValid);
 .gcs-status--error   { background:#fdecea; color:#b42318; }
 
 .gcs-dev-toggle {
-    margin-top:8px;
-    text-align:right;
+    position: absolute;
+    bottom: 8px;
+    right: 8px;
     font-size:0.85em;
     opacity:0.85;
 }
@@ -283,7 +290,6 @@ function hidePreviewButton() { previewBtn.classList.add('gcs-hidden'); }
 function runPlanStatus() {
     var val = icsInput.value.trim();
 
-    // Configuration state always wins
     if (val === '') {
         gcsSetStatus('info', 'Enter a Google Calendar ICS URL to begin.');
         hidePreviewButton();
