@@ -164,19 +164,15 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
 <div class="gcs-diff-preview">
     <h3>Scheduler Change Preview</h3>
 
-    <button type="button" class="buttons" id="gcs-preview-btn">
+    <button type="button" class="buttons gcs-hidden" id="gcs-preview-btn">
         Preview Changes
     </button>
 
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
-</div>
 
-<hr>
-
-<div class="gcs-apply-panel gcs-hidden" id="gcs-apply-container">
-    <h3>Apply Scheduler Changes</h3>
-    <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
-    <div id="gcs-apply-result" style="margin-top:10px;"></div>
+    <div id="gcs-preview-actions" class="gcs-hidden" style="margin-top:12px;">
+        <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
+    </div>
 </div>
 
 <style>
@@ -221,11 +217,10 @@ var ENDPOINT =
   'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
 
 var previewBtn = document.getElementById('gcs-preview-btn');
-var applyBtn   = document.getElementById('gcs-apply-btn');
-
 var diffSummary = document.getElementById('gcs-diff-summary');
-var applyBox    = document.getElementById('gcs-apply-container');
-var applyResult = document.getElementById('gcs-apply-result');
+
+var previewActions = document.getElementById('gcs-preview-actions');
+var applyBtn = document.getElementById('gcs-apply-btn');
 
 function gcsSetStatus(level, message) {
     var bar = document.getElementById('gcs-status-bar');
@@ -242,23 +237,57 @@ function gcsSetStatus(level, message) {
     text.textContent = message;
 }
 
-/* Auto status check */
-fetch(ENDPOINT + '&endpoint=experimental_plan_status')
-  .then(r => r.json())
-  .then(d => {
-    if (!d || !d.ok) return;
+function hidePreviewUi() {
+    diffSummary.classList.add('gcs-hidden');
+    diffSummary.innerHTML = '';
+    previewActions.classList.add('gcs-hidden');
+    applyBtn.disabled = true;
+}
 
-    var t = d.counts.creates + d.counts.updates + d.counts.deletes;
+function showPreviewButton() {
+    previewBtn.classList.remove('gcs-hidden');
+}
 
-    if (t === 0) {
-        gcsSetStatus('success', 'Scheduler is in sync with Google Calendar.');
-    } else {
-        gcsSetStatus('warning', t + ' pending scheduler change(s) detected.');
-    }
-  })
-  .catch(() => {
-      gcsSetStatus('error', 'Error communicating with Google Calendar.');
-  });
+function hidePreviewButton() {
+    previewBtn.classList.add('gcs-hidden');
+}
+
+/* Plan status check -> drives status bar + preview visibility */
+function runPlanStatus() {
+    return fetch(ENDPOINT + '&endpoint=experimental_plan_status')
+        .then(r => r.json())
+        .then(d => {
+            if (!d || !d.ok) {
+                // If endpoint is disabled or fails silently, keep whatever PHP rendered.
+                return { ok: false };
+            }
+
+            var t = d.counts.creates + d.counts.updates + d.counts.deletes;
+
+            if (t === 0) {
+                gcsSetStatus('success', 'Scheduler is in sync with Google Calendar.');
+                hidePreviewButton();
+                hidePreviewUi();
+            } else {
+                gcsSetStatus('warning', t + ' pending scheduler change(s) detected.');
+                showPreviewButton();
+                // Do not auto-open preview. User must click Preview.
+                hidePreviewUi();
+            }
+
+            return { ok: true, total: t };
+        })
+        .catch(() => {
+            gcsSetStatus('error', 'Error communicating with Google Calendar.');
+            // Keep preview hidden on error
+            hidePreviewButton();
+            hidePreviewUi();
+            return { ok: false };
+        });
+}
+
+/* Initial planner-driven status + visibility */
+runPlanStatus();
 
 /* Preview handler */
 previewBtn.addEventListener('click', function () {
@@ -267,8 +296,7 @@ previewBtn.addEventListener('click', function () {
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) {
-                diffSummary.innerHTML = '❌ Failed to load preview.';
-                diffSummary.classList.remove('gcs-hidden');
+                hidePreviewUi();
                 gcsSetStatus('error', 'Error communicating with Google Calendar.');
                 return;
             }
@@ -289,42 +317,39 @@ previewBtn.addEventListener('click', function () {
             `;
 
             if (total > 0) {
-                applyBox.classList.remove('gcs-hidden');
+                previewActions.classList.remove('gcs-hidden');
                 applyBtn.disabled = false;
+            } else {
+                // Nothing to apply; keep actions hidden and re-sync status
+                hidePreviewUi();
+                runPlanStatus();
             }
+        })
+        .catch(() => {
+            hidePreviewUi();
+            gcsSetStatus('error', 'Error communicating with Google Calendar.');
         });
 });
 
-/* Apply handler */
+/* Apply handler (status bar + button state only) */
 applyBtn.addEventListener('click', function () {
 
     applyBtn.disabled = true;
-    applyResult.innerHTML = '⏳ Applying changes...';
     gcsSetStatus('info', 'Applying scheduler changes…');
 
     fetch(ENDPOINT + '&endpoint=experimental_apply')
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) {
-                applyResult.innerHTML = '❌ Apply failed.';
                 gcsSetStatus('error', 'Error communicating with Google Calendar.');
                 applyBtn.disabled = false;
                 return;
             }
 
-            applyResult.innerHTML = `
-                <div><strong>Apply Complete</strong></div>
-                <div class="gcs-summary-row">
-                    <div class="gcs-summary-item">➕ Creates: <strong>${d.counts.creates}</strong></div>
-                    <div class="gcs-summary-item">✏️ Updates: <strong>${d.counts.updates}</strong></div>
-                    <div class="gcs-summary-item">🗑️ Deletes: <strong>${d.counts.deletes}</strong></div>
-                </div>
-            `;
-
-            gcsSetStatus('success', 'Scheduler changes applied successfully.');
+            // Re-check planner state after apply; this will update status and hide preview if now in sync.
+            runPlanStatus();
         })
         .catch(() => {
-            applyResult.innerHTML = '❌ Apply error.';
             gcsSetStatus('error', 'Error communicating with Google Calendar.');
             applyBtn.disabled = false;
         });
