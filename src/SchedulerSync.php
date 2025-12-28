@@ -166,6 +166,10 @@ final class SchedulerSync
     /**
      * PURE mapping: intent -> schedule entry.
      *
+     * NOTE (Phase 20):
+     * FPP schedule.json field "day" is NOT a weekday bitmask.
+     * It is an enum selector value (0..15) as defined in FPP Scheduler.h.
+     *
      * @param array<string,mixed> $intent
      * @return array<string,mixed>|string
      */
@@ -215,7 +219,6 @@ final class SchedulerSync
 
         $startDate = null;
         $endDate   = null;
-        $dayMask   = null;
         $shortDays = '';
 
         if (is_array($range)) {
@@ -227,27 +230,20 @@ final class SchedulerSync
             if (self::isDateYmd($rEnd))   $endDate = $rEnd;
 
             if ($rDays !== '') {
-                $shortDays = $rDays;
-                $dayMask = (int)GcsIntentConsolidator::shortDaysToWeekdayMask($rDays);
+                $shortDays = trim($rDays);
             }
         }
 
         if ($startDate === null) $startDate = $startDt->format('Y-m-d');
         if ($endDate === null)   $endDate = $startDate;
 
-        if ($dayMask === null || $dayMask === 0) {
-            $dow = (int)$startDt->format('w'); // 0=Sun..6=Sat
-            $dayMask = (1 << $dow);
-        }
-
+        // If days were not provided by range, fall back to the start date's weekday.
         if ($shortDays === '') {
-            $shortDays = (string)GcsIntentConsolidator::weekdayMaskToShortDays((int)$dayMask);
+            $shortDays = self::dowToShortDay((int)$startDt->format('w'));
         }
 
-        // ✅ Phase 20: FPP UI compatibility
-        // Some FPP builds require an explicit string "days" field for the UI to render day selections.
-        // Keep canonical numeric day mask, but also add a UI-friendly label.
-        $daysLabel = self::weekdayMaskToFppDaysLabel((int)$dayMask, $shortDays);
+        // Phase 20 FIX: FPP "day" MUST be an enum selector (0..15), not a weekday bitmask.
+        $fppDayEnum = self::shortDaysToFppDayEnum($shortDays, $startDt);
 
         // Canonical identity tag stored in args[]
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
@@ -269,14 +265,7 @@ final class SchedulerSync
         $entry = [
             'enabled'          => 1,
             'sequence'         => 0,
-
-            // Canonical scheduler day mask
-            'day'              => $dayMask,
-
-            // UI rendering helpers (harmless if ignored by FPP)
-            'days'             => $daysLabel,
-            'dayStr'           => $daysLabel,
-
+            'day'              => $fppDayEnum,
             'startTime'        => $startTime,
             'startTimeOffset'  => 0,
             'endTime'          => $endTime,
@@ -301,19 +290,67 @@ final class SchedulerSync
         return $entry;
     }
 
-    private static function weekdayMaskToFppDaysLabel(int $mask, string $fallbackShortDays): string
+    /**
+     * FPP Scheduler.h mapping (enum selector values)
+     *
+     * INX_SUN..INX_SAT: 0..6
+     * INX_EVERYDAY: 7
+     * INX_WKDAYS: 8
+     * INX_WKEND: 9
+     * INX_M_W_F: 10
+     * INX_T_TH: 11
+     * INX_SUN_TO_THURS: 12
+     * INX_FRI_SAT: 13
+     * INX_ODD_DAY: 14
+     * INX_EVEN_DAY: 15
+     */
+    private static function shortDaysToFppDayEnum(string $shortDays, DateTime $startDt): int
     {
-        // Common presets first
-        if ($mask === 127) return 'Everyday';
-        if ($mask === 62)  return 'Weekdays'; // MoTuWeThFr (2+4+8+16+32)
-        if ($mask === 65)  return 'Weekends'; // SuSa (1+64)
+        $d = trim($shortDays);
 
-        // If caller already computed a short-days string, keep it (SuMoTu...)
-        $sd = trim($fallbackShortDays);
-        if ($sd !== '') return $sd;
+        // Common consolidated patterns
+        if ($d === 'SuMoTuWeThFrSa') return 7;     // Everyday
+        if ($d === 'MoTuWeThFr')     return 8;     // Weekdays
+        if ($d === 'SuSa')           return 9;     // Weekend
+        if ($d === 'MoWeFr')         return 10;    // M/W/F
+        if ($d === 'TuTh')           return 11;    // T/Th
+        if ($d === 'SuMoTuWeTh')     return 12;    // Sun-Thu
+        if ($d === 'FrSa')           return 13;    // Fri-Sat
 
-        // Last resort: derive from mask
-        return (string)GcsIntentConsolidator::weekdayMaskToShortDays($mask);
+        // Single day
+        $single = self::singleShortDayToFppEnum($d);
+        if ($single !== null) return $single;
+
+        // Unknown: never allow blank/invalid; fall back to startDt weekday (0..6)
+        return (int)$startDt->format('w');
+    }
+
+    private static function singleShortDayToFppEnum(string $d): ?int
+    {
+        return match ($d) {
+            'Su' => 0,
+            'Mo' => 1,
+            'Tu' => 2,
+            'We' => 3,
+            'Th' => 4,
+            'Fr' => 5,
+            'Sa' => 6,
+            default => null,
+        };
+    }
+
+    private static function dowToShortDay(int $dow): string
+    {
+        return match ($dow) {
+            0 => 'Su',
+            1 => 'Mo',
+            2 => 'Tu',
+            3 => 'We',
+            4 => 'Th',
+            5 => 'Fr',
+            6 => 'Sa',
+            default => 'Su',
+        };
     }
 
     private static function buildGcsV1Tag(string $uid, string $startDate, string $endDate, string $days): string
