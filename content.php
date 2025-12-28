@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /**
  * GoogleCalendarScheduler
- * content.php (Phase 19.1 UI rewrite – ready state fix)
+ * content.php (Phase 19.2 UI – ready state fixed, no auto-plan)
  */
 
 require_once __DIR__ . '/src/bootstrap.php';
@@ -200,13 +200,11 @@ const GCS_STATE = {
     creates: 0,
     updates: 0,
     deletes: 0,
-    loaded: false,
     checkedOnce: false
   },
   diffPayload: null,
   apply: {
-    inProgress: false,
-    dryRun: false
+    inProgress: false
   }
 };
 
@@ -308,32 +306,6 @@ function toggle(id, show) {
 }
 
 /* ============================================================
- * Fetch
- * ============================================================ */
-const ENDPOINT =
-  'plugin.php?_menu=content&plugin=GoogleCalendarScheduler&page=content.php&nopage=1';
-
-function refreshPlan() {
-  fetch(ENDPOINT + '&endpoint=experimental_plan_status')
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) throw new Error();
-      GCS_STATE.plan = {
-        creates: d.counts.creates,
-        updates: d.counts.updates,
-        deletes: d.counts.deletes,
-        loaded: true,
-        checkedOnce: true
-      };
-      GCS_STATE.diffPayload = null;
-      render();
-    })
-    .catch(() => {
-      render();
-    });
-}
-
-/* ============================================================
  * Event Wiring
  * ============================================================ */
 const urlInput = document.getElementById('gcs-calendar-url');
@@ -358,17 +330,19 @@ saveBtn.addEventListener('click', () => {
       ics_url: urlInput.value
     })
   }).then(() => {
-    refreshPlan();
+    GCS_STATE.plan.checkedOnce = false;
+    render();
   });
 });
 
 previewBtn.addEventListener('click', () => {
-  fetch(ENDPOINT + '&endpoint=experimental_diff')
+  fetch('?endpoint=experimental_plan_status')
     .then(r => r.json())
     .then(d => {
-      GCS_STATE.diffPayload = d.diff;
-      document.getElementById('gcs-preview-table')
-        .textContent = JSON.stringify(d.diff, null, 2);
+      GCS_STATE.plan.checkedOnce = true;
+      GCS_STATE.plan.creates = d.counts.creates;
+      GCS_STATE.plan.updates = d.counts.updates;
+      GCS_STATE.plan.deletes = d.counts.deletes;
       render();
     });
 });
@@ -377,26 +351,24 @@ applyBtn.addEventListener('click', () => {
   GCS_STATE.apply.inProgress = true;
   render();
 
-  let url = ENDPOINT + '&endpoint=experimental_apply';
+  let url = '?endpoint=experimental_apply';
   if (dryRunToggle.checked) url += '&dry_run=1';
 
   fetch(url)
     .then(() => {
       GCS_STATE.apply.inProgress = false;
-      refreshPlan();
+      GCS_STATE.plan.checkedOnce = false;
+      render();
     });
 });
 
-document.addEventListener('DOMContentLoaded', () => {
-  if (urlInput.value) {
-    GCS_STATE.config.calendarUrl = urlInput.value;
-    GCS_STATE.config.calendarUrlValid = isValidIcsUrl(urlInput.value);
-    saveBtn.disabled = !GCS_STATE.config.calendarUrlValid;
-    refreshPlan();
-  } else {
-    render();
-  }
-});
+/* ============================================================
+ * Init
+ * ============================================================ */
+GCS_STATE.config.calendarUrl = urlInput.value;
+GCS_STATE.config.calendarUrlValid = isValidIcsUrl(urlInput.value);
+saveBtn.disabled = !GCS_STATE.config.calendarUrlValid;
+render();
 
 })();
 </script>
