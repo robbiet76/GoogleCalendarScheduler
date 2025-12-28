@@ -128,9 +128,6 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
 
 <div class="settings">
 
-<!-- ========================================================= -->
-<!-- Phase 19: Authoritative Status Bar -->
-<!-- ========================================================= -->
 <div id="gcs-status-bar" class="gcs-status gcs-status--info">
     <span class="gcs-status-dot"></span>
     <span class="gcs-status-text">
@@ -175,17 +172,9 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
 
 <style>
 .gcs-hidden { display:none; }
+.gcs-summary-row { display:flex; gap:24px; margin-top:6px; }
+.gcs-summary-item { white-space:nowrap; }
 
-.gcs-summary-row {
-    display:flex;
-    gap:24px;
-    margin-top:6px;
-}
-.gcs-summary-item {
-    white-space:nowrap;
-}
-
-/* Phase 19 Status Bar */
 .gcs-status {
     display:flex;
     align-items:center;
@@ -195,12 +184,7 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
     border-radius:6px;
     font-weight:600;
 }
-.gcs-status-dot {
-    width:10px;
-    height:10px;
-    border-radius:50%;
-    background:currentColor;
-}
+.gcs-status-dot { width:10px; height:10px; border-radius:50%; background:currentColor; }
 .gcs-status--info    { background:#eef4ff; color:#1d4ed8; }
 .gcs-status--success { background:#e6f6ea; color:#1e7f43; }
 .gcs-status--warning { background:#fff4e5; color:#9a5b00; }
@@ -216,7 +200,6 @@ var ENDPOINT =
 
 var previewBtn = document.getElementById('gcs-preview-btn');
 var diffSummary = document.getElementById('gcs-diff-summary');
-
 var previewActions = document.getElementById('gcs-preview-actions');
 var applyBtn = document.getElementById('gcs-apply-btn');
 var closePreviewBtn = document.getElementById('gcs-close-preview-btn');
@@ -241,17 +224,12 @@ function hidePreviewUi() {
     diffSummary.innerHTML = '';
     previewActions.classList.add('gcs-hidden');
     applyBtn.disabled = true;
+    closePreviewBtn.disabled = false;
 }
 
-function showPreviewButton() {
-    previewBtn.classList.remove('gcs-hidden');
-}
+function showPreviewButton() { previewBtn.classList.remove('gcs-hidden'); }
+function hidePreviewButton() { previewBtn.classList.add('gcs-hidden'); }
 
-function hidePreviewButton() {
-    previewBtn.classList.add('gcs-hidden');
-}
-
-/* Plan status check */
 function runPlanStatus() {
     return fetch(ENDPOINT + '&endpoint=experimental_plan_status')
         .then(r => r.json())
@@ -277,10 +255,8 @@ function runPlanStatus() {
         });
 }
 
-/* Initial state */
 runPlanStatus();
 
-/* Preview handler */
 previewBtn.addEventListener('click', function () {
 
     hidePreviewButton();
@@ -297,7 +273,6 @@ previewBtn.addEventListener('click', function () {
             var creates = d.diff.creates.length;
             var updates = d.diff.updates.length;
             var deletes = d.diff.deletes.length;
-            var total   = creates + updates + deletes;
 
             diffSummary.classList.remove('gcs-hidden');
             diffSummary.innerHTML = `
@@ -308,27 +283,20 @@ previewBtn.addEventListener('click', function () {
                 </div>
             `;
 
-            if (total > 0) {
-                previewActions.classList.remove('gcs-hidden');
-                applyBtn.disabled = false;
-            }
-        })
-        .catch(() => {
-            hidePreviewUi();
-            gcsSetStatus('error', 'Error communicating with Google Calendar.');
+            previewActions.classList.remove('gcs-hidden');
+            applyBtn.disabled = false;
         });
 });
 
-/* Close Preview handler */
 closePreviewBtn.addEventListener('click', function () {
     hidePreviewUi();
     runPlanStatus();
 });
 
-/* Apply handler */
 applyBtn.addEventListener('click', function () {
 
     applyBtn.disabled = true;
+    closePreviewBtn.disabled = true;
     gcsSetStatus('info', 'Applying scheduler changes…');
 
     fetch(ENDPOINT + '&endpoint=experimental_apply')
@@ -337,6 +305,7 @@ applyBtn.addEventListener('click', function () {
             if (!d || !d.ok) {
                 gcsSetStatus('error', 'Error communicating with Google Calendar.');
                 applyBtn.disabled = false;
+                closePreviewBtn.disabled = false;
                 return;
             }
 
@@ -345,6 +314,7 @@ applyBtn.addEventListener('click', function () {
         .catch(() => {
             gcsSetStatus('error', 'Error communicating with Google Calendar.');
             applyBtn.disabled = false;
+            closePreviewBtn.disabled = false;
         });
 });
 
