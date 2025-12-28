@@ -89,10 +89,16 @@ final class GcsSchedulerRunner
                 continue;
             }
 
+            // 🔹 NEW: calendar series start date (date-only) for scheduler range
+            $seriesStartDate = null;
+            if ($base && !empty($base['start'])) {
+                $seriesStartDate = substr((string)$base['start'], 0, 10);
+            }
+
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
-                $rawIntents[] = [
+                $intent = [
                     'uid'        => $uid,
                     'summary'    => $summary,
                     'type'       => $resolved['type'],
@@ -103,6 +109,17 @@ final class GcsSchedulerRunner
                     'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
                 ];
+
+                // 🔹 NEW: explicit range so scheduler startDate reflects calendar DTSTART
+                if ($seriesStartDate !== null) {
+                    $intent['range'] = [
+                        'start' => $seriesStartDate,
+                        'end'   => $horizonEnd->format('Y-m-d'),
+                        'days'  => null,
+                    ];
+                }
+
+                $rawIntents[] = $intent;
             }
         }
 

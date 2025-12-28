@@ -61,16 +61,16 @@ final class CalendarReader
          * No behavior changes. Logging only.
          */
         foreach ($events as $event) {
-            try {
-                $title   = method_exists($event, 'getTitle') ? $event->getTitle() : '(unknown)';
-                $uid     = method_exists($event, 'getUid') ? $event->getUid() : '(unknown)';
-                $dtstart = method_exists($event, 'getStart') ? $event->getStart() : null;
+            if (!is_array($event)) {
+                continue;
+            }
 
+            try {
                 GcsLog::info('CalendarReader event seen', [
-                    'title'   => $title,
-                    'uid'     => $uid,
-                    'dtstart' => $dtstart instanceof DateTimeInterface
-                        ? $dtstart->format(DateTimeInterface::ATOM)
+                    'title'   => (string)($event['summary'] ?? '(unknown)'),
+                    'uid'     => (string)($event['uid'] ?? '(unknown)'),
+                    'dtstart' => isset($event['start'])
+                        ? (string)$event['start']
                         : null,
                 ]);
             } catch (Throwable $e) {
