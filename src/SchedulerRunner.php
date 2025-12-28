@@ -89,10 +89,16 @@ final class GcsSchedulerRunner
                 continue;
             }
 
+            // Phase 20: calendar DTSTART date for series start (optional metadata)
+            $seriesStartDate = null;
+            if ($base && !empty($base['start'])) {
+                $seriesStartDate = substr((string)$base['start'], 0, 10); // YYYY-MM-DD
+            }
+
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
-                $rawIntents[] = [
+                $intent = [
                     'uid'        => $uid,
                     'summary'    => $summary,
                     'type'       => $resolved['type'],
@@ -103,6 +109,13 @@ final class GcsSchedulerRunner
                     'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
                 ];
+
+                // Phase 20: carry series start date so SchedulerSync can set scheduler startDate correctly
+                if ($seriesStartDate !== null) {
+                    $intent['seriesStartDate'] = $seriesStartDate;
+                }
+
+                $rawIntents[] = $intent;
             }
         }
 

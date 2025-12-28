@@ -218,6 +218,12 @@ final class SchedulerSync
         $dayMask   = null;
         $shortDays = '';
 
+        // Phase 20: optional series start date (calendar DTSTART date-only), carried by SchedulerRunner.
+        $seriesStartDate = self::coalesceString($intent, ['seriesStartDate'], '');
+        if ($seriesStartDate !== '' && !self::isDateYmd($seriesStartDate)) {
+            $seriesStartDate = '';
+        }
+
         if (is_array($range)) {
             $rStart = isset($range['start']) ? (string)$range['start'] : '';
             $rEnd   = isset($range['end']) ? (string)$range['end'] : '';
@@ -232,8 +238,12 @@ final class SchedulerSync
             }
         }
 
-        if ($startDate === null) $startDate = $startDt->format('Y-m-d');
-        if ($endDate === null)   $endDate = $startDate;
+        if ($startDate === null) {
+            $startDate = ($seriesStartDate !== '') ? $seriesStartDate : $startDt->format('Y-m-d');
+        }
+        if ($endDate === null) {
+            $endDate = $startDate;
+        }
 
         if ($dayMask === null || $dayMask === 0) {
             $dow = (int)$startDt->format('w'); // 0=Sun..6=Sat
