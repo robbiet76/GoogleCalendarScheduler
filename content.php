@@ -159,10 +159,7 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
     <button type="submit" class="buttons">Save Settings</button>
 </form>
 
-<hr>
-
 <div class="gcs-diff-preview">
-    <h3>Scheduler Change Preview</h3>
 
     <button type="button" class="buttons gcs-hidden" id="gcs-preview-btn">
         Preview Changes
@@ -258,7 +255,6 @@ function runPlanStatus() {
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) {
-                // If endpoint is disabled or fails silently, keep whatever PHP rendered.
                 return { ok: false };
             }
 
@@ -271,7 +267,6 @@ function runPlanStatus() {
             } else {
                 gcsSetStatus('warning', t + ' pending scheduler change(s) detected.');
                 showPreviewButton();
-                // Do not auto-open preview. User must click Preview.
                 hidePreviewUi();
             }
 
@@ -279,7 +274,6 @@ function runPlanStatus() {
         })
         .catch(() => {
             gcsSetStatus('error', 'Error communicating with Google Calendar.');
-            // Keep preview hidden on error
             hidePreviewButton();
             hidePreviewUi();
             return { ok: false };
@@ -308,7 +302,6 @@ previewBtn.addEventListener('click', function () {
 
             diffSummary.classList.remove('gcs-hidden');
             diffSummary.innerHTML = `
-                <div><strong>Preview Summary</strong></div>
                 <div class="gcs-summary-row">
                     <div class="gcs-summary-item">➕ Creates: <strong>${creates}</strong></div>
                     <div class="gcs-summary-item">✏️ Updates: <strong>${updates}</strong></div>
@@ -320,7 +313,6 @@ previewBtn.addEventListener('click', function () {
                 previewActions.classList.remove('gcs-hidden');
                 applyBtn.disabled = false;
             } else {
-                // Nothing to apply; keep actions hidden and re-sync status
                 hidePreviewUi();
                 runPlanStatus();
             }
@@ -331,7 +323,7 @@ previewBtn.addEventListener('click', function () {
         });
 });
 
-/* Apply handler (status bar + button state only) */
+/* Apply handler */
 applyBtn.addEventListener('click', function () {
 
     applyBtn.disabled = true;
@@ -346,7 +338,6 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
-            // Re-check planner state after apply; this will update status and hide preview if now in sync.
             runPlanStatus();
         })
         .catch(() => {
