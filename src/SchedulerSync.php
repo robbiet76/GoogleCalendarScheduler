@@ -231,18 +231,17 @@ final class SchedulerSync
         if ($startDate === null) $startDate = $startDt->format('Y-m-d');
         if ($endDate === null)   $endDate = $startDate;
 
+        // ✅ Phase 20 FINAL FIX:
+        // FPP requires day mask to be non-zero or the schedule will not run.
+        // Default to "Everyday" (127) when no explicit days are provided, or when parsing yields 0.
         if ($dayMask === null || $dayMask === 0) {
-            $dayMask = (1 << (int)$startDt->format('w'));
+            $dayMask = 127;
         }
 
+        // For tagging purposes only (not used by FPP scheduler logic):
+        // Ensure we store canonical short-days in the identity tag.
         if ($shortDays === '') {
             $shortDays = (string)GcsIntentConsolidator::weekdayMaskToShortDays((int)$dayMask);
-        }
-
-        // ✅ Phase 20 FINAL FIX:
-        // FPP UI requires explicit "Everyday" label when all days are selected
-        if ($dayMask === 127) {
-            $shortDays = 'Everyday';
         }
 
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
@@ -281,6 +280,9 @@ final class SchedulerSync
         return '|GCS:v1|uid=' . $uid . '|range=' . $startDate . '..' . $endDate . '|days=' . $days;
     }
 
+    /**
+     * @param array<int,mixed> $args
+     */
     private static function argsContainsGcsV1Tag(array $args): bool
     {
         foreach ($args as $a) {
@@ -293,7 +295,8 @@ final class SchedulerSync
 
     private static function parseYmdHms(string $s): ?DateTime
     {
-        return DateTime::createFromFormat('Y-m-d H:i:s', $s) ?: null;
+        $dt = DateTime::createFromFormat('Y-m-d H:i:s', $s);
+        return ($dt instanceof DateTime) ? $dt : null;
     }
 
     private static function isDateYmd(string $s): bool
@@ -327,9 +330,9 @@ final class SchedulerSync
             if (is_bool($v)) return $v;
             if (is_int($v))  return $v !== 0;
             if (is_string($v)) {
-                $v = strtolower($v);
-                if (in_array($v, ['true','1','yes','on'], true)) return true;
-                if (in_array($v, ['false','0','no','off'], true)) return false;
+                $vv = strtolower($v);
+                if (in_array($vv, ['true','1','yes','on'], true)) return true;
+                if (in_array($vv, ['false','0','no','off'], true)) return false;
             }
         }
         return $default;
