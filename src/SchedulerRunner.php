@@ -89,37 +89,39 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            // 🔹 NEW: calendar series start date (date-only) for scheduler range
+            // Calendar DTSTART (date-only) for scheduler range
             $seriesStartDate = null;
             if ($base && !empty($base['start'])) {
                 $seriesStartDate = substr((string)$base['start'], 0, 10);
             }
 
+            // Template intent (survives consolidation)
+            $template = [
+                'uid'      => $uid,
+                'summary'  => $summary,
+                'type'     => $resolved['type'],
+                'target'   => $resolved['target'],
+                'stopType' => 'graceful',
+                'repeat'   => 'none',
+            ];
+
+            if ($seriesStartDate !== null) {
+                $template['range'] = [
+                    'start' => $seriesStartDate,
+                    'end'   => $horizonEnd->format('Y-m-d'),
+                ];
+            }
+
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
-                $intent = [
+                $rawIntents[] = [
                     'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => $resolved['type'],
-                    'target'     => $resolved['target'],
+                    'template'   => $template,
                     'start'      => $occ['start'],
                     'end'        => $occ['end'],
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
                     'isOverride' => !empty($occ['isOverride']),
                 ];
-
-                // 🔹 NEW: explicit range so scheduler startDate reflects calendar DTSTART
-                if ($seriesStartDate !== null) {
-                    $intent['range'] = [
-                        'start' => $seriesStartDate,
-                        'end'   => $horizonEnd->format('Y-m-d'),
-                        'days'  => null,
-                    ];
-                }
-
-                $rawIntents[] = $intent;
             }
         }
 
