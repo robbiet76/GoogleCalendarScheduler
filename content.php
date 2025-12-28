@@ -36,7 +36,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cfg = GcsConfig::load();
         }
 
-        // Sync = plan-only, never writes
+        // Sync = plan-only, never writes (UI removed in Phase 19.3)
         if ($_POST['action'] === 'sync') {
             SchedulerPlanner::plan($cfg);
         }
@@ -157,13 +157,6 @@ $hasIcs = !empty($cfg['calendar']['ics_url']);
     </div>
 
     <button type="submit" class="buttons">Save Settings</button>
-</form>
-
-<hr>
-
-<form method="post">
-    <input type="hidden" name="action" value="sync">
-    <button type="submit" class="buttons">Sync Calendar</button>
 </form>
 
 <hr>
