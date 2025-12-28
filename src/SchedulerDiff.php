@@ -48,6 +48,9 @@ final class GcsSchedulerDiff
             $seenUids[$uid] = true;
 
             if (!isset($existingByUid[$uid])) {
+                // 🔹 Phase 20: one-time startDate correction on CREATE
+                $desiredEntry = $this->applySeriesStartDateIfPresent($desiredEntry);
+
                 $toCreate[] = $desiredEntry;
                 continue;
             }
@@ -72,5 +75,45 @@ final class GcsSchedulerDiff
         }
 
         return new GcsSchedulerDiffResult($toCreate, $toUpdate, $toDelete);
+    }
+
+    /**
+     * Phase 20:
+     * Apply calendar series DTSTART as scheduler startDate
+     * ONLY for CREATE entries, using the GCS identity range.
+     *
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private function applySeriesStartDateIfPresent(array $entry): array
+    {
+        if (empty($entry['args']) || !is_array($entry['args'])) {
+            return $entry;
+        }
+
+        foreach ($entry['args'] as $arg) {
+            if (!is_string($arg)) continue;
+
+            if (preg_match('/\|GCS:v1\|.*range=([0-9]{4}-[0-9]{2}-[0-9]{2})\.\./', $arg, $m)) {
+                $seriesStart = $m[1];
+
+                if ($this->isValidYmd($seriesStart)) {
+                    $entry['startDate'] = $seriesStart;
+                }
+                break;
+            }
+        }
+
+        return $entry;
+    }
+
+    private function isValidYmd(string $s): bool
+    {
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $s)) {
+            return false;
+        }
+
+        $dt = DateTime::createFromFormat('Y-m-d', $s);
+        return ($dt instanceof DateTime) && ($dt->format('Y-m-d') === $s);
     }
 }
