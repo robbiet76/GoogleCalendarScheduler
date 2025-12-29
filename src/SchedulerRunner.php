@@ -637,16 +637,19 @@ final class GcsSchedulerRunner
      */
     private static function normalizeStopType($v): int
     {
+        // Numeric always wins
         if (is_int($v)) return $v;
         if (is_string($v) && ctype_digit($v)) return (int)$v;
 
         if (is_string($v)) {
             $s = strtolower(trim($v));
+
             return match ($s) {
-                'graceful' => 0,
-                'graceful_loop', 'graceful-loop', 'gracefulloop' => 1,
-                'hard' => 2,
-                default => 0,
+                'graceful', 'soft'        => 0,
+                'hard', 'force', 'kill'   => 1,
+                'loop', 'graceful_loop',
+                'graceful-loop'           => 2,
+                default                   => 0,
             };
         }
 
