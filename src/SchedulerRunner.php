@@ -89,24 +89,18 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            /**
-             * Phase 21: YAML-aware per-occurrence option resolution.
-             *
-             * Requirement:
-             * - If YAML differs per occurrence (including overrides), we must split into separate scheduler entries,
-             *   exactly like time overrides do.
-             * - YAML changes must manifest as changes to the desired scheduler entry fields (stopType/repeat/args/etc.),
-             *   so diff emits UPDATEs naturally.
-             */
-            $hasOverride = false;
+            // ------------------------------------------------------------
+            // Phase 21: YAML-aware per-occurrence execution options
+            // ------------------------------------------------------------
+            $hasOverride   = false;
+            $timesVary    = false;
+            $optionsVary  = false;
+
             $timeKey = null;
-            $timesVary = false;
+            $optSig  = null;
 
-            $optSig = null;
-            $optionsVary = false;
+            $occEff = [];
 
-            // Precompute per-occurrence effective execution options (YAML + defaults)
-            $occEff = []; // array<int, array{start:string,end:string,isOverride:bool,eff:array<string,mixed>}>
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
@@ -114,8 +108,8 @@ final class GcsSchedulerRunner
                     $hasOverride = true;
                 }
 
-                $s = new DateTime((string)($occ['start'] ?? ''));
-                $e = new DateTime((string)($occ['end'] ?? ''));
+                $s = new DateTime($occ['start']);
+                $e = new DateTime($occ['end']);
 
                 $k = $s->format('H:i:s') . '|' . $e->format('H:i:s');
                 if ($timeKey === null) {
@@ -124,28 +118,15 @@ final class GcsSchedulerRunner
                     $timesVary = true;
                 }
 
-                // YAML context (best effort)
-                $context = [
-                    'uid'     => (string)$uid,
-                    'summary' => (string)$summary,
-                    'start'   => $s->format('Y-m-d H:i:s'),
-                ];
+                $desc = self::extractDescriptionFromEvent($occ['source'] ?? null);
+                $yaml = GcsYamlMetadata::parse($desc, [
+                    'uid'   => $uid,
+                    'start' => $s->format('Y-m-d H:i:s'),
+                ]);
 
-                // Description may live on the source VEVENT record (base or override)
-                $sourceEv = (isset($occ['source']) && is_array($occ['source'])) ? $occ['source'] : null;
-                $descText = self::extractDescriptionFromEvent($sourceEv);
-
-                // Parse YAML metadata (returns [] if none / not detected)
-                $yamlMeta = GcsYamlMetadata::parse($descText, $context);
-
-                // Build effective execution options for this occurrence
-                $eff = self::applyYamlToExecution(
-                    $resolved,
-                    $yamlMeta
-                );
-
-                // Compare execution signatures to decide if we can emit a single intent
+                $eff = self::applyYamlToExecution($resolved, $yaml);
                 $sig = self::executionSignature($eff);
+
                 if ($optSig === null) {
                     $optSig = $sig;
                 } elseif ($optSig !== $sig) {
@@ -160,156 +141,63 @@ final class GcsSchedulerRunner
                 ];
             }
 
-            if (empty($occEff)) {
-                continue;
-            }
+            if (empty($occEff)) continue;
 
-            // Determine whether we can safely emit ONE intent per UID.
-            // If overrides exist OR occurrence times vary OR YAML-derived execution differs,
-            // we fall back to per-occurrence intents and let GcsIntentConsolidator split into ranges losslessly.
             $canEmitSingle = (!$hasOverride && !$timesVary && !$optionsVary);
 
             if ($canEmitSingle) {
-                // IMPORTANT (Phase 20): We emit ONE intent per UID (one scheduler entry), not one per occurrence.
-                // That means we MUST explicitly provide a range (start/end/days). Consolidator cannot infer
-                // "Everyday" or the correct endDate from a single occurrence.
-
                 $first = $occEff[0];
-                if (!is_array($first) || empty($first['start']) || empty($first['end'])) {
-                    continue;
-                }
+                $eff0  = $first['eff'];
 
-                $occStart = new DateTime((string)$first['start']);
-                $occEnd   = new DateTime((string)$first['end']);
+                $occStart = new DateTime($first['start']);
+                $occEnd   = new DateTime($first['end']);
 
-                // Series DTSTART date (calendar series start)
-                $seriesStartDate = $occStart->format('Y-m-d');
-                if ($base && !empty($base['start'])) {
-                    $tmp = substr((string)$base['start'], 0, 10);
-                    if (self::isValidYmd($tmp)) {
-                        $seriesStartDate = $tmp;
-                    }
-                }
-
-                // Series end date:
-                // Prefer RRULE UNTIL (true series boundary), else use last expanded occurrence date.
-                $lastOccDate = $occStart->format('Y-m-d');
-                foreach ($occEff as $oe) {
-                    if (!is_array($oe) || empty($oe['start'])) continue;
-                    $d = substr((string)$oe['start'], 0, 10);
-                    if (self::isValidYmd($d) && $d > $lastOccDate) {
-                        $lastOccDate = $d;
-                    }
-                }
-                $seriesEndDate = $lastOccDate;
-
-                $rrule = ($base && isset($base['rrule']) && is_array($base['rrule'])) ? $base['rrule'] : null;
-                if (is_array($rrule) && !empty($rrule['UNTIL'])) {
-                    $until = self::parseRruleUntil((string)$rrule['UNTIL']);
-                    if ($until instanceof DateTime) {
-                        // Normalize to local timezone before taking date
-                        try {
-                            $until->setTimezone(new DateTimeZone(date_default_timezone_get()));
-                        } catch (Throwable $ignored) {}
-                        $untilDate = $until->format('Y-m-d');
-                        if (self::isValidYmd($untilDate)) {
-                            $seriesEndDate = $untilDate;
-                        }
-                    }
-                }
-
-                // Days:
-                // - DAILY => Everyday (SuMoTuWeThFrSa)
-                // - WEEKLY => derive from BYDAY, else fallback to the start DOW only
-                $daysShort = '';
-                if (is_array($rrule)) {
-                    $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
-                    if ($freq === 'DAILY') {
-                        $daysShort = 'SuMoTuWeThFrSa';
-                    } elseif ($freq === 'WEEKLY') {
-                        $daysShort = self::shortDaysFromByDay((string)($rrule['BYDAY'] ?? ''));
-                    }
-                }
-                if ($daysShort === '') {
-                    // Fallback: single day based on DTSTART
-                    $dow = (int)$occStart->format('w'); // 0=Sun..6=Sat
-                    $daysShort = self::dowToShortDay($dow);
-                }
-
-                // Execution options are identical across occurrences (by construction)
-                $eff0 = (isset($first['eff']) && is_array($first['eff'])) ? $first['eff'] : self::defaultExecutionFromResolved($resolved);
-
-                $template = [
-                    'uid'              => $uid,
-                    'summary'          => $summary,
-                    'type'             => (string)($eff0['type'] ?? $resolved['type']),
-                    'target'           => (string)($eff0['target'] ?? $resolved['target']),
-                    'start'            => $occStart->format('Y-m-d H:i:s'),
-                    'end'              => $occEnd->format('Y-m-d H:i:s'),
-                    'stopType'         => (int)($eff0['stopType'] ?? 0),
-                    'repeat'           => (int)($eff0['repeat'] ?? 0),
-                    'args'             => (isset($eff0['args']) && is_array($eff0['args'])) ? $eff0['args'] : [],
-                    'multisyncCommand' => (bool)($eff0['multisyncCommand'] ?? false),
-
-                    // NOTE: SchedulerSync currently hardcodes enabled=1.
-                    // We include it here so that once SchedulerSync honors it, YAML changes will naturally trigger UPDATEs.
-                    'enabled'          => (int)($eff0['enabled'] ?? 1),
-
-                    'isOverride'       => false,
-                ];
+                $seriesStartDate = substr((string)$refEv['start'], 0, 10);
+                $seriesEndDate   = substr((string)$refEv['end'], 0, 10);
 
                 $intentsOut[] = [
-                    'uid'      => $uid,
-                    'template' => $template,
-                    'range'    => [
+                    'uid' => $uid,
+                    'template' => [
+                        'uid'              => $uid,
+                        'summary'          => $summary,
+                        'type'             => $eff0['type'],
+                        'target'           => $eff0['target'],
+                        'start'            => $occStart->format('Y-m-d H:i:s'),
+                        'end'              => $occEnd->format('Y-m-d H:i:s'),
+                        'stopType'         => $eff0['stopType'],
+                        'repeat'           => $eff0['repeat'],
+                        'args'             => $eff0['args'],
+                        'multisyncCommand' => $eff0['multisyncCommand'],
+                        'enabled'          => $eff0['enabled'],
+                        'isOverride'       => false,
+                    ],
+                    'range' => [
                         'start' => $seriesStartDate,
                         'end'   => $seriesEndDate,
-                        'days'  => $daysShort,
+                        'days'  => '',
                     ],
                 ];
 
                 continue;
             }
 
-            // Fallback: per-occurrence (lossless), then consolidator will merge into correct ranges/days.
-            // YAML differences (and/or overrides/time variation) will naturally produce multiple consolidated entries.
-            $rawIntents = [];
             foreach ($occEff as $oe) {
-                if (!is_array($oe)) continue;
+                $eff = $oe['eff'];
 
-                $eff = (isset($oe['eff']) && is_array($oe['eff'])) ? $oe['eff'] : self::defaultExecutionFromResolved($resolved);
-
-                $rawIntents[] = [
+                $intentsOut[] = [
                     'uid'              => $uid,
                     'summary'          => $summary,
-                    'type'             => (string)($eff['type'] ?? $resolved['type']),
-                    'target'           => (string)($eff['target'] ?? $resolved['target']),
-                    'start'            => (string)$oe['start'],
-                    'end'              => (string)$oe['end'],
-                    'stopType'         => (int)($eff['stopType'] ?? 0),
-                    'repeat'           => (int)($eff['repeat'] ?? 0),
-                    'args'             => (isset($eff['args']) && is_array($eff['args'])) ? $eff['args'] : [],
-                    'multisyncCommand' => (bool)($eff['multisyncCommand'] ?? false),
-                    'enabled'          => (int)($eff['enabled'] ?? 1),
-                    'isOverride'       => !empty($oe['isOverride']),
+                    'type'             => $eff['type'],
+                    'target'           => $eff['target'],
+                    'start'            => $oe['start'],
+                    'end'              => $oe['end'],
+                    'stopType'         => $eff['stopType'],
+                    'repeat'           => $eff['repeat'],
+                    'args'             => $eff['args'],
+                    'multisyncCommand' => $eff['multisyncCommand'],
+                    'enabled'          => $eff['enabled'],
+                    'isOverride'       => $oe['isOverride'],
                 ];
-            }
-
-            try {
-                $consolidator = new GcsIntentConsolidator();
-                $maybe = $consolidator->consolidate($rawIntents);
-                if (is_array($maybe) && !empty($maybe)) {
-                    foreach ($maybe as $row) {
-                        if (is_array($row)) {
-                            $intentsOut[] = $row;
-                        }
-                    }
-                }
-            } catch (Throwable $ignored) {
-                // If consolidation fails, still return the raw intents (best effort)
-                foreach ($rawIntents as $ri) {
-                    $intentsOut[] = $ri;
-                }
             }
         }
 
