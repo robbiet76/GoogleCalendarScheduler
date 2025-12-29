@@ -255,20 +255,32 @@ final class SchedulerSync
         $repeat = 0;
         $repeatInterval = 0;
 
+        // -------------------------------------------------
+        // Phase 21 FIX: Repeat + repeatInterval mapping
+        //
+        // FPP expects:
+        // - repeat:         0/1 (boolean)
+        // - repeatInterval: SECONDS (0 = Immediate)
+        //
+        // UI options map to: 5/10/15/20/30/60 minutes.
+        // -------------------------------------------------
+        $repeat = 0;
+        $repeatInterval = 0;
+
         if (isset($tpl['repeat'])) {
             $v = $tpl['repeat'];
 
-            // Numeric = minutes
+            // Numeric = MINUTES (we store SECONDS)
             if (is_int($v) || (is_string($v) && ctype_digit($v))) {
                 $mins = (int)$v;
                 if ($mins > 0) {
                     $repeat = 1;
-                    $repeatInterval = $mins;
+                    $repeatInterval = self::repeatMinutesToSeconds($mins);
+                } else {
+                    $repeat = 0;
+                    $repeatInterval = 0;
                 }
-            }
-
-            // String values
-            if (is_string($v)) {
+            } elseif (is_string($v)) {
                 $s = strtolower(trim($v));
                 if ($s === 'immediate') {
                     $repeat = 1;
@@ -382,6 +394,33 @@ final class SchedulerSync
             default => 'Su',
         };
     }
+
+    /**
+     * FPP schedule.json uses repeatInterval in SECONDS.
+     * Convert YAML minutes into the closest supported UI interval.
+     *
+     * Supported UI intervals: 5,10,15,20,30,60 minutes.
+     */
+    private static function repeatMinutesToSeconds(int $mins): int
+    {
+        $allowed = [5, 10, 15, 20, 30, 60];
+
+        // Exact match
+        if (in_array($mins, $allowed, true)) {
+            return $mins * 60;
+        }
+
+        // If user provided an unsupported value, choose nearest supported.
+        $nearest = $allowed[0];
+        foreach ($allowed as $a) {
+            if (abs($mins - $a) < abs($mins - $nearest)) {
+                $nearest = $a;
+            }
+        }
+
+        return $nearest * 60;
+    }
+
 
     private static function buildGcsV1Tag(string $uid, string $startDate, string $endDate, string $days): string
     {
