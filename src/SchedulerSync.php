@@ -249,7 +249,36 @@ final class SchedulerSync
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
 
         $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
-        $repeat   = self::coalesceInt($tpl, ['repeat'], 0);
+        // -------------------------------------------------
+        // Phase 21: Repeat + repeatInterval mapping
+        // -------------------------------------------------
+        $repeat = 0;
+        $repeatInterval = 0;
+
+        if (isset($tpl['repeat'])) {
+            $v = $tpl['repeat'];
+
+            // Numeric = minutes
+            if (is_int($v) || (is_string($v) && ctype_digit($v))) {
+                $mins = (int)$v;
+                if ($mins > 0) {
+                    $repeat = 1;
+                    $repeatInterval = $mins;
+                }
+            }
+
+            // String values
+            if (is_string($v)) {
+                $s = strtolower(trim($v));
+                if ($s === 'immediate') {
+                    $repeat = 1;
+                    $repeatInterval = 0;
+                } elseif ($s === 'none') {
+                    $repeat = 0;
+                    $repeatInterval = 0;
+                }
+            }
+        }
 
         $args = [];
         if (isset($tpl['args']) && is_array($tpl['args'])) {
@@ -271,6 +300,7 @@ final class SchedulerSync
             'endTime'          => $endTime,
             'endTimeOffset'    => 0,
             'repeat'           => $repeat,
+            'repeatInterval'   => $repeatInterval,
             'startDate'        => $startDate,
             'endDate'          => $endDate,
             'stopType'         => $stopType,
