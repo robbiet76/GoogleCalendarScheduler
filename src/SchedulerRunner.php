@@ -96,6 +96,10 @@ final class GcsSchedulerRunner
             $timeKey = null;
             $timesVary = false;
 
+            $yamlSig = null;
+            $yamlVaries = false;
+            $occYaml = [];
+
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
@@ -112,9 +116,36 @@ final class GcsSchedulerRunner
                 } elseif ($timeKey !== $k) {
                     $timesVary = true;
                 }
-            }
 
-            $canEmitSingle = (!$hasOverride && !$timesVary);
+                $rid = (string)($occ['start'] ?? '');
+                $sourceEv = $base;
+
+                if (!empty($occ['isOverride']) && $rid !== '' && isset($overrides[$rid]) && is_array($overrides[$rid])) {
+                    $sourceEv = $overrides[$rid];
+                }
+
+                $desc = self::extractDescriptionFromEvent($sourceEv);
+                $yaml = GcsYamlMetadata::parse($desc, [
+                    'uid'     => $uid,
+                    'summary' => $summary,
+                    'start'   => $occ['start'],
+                ]);
+
+                if (is_array($yaml)) {
+                    ksort($yaml);
+                }
+                $sig = json_encode($yaml);
+                if ($yamlSig === null) {
+                    $yamlSig = $sig;
+                } elseif ($yamlSig !== $sig) {
+                    $yamlVaries = true;
+                }
+
+                $rid = (string)($occ['start'] ?? '');
+                $occYaml[$rid] = $yaml;
+            }      
+
+            $canEmitSingle = (!$hasOverride && !$timesVary && !$yamlVaries);
 
             if ($canEmitSingle) {
                 // IMPORTANT (Phase 20): We emit ONE intent per UID (one scheduler entry), not one per occurrence.
@@ -186,6 +217,14 @@ final class GcsSchedulerRunner
                     $daysShort = self::dowToShortDay($dow);
                 }
 
+                $rid0 = (string)$first['start'];
+                $yaml0 = $occYaml[$rid0] ?? [];
+
+                $eff = self::applyYamlToTemplate([
+                    'stopType' => 'graceful',
+                    'repeat'   => 'none',
+                ], is_array($yaml0) ? $yaml0 : []);
+
                 $template = [
                     'uid'        => $uid,
                     'summary'    => $summary,
@@ -193,8 +232,8 @@ final class GcsSchedulerRunner
                     'target'     => (string)$resolved['target'],
                     'start'      => $occStart->format('Y-m-d H:i:s'),
                     'end'        => $occEnd->format('Y-m-d H:i:s'),
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
+                    'stopType'   => $eff['stopType'],
+                    'repeat'     => $eff['repeat'],
                     'isOverride' => false,
                 ];
 
@@ -216,6 +255,13 @@ final class GcsSchedulerRunner
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
+                $yaml = $occYaml[$occ['start']] ?? [];
+
+                $eff = self::applyYamlToTemplate([
+                    'stopType' => 'graceful',
+                    'repeat'   => 'none',
+                ], is_array($yaml) ? $yaml : []);
+
                 $rawIntents[] = [
                     'uid'        => $uid,
                     'summary'    => $summary,
@@ -223,8 +269,8 @@ final class GcsSchedulerRunner
                     'target'     => $resolved['target'],
                     'start'      => $occ['start'],
                     'end'        => $occ['end'],
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
+                    'stopType'   => $eff['stopType'],
+                    'repeat'     => $eff['repeat'],
                     'isOverride' => !empty($occ['isOverride']),
                 ];
             }
@@ -265,6 +311,52 @@ final class GcsSchedulerRunner
         ];
     }
 
+        /**
+     * Apply YAML values onto a small defaults array for template keys.
+     *
+     * Expected YAML keys (already proven in prior Phase 21 work):
+     * - stopType: graceful | graceful_loop | hard
+     * - repeat: none | immediate | <minutes as int>
+     *
+     * @param array<string,mixed> $defaults
+     * @param array<string,mixed> $yaml
+     * @return array<string,mixed>
+     */
+    private static function applyYamlToTemplate(array $defaults, array $yaml): array
+    {
+        $out = $defaults;
+
+        if (isset($yaml['stopType']) && is_string($yaml['stopType']) && trim($yaml['stopType']) !== '') {
+            $out['stopType'] = strtolower(trim($yaml['stopType']));
+        }
+
+        if (isset($yaml['repeat'])) {
+            // Allow strings like "none"/"immediate" OR numeric minutes like 10
+            if (is_string($yaml['repeat']) && trim($yaml['repeat']) !== '') {
+                $out['repeat'] = strtolower(trim($yaml['repeat']));
+            } elseif (is_int($yaml['repeat'])) {
+                $out['repeat'] = $yaml['repeat'];
+            } elseif (is_string($yaml['repeat']) && ctype_digit(trim($yaml['repeat']))) {
+                $out['repeat'] = (int)trim($yaml['repeat']);
+            }
+        }
+
+        return $out;
+    }
+
+    private static function extractDescriptionFromEvent(?array $ev): ?string
+    {
+        if (!$ev) return null;
+
+        foreach (['description', 'DESCRIPTION', 'desc', 'body'] as $k) {
+            if (isset($ev[$k]) && is_string($ev[$k]) && trim($ev[$k]) !== '') {
+                return trim($ev[$k]);
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Recurrence expansion helper.
      *
@@ -288,6 +380,7 @@ final class GcsSchedulerRunner
                     'start'      => $s->format('Y-m-d H:i:s'),
                     'end'        => (new DateTime($ov['end']))->format('Y-m-d H:i:s'),
                     'isOverride' => true,
+                    'source'     => $ov,
                 ];
             }
         }
@@ -309,6 +402,7 @@ final class GcsSchedulerRunner
                         'start'      => $rid,
                         'end'        => (clone $start)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
                         'isOverride' => false,
+                        'source'     => $base,
                     ];
                 }
             }
@@ -336,6 +430,7 @@ final class GcsSchedulerRunner
         $addOccurrence = function(DateTime $s) use (
             &$out,
             $duration,
+            $base,
             $horizonStart,
             $horizonEnd,
             $until,
@@ -353,6 +448,7 @@ final class GcsSchedulerRunner
                 'start'      => $rid,
                 'end'        => (clone $s)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
                 'isOverride' => false,
+                'source'     => $base,
             ];
 
             if ($countLimit !== null && --$countLimit <= 0) {

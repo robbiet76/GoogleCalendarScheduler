@@ -51,11 +51,11 @@ class GcsIcsParser
         }
 
         if (!$this->calendarTz) {
-            // Fallback (safe, logged)
             $this->calendarTz = $this->fppTz;
-            GcsLogger::instance()->warn('ICS calendar timezone missing; defaulting to FPP timezone', [
-                'fpp_tz' => $this->fppTz->getName(),
-            ]);
+            GcsLogger::instance()->warn(
+                'ICS calendar timezone missing; defaulting to FPP timezone',
+                ['fpp_tz' => $this->fppTz->getName()]
+            );
         }
 
         $events = [];
@@ -74,6 +74,7 @@ class GcsIcsParser
 
                 $uid     = null;
                 $summary = '';
+                $description = null;
                 $dtstart = null;
                 $dtend   = null;
                 $isAllDay = false;
@@ -87,6 +88,11 @@ class GcsIcsParser
 
                 if (preg_match('/SUMMARY:(.+)/', $raw, $m)) {
                     $summary = trim($m[1]);
+                }
+
+                if (preg_match('/DESCRIPTION:(.+)/s', $raw, $m)) {
+                    // Normalize Google Calendar literal "\n" into real newlines
+                    $description = str_replace('\n', "\n", trim($m[1]));
                 }
 
                 if (preg_match('/DTSTART([^:]*):(.+)/', $raw, $m)) {
@@ -126,6 +132,7 @@ class GcsIcsParser
                 $events[] = [
                     'uid'          => $uid,
                     'summary'      => $summary,
+                    'description'  => $description,
                     'start'        => $dtstart->format('Y-m-d H:i:s'),
                     'end'          => $dtend->format('Y-m-d H:i:s'),
                     'isAllDay'     => $isAllDay,
@@ -164,7 +171,6 @@ class GcsIcsParser
                 return [null, false];
             }
 
-            // Normalize into FPP timezone
             $dt->setTimezone($this->fppTz);
 
             if ($isAllDay) {

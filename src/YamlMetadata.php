@@ -1,77 +1,176 @@
 <?php
+declare(strict_types=1);
 
 /**
- * YAML metadata parser with schema validation and warning aggregation.
+ * GcsYamlMetadata
  *
- * PHASE 11 CONTRACT:
- * - Schema is explicit and locked
- * - Unknown keys generate warnings
- * - Invalid value types generate warnings
- * - Warnings are aggregated and summarized per sync
+ * Phase 21 (clean):
+ * - Read-only YAML extraction from calendar event description text
+ * - NO scheduler knowledge
+ * - NO recurrence logic
+ * - NO defaults beyond basic normalization
+ *
+ * Contract:
+ * - If no valid YAML block is present, return []
+ * - Never throw
+ * - Never mutate input
  */
 final class GcsYamlMetadata
 {
-    private const SCHEMA = [
-        'type'       => 'string',
-        'stopType'   => 'string',
-        'repeat'     => 'string',
-        'override'   => 'bool',
-
-        'command'          => 'string',
-        'args'             => 'array',
-        'multisyncCommand' => 'bool',
-    ];
-
-    /** @var array<int,array<string,mixed>> */
-    private static array $warnings = [];
-
     /**
-     * Parse YAML metadata from an event description.
+     * Parse YAML metadata from a calendar event description.
      *
-     * @param string|null $text
-     * @param array<string,string>|null $context
-     * @return array<string,mixed>
+     * @param string|null $description Raw description text from calendar event
+     * @param array<string,mixed> $context Optional context for logging (uid, start, etc)
+     * @return array<string,mixed> Parsed YAML metadata (normalized) or empty array
      */
-    public static function parse(?string $text, ?array $context = null): array
+    public static function parse(?string $description, array $context = []): array
     {
-        if ($text === null || trim($text) === '') {
+        if ($description === null) {
             return [];
         }
 
-        // Normalize Google Calendar escaped newlines
-        $text = str_replace("\\n", "\n", $text);
+        $description = trim($description);
+        if ($description === '') {
+            return [];
+        }
 
-        $yamlText = self::extractYaml($text);
+        // Extract YAML candidate text
+        $yamlText = self::extractYamlBlock($description);
         if ($yamlText === null) {
             return [];
         }
 
-        $parsed = self::parseSimpleYaml($yamlText);
-        if (!is_array($parsed)) {
-            self::warn('yaml_parse_failed', [
-                'yaml' => $yamlText,
-            ], $context);
+        // Parse using lightweight safe parser (no ext-yaml dependency)
+        try {
+            $parsed = self::parseYamlBlock($yamlText);
+            if (!is_array($parsed) || empty($parsed)) {
+                return [];
+            }
+
+            return self::normalize($parsed);
+        } catch (Throwable $e) {
+            // Never allow YAML parsing to affect scheduler behavior
             return [];
         }
+    }
 
-        $out = [];
+    /**
+     * Attempt to extract a YAML block from description text.
+     *
+     * Supported formats:
+     *
+     * 1) Explicit fenced block:
+     *    ```yaml
+     *    stopType: hard
+     *    repeat: 10
+     *    ```
+     *
+     * 2) Raw YAML at start of description:
+     *    stopType: hard
+     *    repeat: 10
+     *
+     * @return string|null
+     */
+    private static function extractYamlBlock(string $text): ?string
+    {
+        // --- Case 1: fenced ```yaml block ---
+        if (preg_match('/```yaml\s*(.*?)\s*```/is', $text, $m)) {
+            $candidate = trim($m[1]);
+            return ($candidate !== '') ? $candidate : null;
+        }
 
-        foreach ($parsed as $key => $value) {
-            if (!array_key_exists($key, self::SCHEMA)) {
-                self::warn('unknown_key', [
-                    'key' => $key,
-                ], $context);
+        // --- Case 2: raw YAML-like lines at top ---
+        $lines = preg_split('/\r?\n/', $text);
+        if (!$lines) {
+            return null;
+        }
+
+        $yamlLines = [];
+        foreach ($lines as $line) {
+            $line = rtrim($line);
+
+            // Stop if we hit a non-YAML-looking line
+            if ($line === '') {
+                if (!empty($yamlLines)) {
+                    break;
+                }
                 continue;
             }
 
-            $expected = self::SCHEMA[$key];
-            if (!self::isValidType($value, $expected)) {
-                self::warn('invalid_type', [
-                    'key'      => $key,
-                    'expected' => $expected,
-                    'actual'   => gettype($value),
-                ], $context);
+            if (!preg_match('/^[A-Za-z0-9_]+\s*:/', $line)) {
+                break;
+            }
+
+            $yamlLines[] = $line;
+        }
+
+        if (empty($yamlLines)) {
+            return null;
+        }
+
+        return implode("\n", $yamlLines);
+    }
+
+    /**
+     * Lightweight YAML parser for Phase 21.
+     *
+     * Supported:
+     * - flat key: value pairs
+     * - scalar values only
+     * - integers, booleans, strings
+     *
+     * Explicitly NOT supported:
+     * - nesting
+     * - arrays
+     * - multiline blocks
+     * - anchors, tags, etc.
+     *
+     * @return array<string,mixed>
+     */
+    private static function parseYamlBlock(string $raw): array
+    {
+        $out = [];
+
+        $lines = preg_split('/\r?\n/', $raw);
+        if (!$lines) {
+            return $out;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+
+            // Skip blanks and comments
+            if ($line === '' || str_starts_with($line, '#')) {
                 continue;
+            }
+
+            // Expect simple key: value
+            if (!str_contains($line, ':')) {
+                continue;
+            }
+
+            [$key, $value] = explode(':', $line, 2);
+
+            $key = trim($key);
+            $value = trim($value);
+
+            if ($key === '') {
+                continue;
+            }
+
+            // Normalize scalar value
+            if (ctype_digit($value)) {
+                $value = (int)$value;
+            } else {
+                $lv = strtolower($value);
+                if ($lv === 'true') {
+                    $value = true;
+                } elseif ($lv === 'false') {
+                    $value = false;
+                } else {
+                    $value = $value;
+                }
             }
 
             $out[$key] = $value;
@@ -80,113 +179,57 @@ final class GcsYamlMetadata
         return $out;
     }
 
-    private static function extractYaml(string $text): ?string
+    /**
+     * Normalize parsed YAML values.
+     *
+     * Rules:
+     * - Keys preserved verbatim
+     * - Scalars normalized (bool/int/string)
+     * - Arrays preserved as-is
+     *
+     * NO scheduler-specific interpretation here.
+     */
+    private static function normalize(array $raw): array
     {
-        if (preg_match('/```yaml(.*?)```/s', $text, $m)) {
-            return trim($m[1]);
-        }
+        $out = [];
 
-        $pos = strpos($text, 'fpp:');
-        if ($pos !== false) {
-            return substr($text, $pos);
-        }
-
-        // ---------------------------------------------------------
-        // FIX (Phase 12.1):
-        // Top-level YAML without wrapper → entire description
-        // ---------------------------------------------------------
-        return trim($text);
-    }
-
-    private static function parseSimpleYaml(string $yaml): array
-    {
-        $lines = preg_split('/\r?\n/', $yaml);
-        $data  = [];
-        $currentKey = null;
-
-        foreach ($lines as $line) {
-            $line = rtrim($line);
-            if ($line === '' || str_starts_with(trim($line), '#')) {
+        foreach ($raw as $key => $value) {
+            if (!is_string($key) || $key === '') {
                 continue;
             }
 
-            if ($currentKey !== null && preg_match('/^\s*-\s*(.+)$/', $line, $m)) {
-                if (!isset($data[$currentKey]) || !is_array($data[$currentKey])) {
-                    $data[$currentKey] = [];
-                }
-                $data[$currentKey][] = self::castValue($m[1]);
-                continue;
-            }
-
-            if (preg_match('/^([a-zA-Z0-9_]+)\s*:\s*(.*)$/', $line, $m)) {
-                $key = $m[1];
-                $val = $m[2];
-
-                if ($val === '') {
-                    $data[$key] = [];
-                    $currentKey = $key;
-                } else {
-                    $data[$key] = self::castValue($val);
-                    $currentKey = null;
-                }
-            }
+            $out[$key] = self::normalizeValue($value);
         }
 
-        return $data;
+        return $out;
     }
 
-    private static function castValue(string $val)
+    /**
+     * Normalize a single YAML value.
+     */
+    private static function normalizeValue($v)
     {
-        $v = trim($val);
-
-        if ($v === 'true') return true;
-        if ($v === 'false') return false;
-        if (is_numeric($v)) return (int)$v;
-
-        return $v;
-    }
-
-    private static function isValidType($value, string $expected): bool
-    {
-        return match ($expected) {
-            'string' => is_string($value),
-            'bool'   => is_bool($value),
-            'array'  => is_array($value),
-            default  => false,
-        };
-    }
-
-    private static function warn(string $code, array $details, ?array $context): void
-    {
-        $entry = [
-            'code'    => $code,
-            'details' => $details,
-        ];
-
-        if ($context) {
-            $entry['event'] = $context;
+        if (is_bool($v)) {
+            return $v;
         }
 
-        self::$warnings[] = $entry;
-        GcsLog::warn('YAML metadata warning', $entry);
-    }
-
-    public static function flushWarnings(): void
-    {
-        if (empty(self::$warnings)) {
-            return;
+        if (is_int($v)) {
+            return $v;
         }
 
-        $byType = [];
-        foreach (self::$warnings as $w) {
-            $byType[$w['code']] = ($byType[$w['code']] ?? 0) + 1;
+        if (is_float($v)) {
+            return $v;
         }
 
-        GcsLog::warn('YAML metadata warnings summary', [
-            'total'  => count(self::$warnings),
-            'byType' => $byType,
-        ]);
+        if (is_string($v)) {
+            return trim($v);
+        }
 
-        self::$warnings = [];
+        if (is_array($v)) {
+            return $v;
+        }
+
+        // Unsupported type → ignore
+        return null;
     }
 }
