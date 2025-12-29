@@ -249,45 +249,28 @@ final class SchedulerSync
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
 
         $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
+        
         // -------------------------------------------------
-        // Phase 21: Repeat + repeatInterval mapping
-        // -------------------------------------------------
-        $repeat = 0;
-        $repeatInterval = 0;
-
-        // -------------------------------------------------
-        // Phase 21 FIX: Repeat + repeatInterval mapping
-        //
-        // FPP expects:
-        // - repeat:         0/1 (boolean)
-        // - repeatInterval: SECONDS (0 = Immediate)
-        //
-        // UI options map to: 5/10/15/20/30/60 minutes.
+        // Phase 21 FINAL FIX: FPP repeat enum mapping
         // -------------------------------------------------
         $repeat = 0;
-        $repeatInterval = 0;
 
         if (isset($tpl['repeat'])) {
             $v = $tpl['repeat'];
 
-            // Numeric = MINUTES (we store SECONDS)
             if (is_int($v) || (is_string($v) && ctype_digit($v))) {
                 $mins = (int)$v;
+
                 if ($mins > 0) {
-                    $repeat = 1;
-                    $repeatInterval = self::repeatMinutesToSeconds($mins);
-                } else {
-                    $repeat = 0;
-                    $repeatInterval = 0;
+                    // FPP uses minutes * 100
+                    $repeat = $mins * 100;
                 }
             } elseif (is_string($v)) {
                 $s = strtolower(trim($v));
                 if ($s === 'immediate') {
                     $repeat = 1;
-                    $repeatInterval = 0;
                 } elseif ($s === 'none') {
                     $repeat = 0;
-                    $repeatInterval = 0;
                 }
             }
         }
@@ -312,7 +295,6 @@ final class SchedulerSync
             'endTime'          => $endTime,
             'endTimeOffset'    => 0,
             'repeat'           => $repeat,
-            'repeatInterval'   => $repeatInterval,
             'startDate'        => $startDate,
             'endDate'          => $endDate,
             'stopType'         => $stopType,
