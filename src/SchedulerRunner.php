@@ -542,8 +542,8 @@ final class GcsSchedulerRunner
             $eff['multisyncCommand'] = $yaml['multisyncCommand'];
         }
 
-        // stopType normalization (string -> FPP enum int)
-        if (isset($yaml['stopType'])) {
+        // stopType normalization (YAML override ALWAYS wins)
+        if (array_key_exists('stopType', $yaml)) {
             $eff['stopType'] = self::normalizeStopType($yaml['stopType']);
         }
 
