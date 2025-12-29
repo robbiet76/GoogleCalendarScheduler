@@ -81,12 +81,34 @@ class GcsIcsParser
                 $exDates = [];
                 $recurrenceId = null;
 
+                // Phase 21 FIX: capture DESCRIPTION for YAML metadata support
+                $description = null;
+
                 if (preg_match('/UID:(.+)/', $raw, $m)) {
                     $uid = trim($m[1]);
                 }
 
                 if (preg_match('/SUMMARY:(.+)/', $raw, $m)) {
                     $summary = trim($m[1]);
+                }
+
+                // DESCRIPTION may contain escaped newlines (\n) in Google ICS
+                // Keep as text and normalize escaped newlines into real newlines
+                if (preg_match('/DESCRIPTION:(.+)/', $raw, $m)) {
+                    $description = trim($m[1]);
+
+                    // Google commonly encodes newlines as literal "\n"
+                    $description = str_replace("\\n", "\n", $description);
+
+                    // Also decode common escapes seen in ICS payloads
+                    // RFC5545 text escaping: \n, \N, \;, \, and \\.
+                    $description = str_replace("\\N", "\n", $description);
+                    $description = str_replace("\\;", ";", $description);
+                    $description = str_replace("\\,", ",", $description);
+                    $description = str_replace("\\\\", "\\", $description);
+
+                    // Trim any leading blank line produced by DESCRIPTION:\n...
+                    $description = ltrim($description, "\n\r");
                 }
 
                 if (preg_match('/DTSTART([^:]*):(.+)/', $raw, $m)) {
@@ -126,6 +148,7 @@ class GcsIcsParser
                 $events[] = [
                     'uid'          => $uid,
                     'summary'      => $summary,
+                    'description'  => $description,
                     'start'        => $dtstart->format('Y-m-d H:i:s'),
                     'end'          => $dtend->format('Y-m-d H:i:s'),
                     'isAllDay'     => $isAllDay,
