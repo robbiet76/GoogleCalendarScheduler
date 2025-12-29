@@ -17,6 +17,9 @@ require_once __DIR__ . '/src/experimental/HealthProbe.php';
 require_once __DIR__ . '/src/experimental/CalendarReader.php';
 require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 
+// Phase 23.1 — Scheduler inventory (read-only)
+require_once __DIR__ . '/src/SchedulerInventory.php';
+
 $cfg = GcsConfig::load();
 
 /*
@@ -133,6 +136,9 @@ function looksLikeIcs(string $url): bool {
 $isEmpty    = ($icsUrl === '');
 $isIcsValid = (!$isEmpty && looksLikeIcs($icsUrl));
 $canSave    = ($isEmpty || $isIcsValid);
+
+// Phase 23.1 — Read scheduler inventory
+$schedulerInventory = SchedulerInventory::summarize();
 ?>
 
 <div class="settings">
@@ -151,6 +157,29 @@ $canSave    = ($isEmpty || $isIcsValid);
             echo 'Ready — check calendar for changes.';
         }
         ?>
+    </span>
+</div>
+
+<!-- Phase 23.1 — Scheduler Inventory Status -->
+<div class="gcs-status gcs-status--info">
+    <span class="gcs-status-dot"></span>
+    <span class="gcs-status-text">
+        <?php if (!empty($schedulerInventory['ok'])): ?>
+            Managed scheduler entries:
+            <strong><?php echo (int)$schedulerInventory['managed_count']; ?></strong>
+            &nbsp;|&nbsp;
+            Unmanaged scheduler entries:
+            <strong><?php echo (int)$schedulerInventory['unmanaged_count']; ?></strong>
+            <?php if (!empty($schedulerInventory['invalid_count'])): ?>
+                &nbsp;|&nbsp;
+                <span style="color:#b42318;">
+                    Invalid:
+                    <?php echo (int)$schedulerInventory['invalid_count']; ?>
+                </span>
+            <?php endif; ?>
+        <?php else: ?>
+            Unable to read scheduler inventory.
+        <?php endif; ?>
     </span>
 </div>
 
