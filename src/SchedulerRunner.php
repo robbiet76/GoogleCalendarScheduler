@@ -89,13 +89,24 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            // Determine whether we can safely emit ONE intent per UID.
-            // If overrides exist OR occurrence times vary, we fall back to per-occurrence intents
-            // and let GcsIntentConsolidator split into ranges losslessly.
+            /**
+             * Phase 21: YAML-aware per-occurrence option resolution.
+             *
+             * Requirement:
+             * - If YAML differs per occurrence (including overrides), we must split into separate scheduler entries,
+             *   exactly like time overrides do.
+             * - YAML changes must manifest as changes to the desired scheduler entry fields (stopType/repeat/args/etc.),
+             *   so diff emits UPDATEs naturally.
+             */
             $hasOverride = false;
             $timeKey = null;
             $timesVary = false;
 
+            $optSig = null;
+            $optionsVary = false;
+
+            // Precompute per-occurrence effective execution options (YAML + defaults)
+            $occEff = []; // array<int, array{start:string,end:string,isOverride:bool,eff:array<string,mixed>}>
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
 
@@ -112,16 +123,58 @@ final class GcsSchedulerRunner
                 } elseif ($timeKey !== $k) {
                     $timesVary = true;
                 }
+
+                // YAML context (best effort)
+                $context = [
+                    'uid'     => (string)$uid,
+                    'summary' => (string)$summary,
+                    'start'   => $s->format('Y-m-d H:i:s'),
+                ];
+
+                // Description may live on the source VEVENT record (base or override)
+                $sourceEv = (isset($occ['source']) && is_array($occ['source'])) ? $occ['source'] : null;
+                $descText = self::extractDescriptionFromEvent($sourceEv);
+
+                // Parse YAML metadata (returns [] if none / not detected)
+                $yamlMeta = GcsYamlMetadata::parse($descText, $context);
+
+                // Build effective execution options for this occurrence
+                $eff = self::applyYamlToExecution(
+                    $resolved,
+                    $yamlMeta
+                );
+
+                // Compare execution signatures to decide if we can emit a single intent
+                $sig = self::executionSignature($eff);
+                if ($optSig === null) {
+                    $optSig = $sig;
+                } elseif ($optSig !== $sig) {
+                    $optionsVary = true;
+                }
+
+                $occEff[] = [
+                    'start'      => $s->format('Y-m-d H:i:s'),
+                    'end'        => $e->format('Y-m-d H:i:s'),
+                    'isOverride' => !empty($occ['isOverride']),
+                    'eff'        => $eff,
+                ];
             }
 
-            $canEmitSingle = (!$hasOverride && !$timesVary);
+            if (empty($occEff)) {
+                continue;
+            }
+
+            // Determine whether we can safely emit ONE intent per UID.
+            // If overrides exist OR occurrence times vary OR YAML-derived execution differs,
+            // we fall back to per-occurrence intents and let GcsIntentConsolidator split into ranges losslessly.
+            $canEmitSingle = (!$hasOverride && !$timesVary && !$optionsVary);
 
             if ($canEmitSingle) {
                 // IMPORTANT (Phase 20): We emit ONE intent per UID (one scheduler entry), not one per occurrence.
                 // That means we MUST explicitly provide a range (start/end/days). Consolidator cannot infer
                 // "Everyday" or the correct endDate from a single occurrence.
 
-                $first = $occurrences[0];
+                $first = $occEff[0];
                 if (!is_array($first) || empty($first['start']) || empty($first['end'])) {
                     continue;
                 }
@@ -140,17 +193,14 @@ final class GcsSchedulerRunner
 
                 // Series end date:
                 // Prefer RRULE UNTIL (true series boundary), else use last expanded occurrence date.
-                $seriesEndDate = $occStart->format('Y-m-d');
                 $lastOccDate = $occStart->format('Y-m-d');
-
-                foreach ($occurrences as $occ) {
-                    if (!is_array($occ) || empty($occ['start'])) continue;
-                    $d = substr((string)$occ['start'], 0, 10);
+                foreach ($occEff as $oe) {
+                    if (!is_array($oe) || empty($oe['start'])) continue;
+                    $d = substr((string)$oe['start'], 0, 10);
                     if (self::isValidYmd($d) && $d > $lastOccDate) {
                         $lastOccDate = $d;
                     }
                 }
-
                 $seriesEndDate = $lastOccDate;
 
                 $rrule = ($base && isset($base['rrule']) && is_array($base['rrule'])) ? $base['rrule'] : null;
@@ -186,16 +236,26 @@ final class GcsSchedulerRunner
                     $daysShort = self::dowToShortDay($dow);
                 }
 
+                // Execution options are identical across occurrences (by construction)
+                $eff0 = (isset($first['eff']) && is_array($first['eff'])) ? $first['eff'] : self::defaultExecutionFromResolved($resolved);
+
                 $template = [
-                    'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => (string)$resolved['type'],
-                    'target'     => (string)$resolved['target'],
-                    'start'      => $occStart->format('Y-m-d H:i:s'),
-                    'end'        => $occEnd->format('Y-m-d H:i:s'),
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
-                    'isOverride' => false,
+                    'uid'              => $uid,
+                    'summary'          => $summary,
+                    'type'             => (string)($eff0['type'] ?? $resolved['type']),
+                    'target'           => (string)($eff0['target'] ?? $resolved['target']),
+                    'start'            => $occStart->format('Y-m-d H:i:s'),
+                    'end'              => $occEnd->format('Y-m-d H:i:s'),
+                    'stopType'         => (int)($eff0['stopType'] ?? 0),
+                    'repeat'           => (int)($eff0['repeat'] ?? 0),
+                    'args'             => (isset($eff0['args']) && is_array($eff0['args'])) ? $eff0['args'] : [],
+                    'multisyncCommand' => (bool)($eff0['multisyncCommand'] ?? false),
+
+                    // NOTE: SchedulerSync currently hardcodes enabled=1.
+                    // We include it here so that once SchedulerSync honors it, YAML changes will naturally trigger UPDATEs.
+                    'enabled'          => (int)($eff0['enabled'] ?? 1),
+
+                    'isOverride'       => false,
                 ];
 
                 $intentsOut[] = [
@@ -212,20 +272,26 @@ final class GcsSchedulerRunner
             }
 
             // Fallback: per-occurrence (lossless), then consolidator will merge into correct ranges/days.
+            // YAML differences (and/or overrides/time variation) will naturally produce multiple consolidated entries.
             $rawIntents = [];
-            foreach ($occurrences as $occ) {
-                if (!is_array($occ)) continue;
+            foreach ($occEff as $oe) {
+                if (!is_array($oe)) continue;
+
+                $eff = (isset($oe['eff']) && is_array($oe['eff'])) ? $oe['eff'] : self::defaultExecutionFromResolved($resolved);
 
                 $rawIntents[] = [
-                    'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => $resolved['type'],
-                    'target'     => $resolved['target'],
-                    'start'      => $occ['start'],
-                    'end'        => $occ['end'],
-                    'stopType'   => 'graceful',
-                    'repeat'     => 'none',
-                    'isOverride' => !empty($occ['isOverride']),
+                    'uid'              => $uid,
+                    'summary'          => $summary,
+                    'type'             => (string)($eff['type'] ?? $resolved['type']),
+                    'target'           => (string)($eff['target'] ?? $resolved['target']),
+                    'start'            => (string)$oe['start'],
+                    'end'              => (string)$oe['end'],
+                    'stopType'         => (int)($eff['stopType'] ?? 0),
+                    'repeat'           => (int)($eff['repeat'] ?? 0),
+                    'args'             => (isset($eff['args']) && is_array($eff['args'])) ? $eff['args'] : [],
+                    'multisyncCommand' => (bool)($eff['multisyncCommand'] ?? false),
+                    'enabled'          => (int)($eff['enabled'] ?? 1),
+                    'isOverride'       => !empty($oe['isOverride']),
                 ];
             }
 
@@ -269,6 +335,11 @@ final class GcsSchedulerRunner
      * Recurrence expansion helper.
      *
      * Generates concrete occurrences intersecting the horizon.
+     *
+     * NOTE (Phase 21):
+     * - Each occurrence includes a 'source' VEVENT array (base or override) so YAML/description can be applied per occurrence.
+     *
+     * @return array<int,array<string,mixed>>
      */
     private static function expandEventOccurrences(
         ?array $base,
@@ -288,6 +359,7 @@ final class GcsSchedulerRunner
                     'start'      => $s->format('Y-m-d H:i:s'),
                     'end'        => (new DateTime($ov['end']))->format('Y-m-d H:i:s'),
                     'isOverride' => true,
+                    'source'     => $ov,
                 ];
             }
         }
@@ -309,6 +381,7 @@ final class GcsSchedulerRunner
                         'start'      => $rid,
                         'end'        => (clone $start)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
                         'isOverride' => false,
+                        'source'     => $base,
                     ];
                 }
             }
@@ -341,7 +414,8 @@ final class GcsSchedulerRunner
             $until,
             &$countLimit,
             &$overrideKeys,
-            &$exDates
+            &$exDates,
+            $base
         ): bool {
             if ($s < $horizonStart || $s > $horizonEnd) return true;
             if ($until && $s > $until) return false;
@@ -353,6 +427,7 @@ final class GcsSchedulerRunner
                 'start'      => $rid,
                 'end'        => (clone $s)->modify("+{$duration} seconds")->format('Y-m-d H:i:s'),
                 'isOverride' => false,
+                'source'     => $base,
             ];
 
             if ($countLimit !== null && --$countLimit <= 0) {
@@ -363,7 +438,7 @@ final class GcsSchedulerRunner
 
         $h = (int)$start->format('H');
         $i = (int)$start->format('i');
-        $s = (int)$start->format('s');
+        $s0 = (int)$start->format('s');
 
         if ($freq === 'DAILY') {
             $cursor = clone $start;
@@ -371,7 +446,7 @@ final class GcsSchedulerRunner
                 $cursor->modify("+{$interval} days");
             }
             while ($cursor <= $horizonEnd) {
-                $cursor->setTime($h, $i, $s);
+                $cursor->setTime($h, $i, $s0);
                 if (!$addOccurrence($cursor)) break;
                 $cursor->modify("+{$interval} days");
             }
@@ -398,7 +473,7 @@ final class GcsSchedulerRunner
             while ($weekCursor <= $horizonEnd) {
                 foreach ($byday as $dow) {
                     $occ = (clone $weekCursor)->modify("sunday this week +{$dow} days");
-                    $occ->setTime($h, $i, $s);
+                    $occ->setTime($h, $i, $s0);
                     if ($occ < $start) continue;
                     if (!$addOccurrence($occ)) return $out;
                 }
@@ -501,5 +576,216 @@ final class GcsSchedulerRunner
         if ($present['SA']) $out .= 'Sa';
 
         return $out;
+    }
+
+    /* -----------------------------------------------------------------
+     * Phase 21 helpers: YAML application + signature
+     * ----------------------------------------------------------------- */
+
+    /**
+     * Extract description text from a VEVENT record (best effort).
+     *
+     * This runner intentionally does not assume any specific key name; it checks common ones.
+     */
+    private static function extractDescriptionFromEvent(?array $ev): ?string
+    {
+        if (!$ev) return null;
+
+        foreach (['description', 'DESCRIPTION', 'desc', 'body'] as $k) {
+            if (isset($ev[$k]) && is_string($ev[$k]) && trim($ev[$k]) !== '') {
+                return (string)$ev[$k];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Default execution options derived from title resolution (no YAML).
+     *
+     * @param array{type:string,target:string} $resolved
+     * @return array<string,mixed>
+     */
+    private static function defaultExecutionFromResolved(array $resolved): array
+    {
+        return [
+            'type'             => (string)$resolved['type'],
+            'target'           => (string)$resolved['target'],
+            'stopType'         => 0,   // default = graceful (FPP enum 0)
+            'repeat'           => 0,   // default = none
+            'args'             => [],
+            'multisyncCommand' => false,
+            'enabled'          => 1,
+        ];
+    }
+
+    /**
+     * Apply YAML metadata to the resolved execution target/options.
+     *
+     * YAML keys supported (canonical, as produced by GcsYamlMetadata):
+     * - enabled (bool)
+     * - type (string: playlist|sequence|command)  [note: SchedulerSync currently supports playlist|command]
+     * - command (string)                          [required if type=command]
+     * - args (array)
+     * - multisyncCommand (bool)
+     * - stopType (string|int)                     [graceful|graceful_loop|hard OR numeric]
+     * - repeat (string|int)                       [none|immediate|N OR numeric]
+     *
+     * @param array{type:string,target:string} $resolved
+     * @param array<string,mixed> $yaml
+     * @return array<string,mixed>
+     */
+    private static function applyYamlToExecution(array $resolved, array $yaml): array
+    {
+        $eff = self::defaultExecutionFromResolved($resolved);
+
+        // enabled
+        if (isset($yaml['enabled']) && is_bool($yaml['enabled'])) {
+            $eff['enabled'] = $yaml['enabled'] ? 1 : 0;
+        }
+
+        // args
+        if (isset($yaml['args']) && is_array($yaml['args'])) {
+            $eff['args'] = array_values($yaml['args']);
+        }
+
+        // multisyncCommand
+        if (isset($yaml['multisyncCommand']) && is_bool($yaml['multisyncCommand'])) {
+            $eff['multisyncCommand'] = $yaml['multisyncCommand'];
+        }
+
+        // stopType normalization (string -> FPP enum int)
+        if (isset($yaml['stopType'])) {
+            $eff['stopType'] = self::normalizeStopType($yaml['stopType']);
+        }
+
+        // repeat normalization (string/int -> int)
+        if (isset($yaml['repeat'])) {
+            $eff['repeat'] = self::normalizeRepeat($yaml['repeat']);
+        }
+
+        // type + target override (command only needs extra support)
+        if (isset($yaml['type']) && is_string($yaml['type'])) {
+            $t = strtolower(trim($yaml['type']));
+            if ($t === 'command') {
+                // For commands, target is the command name
+                $cmd = (isset($yaml['command']) && is_string($yaml['command'])) ? trim($yaml['command']) : '';
+                if ($cmd !== '') {
+                    $eff['type'] = 'command';
+                    $eff['target'] = $cmd;
+                } else {
+                    // If command is missing, keep resolved target; diff layer will likely treat it as playlist/sequence.
+                    // The YAML parser will already warn for missing keys only if implemented elsewhere; keep safe here.
+                    $eff['type'] = 'command';
+                    $eff['target'] = ''; // force downstream to reject (missing target) if this reaches SchedulerSync
+                }
+            } elseif ($t === 'playlist') {
+                $eff['type'] = 'playlist';
+                // keep resolved target (playlist name) unless user also set something else
+            } elseif ($t === 'sequence') {
+                // SchedulerSync currently only accepts playlist|command; keep value so we can detect divergence/splitting,
+                // but note that SchedulerSync may reject it later.
+                $eff['type'] = 'sequence';
+                // keep resolved target (sequence name)
+            }
+        }
+
+        // If YAML provided command without explicit type, treat it as command intent (power-user convenience)
+        if (!isset($yaml['type']) && isset($yaml['command']) && is_string($yaml['command'])) {
+            $cmd = trim($yaml['command']);
+            if ($cmd !== '') {
+                $eff['type'] = 'command';
+                $eff['target'] = $cmd;
+            }
+        }
+
+        return $eff;
+    }
+
+    /**
+     * Build a stable signature for execution options.
+     * If this differs across occurrences, we must split into separate scheduler entries.
+     *
+     * @param array<string,mixed> $eff
+     */
+    private static function executionSignature(array $eff): string
+    {
+        $type = (string)($eff['type'] ?? '');
+        $target = (string)($eff['target'] ?? '');
+        $stopType = (int)($eff['stopType'] ?? 0);
+        $repeat = (int)($eff['repeat'] ?? 0);
+        $ms = !empty($eff['multisyncCommand']) ? '1' : '0';
+        $en = (int)($eff['enabled'] ?? 1);
+
+        $args = (isset($eff['args']) && is_array($eff['args'])) ? $eff['args'] : [];
+        // Normalize args to strings for stable compare
+        $argsNorm = array_map(static function($v): string {
+            if (is_bool($v)) return $v ? 'true' : 'false';
+            if (is_int($v) || is_float($v)) return (string)$v;
+            if (is_string($v)) return $v;
+            return json_encode($v);
+        }, $args);
+
+        return json_encode([
+            'type' => $type,
+            'target' => $target,
+            'stopType' => $stopType,
+            'repeat' => $repeat,
+            'multisync' => $ms,
+            'enabled' => $en,
+            'args' => $argsNorm,
+        ]);
+    }
+
+    /**
+     * Normalize stopType YAML value to FPP stopType enum int.
+     *
+     * Supported strings:
+     * - graceful        => 0
+     * - graceful_loop   => 1
+     * - hard            => 2
+     *
+     * If already numeric, uses that int.
+     */
+    private static function normalizeStopType($v): int
+    {
+        if (is_int($v)) return $v;
+        if (is_string($v) && ctype_digit($v)) return (int)$v;
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            return match ($s) {
+                'graceful' => 0,
+                'graceful_loop', 'graceful-loop', 'gracefulloop' => 1,
+                'hard' => 2,
+                default => 0,
+            };
+        }
+
+        return 0;
+    }
+
+    /**
+     * Normalize repeat YAML value to FPP repeat int.
+     *
+     * Supported:
+     * - none      => 0
+     * - immediate => 1
+     * - N         => (int)N
+     *
+     * If already numeric, uses that int.
+     */
+    private static function normalizeRepeat($v): int
+    {
+        if (is_int($v)) return $v;
+        if (is_string($v) && ctype_digit($v)) return (int)$v;
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            if ($s === 'none') return 0;
+            if ($s === 'immediate') return 1;
+        }
+
+        return 0;
     }
 }
