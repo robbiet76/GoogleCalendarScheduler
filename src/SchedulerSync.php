@@ -248,7 +248,10 @@ final class SchedulerSync
         // Canonical identity tag stored in args[]
         $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
 
-        $stopType = self::coalesceInt($tpl, ['stopType', 'stop_type'], 0);
+        // STOP TYPE (Phase 21, aligned to FPP ScheduleEntry.cpp)
+        $stopType = self::stopTypeToFppStopType($tpl['stopType'] ?? null);
+
+        // REPEAT (Phase 21)
         $repeat   = self::repeatToFppRepeat($tpl['repeat'] ?? null);
 
         $args = [];
@@ -291,37 +294,89 @@ final class SchedulerSync
     }
 
     /**
-     * FPP Scheduler.h mapping (enum selector values)
+     * Phase 21 (clean): Map YAML-friendly stopType values into FPP enum.
      *
-     * INX_SUN..INX_SAT: 0..6
-     * INX_EVERYDAY: 7
-     * INX_WKDAYS: 8
-     * INX_WKEND: 9
-     * INX_M_W_F: 10
-     * INX_T_TH: 11
-     * INX_SUN_TO_THURS: 12
-     * INX_FRI_SAT: 13
-     * INX_ODD_DAY: 14
-     * INX_EVEN_DAY: 15
+     * FPP ScheduleEntry.cpp:
+     * 0 = Graceful
+     * 1 = Hard
+     * 2 = Graceful Loop
      */
+    private static function stopTypeToFppStopType($v): int
+    {
+        if ($v === null) {
+            return 0;
+        }
+
+        if (is_int($v)) {
+            return max(0, min(2, $v));
+        }
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            return match ($s) {
+                'hard', 'hard_stop' => 1,
+                'graceful_loop'     => 2,
+                'graceful'          => 0,
+                default             => 0,
+            };
+        }
+
+        return 0;
+    }
+
+    /**
+     * Phase 21 (clean): Map YAML-friendly repeat values into FPP's encoded repeat integer.
+     *
+     * Confirmed behavior from FPP schedule.json:
+     * - minutes * 100
+     */
+    private static function repeatToFppRepeat($v): int
+    {
+        if ($v === null) return 0;
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            if ($s === '' || $s === 'none') return 0;
+            if ($s === 'immediate') return 1;
+            if (ctype_digit($s)) {
+                $mins = (int)$s;
+                return ($mins > 0) ? $mins * 100 : 0;
+            }
+            return 0;
+        }
+
+        if (is_int($v)) {
+            if ($v <= 0) return 0;
+            if ($v === 1) return 1;
+            if ($v >= 100) return $v;
+            return $v * 100;
+        }
+
+        if (is_float($v)) {
+            $mins = (int)round($v);
+            return ($mins > 0) ? $mins * 100 : 0;
+        }
+
+        return 0;
+    }
+
+    /* -------------------- helpers -------------------- */
+
     private static function shortDaysToFppDayEnum(string $shortDays, DateTime $startDt): int
     {
         $d = trim($shortDays);
 
-        // Common consolidated patterns
-        if ($d === 'SuMoTuWeThFrSa') return 7;     // Everyday
-        if ($d === 'MoTuWeThFr')     return 8;     // Weekdays
-        if ($d === 'SuSa')           return 9;     // Weekend
-        if ($d === 'MoWeFr')         return 10;    // M/W/F
-        if ($d === 'TuTh')           return 11;    // T/Th
-        if ($d === 'SuMoTuWeTh')     return 12;    // Sun-Thu
-        if ($d === 'FrSa')           return 13;    // Fri-Sat
+        if ($d === 'SuMoTuWeThFrSa') return 7;
+        if ($d === 'MoTuWeThFr')     return 8;
+        if ($d === 'SuSa')           return 9;
+        if ($d === 'MoWeFr')         return 10;
+        if ($d === 'TuTh')           return 11;
+        if ($d === 'SuMoTuWeTh')     return 12;
+        if ($d === 'FrSa')           return 13;
 
-        // Single day
         $single = self::singleShortDayToFppEnum($d);
         if ($single !== null) return $single;
 
-        // Unknown: never allow blank/invalid; fall back to startDt weekday (0..6)
         return (int)$startDt->format('w');
     }
 
@@ -372,53 +427,6 @@ final class SchedulerSync
         return false;
     }
 
-    /**
-     * Phase 21 (clean): Map YAML-friendly repeat values into FPP's encoded repeat integer.
-     *
-     * Confirmed behavior from FPP schedule.json:
-     * - 10 minutes => 1000
-     * - 15 minutes => 1500
-     * Therefore: minutes * 100
-     *
-     * Supported inputs:
-     * - "none"        => 0
-     * - "immediate"   => 1
-     * - int minutes   => minutes * 100
-     * - numeric string minutes => minutes * 100
-     * - already-encoded int (>= 100) passes through unchanged
-     *
-     * @param mixed $v
-     */
-    private static function repeatToFppRepeat($v): int
-    {
-        if ($v === null) return 0;
-
-        if (is_string($v)) {
-            $s = strtolower(trim($v));
-            if ($s === '' || $s === 'none') return 0;
-            if ($s === 'immediate') return 1;
-            if (ctype_digit($s)) {
-                $mins = (int)$s;
-                return ($mins > 0) ? $mins * 100 : 0;
-            }
-            return 0;
-        }
-
-        if (is_int($v)) {
-            if ($v <= 0) return 0;
-            if ($v === 1) return 1;
-            if ($v >= 100) return $v;
-            return $v * 100;
-        }
-
-        if (is_float($v)) {
-            $mins = (int)round($v);
-            return ($mins > 0) ? $mins * 100 : 0;
-        }
-
-        return 0;
-    }
-
     private static function parseYmdHms(string $s): ?DateTime
     {
         if ($s === '') return null;
@@ -437,16 +445,6 @@ final class SchedulerSync
     {
         foreach ($keys as $k) {
             if (isset($src[$k]) && is_string($src[$k]) && $src[$k] !== '') return $src[$k];
-        }
-        return $default;
-    }
-
-    private static function coalesceInt(array $src, array $keys, int $default): int
-    {
-        foreach ($keys as $k) {
-            if (isset($src[$k]) && (is_int($src[$k]) || (is_string($src[$k]) && ctype_digit($src[$k])))) {
-                return (int)$src[$k];
-            }
         }
         return $default;
     }
