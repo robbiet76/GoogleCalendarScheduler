@@ -4,16 +4,20 @@ declare(strict_types=1);
 /**
  * GcsYamlMetadata
  *
- * Phase 21 (clean):
- * - Read-only YAML extraction from calendar event description text
- * - NO scheduler knowledge
- * - NO recurrence logic
- * - NO defaults beyond basic normalization
+ * Lightweight, read-only YAML metadata extractor for calendar events.
  *
- * Contract:
- * - If no valid YAML block is present, return []
- * - Never throw
- * - Never mutate input
+ * Responsibilities:
+ * - Extract a small YAML block from event description text
+ * - Parse flat key/value metadata safely
+ * - Normalize scalar values for downstream consumers
+ *
+ * HARD GUARANTEES:
+ * - Never throws
+ * - Never mutates input
+ * - No scheduler knowledge
+ * - No recurrence or intent logic
+ *
+ * If no valid YAML metadata is present, an empty array is returned.
  */
 final class GcsYamlMetadata
 {
@@ -21,8 +25,8 @@ final class GcsYamlMetadata
      * Parse YAML metadata from a calendar event description.
      *
      * @param string|null $description Raw description text from calendar event
-     * @param array<string,mixed> $context Optional context for logging (uid, start, etc)
-     * @return array<string,mixed> Parsed YAML metadata (normalized) or empty array
+     * @param array<string,mixed> $context Optional context (reserved for logging/debug)
+     * @return array<string,mixed> Normalized YAML metadata or empty array
      */
     public static function parse(?string $description, array $context = []): array
     {
@@ -35,13 +39,13 @@ final class GcsYamlMetadata
             return [];
         }
 
-        // Extract YAML candidate text
+        // Extract candidate YAML text
         $yamlText = self::extractYamlBlock($description);
         if ($yamlText === null) {
             return [];
         }
 
-        // Parse using lightweight safe parser (no ext-yaml dependency)
+        // Parse using a safe, minimal parser
         try {
             $parsed = self::parseYamlBlock($yamlText);
             if (!is_array($parsed) || empty($parsed)) {
@@ -49,8 +53,8 @@ final class GcsYamlMetadata
             }
 
             return self::normalize($parsed);
-        } catch (Throwable $e) {
-            // Never allow YAML parsing to affect scheduler behavior
+        } catch (Throwable) {
+            // YAML parsing must never affect scheduler behavior
             return [];
         }
     }
@@ -66,21 +70,21 @@ final class GcsYamlMetadata
      *    repeat: 10
      *    ```
      *
-     * 2) Raw YAML at start of description:
+     * 2) Raw YAML at the start of the description:
      *    stopType: hard
      *    repeat: 10
      *
-     * @return string|null
+     * @return string|null Extracted YAML text or null if not found
      */
     private static function extractYamlBlock(string $text): ?string
     {
-        // --- Case 1: fenced ```yaml block ---
+        // Case 1: fenced ```yaml block
         if (preg_match('/```yaml\s*(.*?)\s*```/is', $text, $m)) {
             $candidate = trim($m[1]);
             return ($candidate !== '') ? $candidate : null;
         }
 
-        // --- Case 2: raw YAML-like lines at top ---
+        // Case 2: raw YAML-like lines at top of description
         $lines = preg_split('/\r?\n/', $text);
         if (!$lines) {
             return null;
@@ -90,7 +94,6 @@ final class GcsYamlMetadata
         foreach ($lines as $line) {
             $line = rtrim($line);
 
-            // Stop if we hit a non-YAML-looking line
             if ($line === '') {
                 if (!empty($yamlLines)) {
                     break;
@@ -105,26 +108,21 @@ final class GcsYamlMetadata
             $yamlLines[] = $line;
         }
 
-        if (empty($yamlLines)) {
-            return null;
-        }
-
-        return implode("\n", $yamlLines);
+        return empty($yamlLines) ? null : implode("\n", $yamlLines);
     }
 
     /**
-     * Lightweight YAML parser for Phase 21.
+     * Minimal YAML parser.
      *
      * Supported:
-     * - flat key: value pairs
-     * - scalar values only
-     * - integers, booleans, strings
+     * - Flat key: value pairs
+     * - Scalar values only (int, bool, string)
      *
      * Explicitly NOT supported:
-     * - nesting
-     * - arrays
-     * - multiline blocks
-     * - anchors, tags, etc.
+     * - Nesting
+     * - Arrays
+     * - Multiline blocks
+     * - Anchors, tags, or advanced YAML features
      *
      * @return array<string,mixed>
      */
@@ -145,7 +143,6 @@ final class GcsYamlMetadata
                 continue;
             }
 
-            // Expect simple key: value
             if (!str_contains($line, ':')) {
                 continue;
             }
@@ -168,8 +165,6 @@ final class GcsYamlMetadata
                     $value = true;
                 } elseif ($lv === 'false') {
                     $value = false;
-                } else {
-                    $value = $value;
                 }
             }
 
@@ -184,10 +179,11 @@ final class GcsYamlMetadata
      *
      * Rules:
      * - Keys preserved verbatim
-     * - Scalars normalized (bool/int/string)
-     * - Arrays preserved as-is
+     * - Scalars normalized
+     * - Unsupported types ignored
      *
-     * NO scheduler-specific interpretation here.
+     * @param array<string,mixed> $raw
+     * @return array<string,mixed>
      */
     private static function normalize(array $raw): array
     {
@@ -209,15 +205,7 @@ final class GcsYamlMetadata
      */
     private static function normalizeValue($v)
     {
-        if (is_bool($v)) {
-            return $v;
-        }
-
-        if (is_int($v)) {
-            return $v;
-        }
-
-        if (is_float($v)) {
+        if (is_bool($v) || is_int($v) || is_float($v)) {
             return $v;
         }
 
@@ -229,7 +217,6 @@ final class GcsYamlMetadata
             return $v;
         }
 
-        // Unsupported type → ignore
         return null;
     }
 }

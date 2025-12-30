@@ -3,20 +3,33 @@ declare(strict_types=1);
 
 /**
  * DiffPreviewer
+ * 
+ * UI-SCOPED FILE
  *
- * UI adapter for scheduler planning and apply.
+ * This file exists ONLY to support web UI preview/apply flows.
+ * Core scheduler logic must not depend on this class.
  *
- * RULES:
+ * ROLE:
+ * - Translates planner/apply output into UI-safe preview rows
+ * - Enforces preview/apply parity
+ *
+ * HARD RULES:
  * - Preview ALWAYS uses SchedulerPlanner (plan-only)
  * - Apply is the ONLY place allowed to execute writes (via GcsSchedulerApply)
- * - Creates / Updates / Deletes MUST normalize to the same preview shape
+ * - This class MUST NOT modify scheduler state directly
  */
+
 final class DiffPreviewer
 {
     /**
-     * Normalize planner/apply results into UI-friendly arrays.
+     * Normalize planner or apply results into UI-friendly rows.
      *
-     * @internal Used by preview + apply
+     * NOTES:
+     * - Never returns objects
+     * - Never mutates input
+     * - Safe for JSON encoding
+     *
+     * @internal Used exclusively by UI preview/apply flows
      */
     public static function normalizeResultForUi(array $result): array
     {
@@ -60,8 +73,9 @@ final class DiffPreviewer
      * Apply scheduler changes (EXECUTION PATH).
      *
      * IMPORTANT:
-     * - Preview and Apply must operate on the same plan representation for UI parity.
-     * - Writes MUST happen only via GcsSchedulerApply (Phase 17+ contract).
+     * - Preview and Apply must operate on the same plan representation
+     * - Writes MUST happen only via GcsSchedulerApply
+     * - MUST NOT be called from non-UI contexts
      *
      * @throws RuntimeException if blocked
      */

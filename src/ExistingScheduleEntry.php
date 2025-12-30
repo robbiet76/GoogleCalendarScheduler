@@ -2,10 +2,19 @@
 declare(strict_types=1);
 
 /**
- * Wrapper for an existing FPP scheduler entry.
+ * GcsExistingScheduleEntry
  *
- * Phase 17+ behavior:
- * - Identity is derived from GCS tag stored in args[]
+ * Lightweight wrapper around a raw FPP scheduler entry.
+ *
+ * Responsibilities:
+ * - Expose scheduler entry identity via GCS tag
+ * - Provide managed/unmanaged classification
+ * - Offer UI-safe representations for preview output
+ *
+ * Guarantees:
+ * - Read-only wrapper (does not mutate underlying data)
+ * - Identity is derived solely from GCS identity tags
+ * - No scheduler state inference beyond raw entry contents
  */
 final class GcsExistingScheduleEntry
 {
@@ -13,7 +22,7 @@ final class GcsExistingScheduleEntry
     private array $raw;
 
     /**
-     * @param array<string,mixed> $raw
+     * @param array<string,mixed> $raw Raw scheduler.json entry
      */
     public function __construct(array $raw)
     {
@@ -21,7 +30,9 @@ final class GcsExistingScheduleEntry
     }
 
     /**
-     * Extract GCS UID from scheduler entry.
+     * Extract the GCS identity key from this scheduler entry.
+     *
+     * @return string|null GCS UID or null if not present
      */
     public function getGcsUid(): ?string
     {
@@ -29,7 +40,7 @@ final class GcsExistingScheduleEntry
     }
 
     /**
-     * True if entry is managed by GCS.
+     * Determine whether this scheduler entry is managed by GCS.
      */
     public function isGcsManaged(): bool
     {
@@ -37,7 +48,7 @@ final class GcsExistingScheduleEntry
     }
 
     /**
-     * Raw scheduler entry.
+     * Retrieve the raw scheduler entry.
      *
      * @return array<string,mixed>
      */
@@ -47,8 +58,10 @@ final class GcsExistingScheduleEntry
     }
 
     /**
-     * UI-safe representation of this scheduler entry.
-     * Ensures no objects leak into JSON preview output.
+     * Produce a UI-safe representation of this scheduler entry.
+     *
+     * Ensures no objects or non-serializable values leak into
+     * JSON preview or API responses.
      *
      * @return array<string,mixed>
      */

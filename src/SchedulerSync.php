@@ -2,49 +2,73 @@
 declare(strict_types=1);
 
 /**
- * SchedulerSync (Phase 17+)
+ * SchedulerSync
  *
- * New contract (Option B):
- * - No dryRun flag
- * - No diff computation
- * - No apply policy
+ * Canonical scheduler I/O and intent-to-entry mapping layer.
  *
- * Responsibilities now:
- * - schedule.json I/O helpers
- * - canonical intent -> schedule entry mapping
+ * Responsibilities:
+ * - Read and write schedule.json safely
+ * - Perform atomic writes with backup and verification
+ * - Convert resolved scheduling intents into FPP scheduler entries
+ *
+ * HARD RULES:
+ * - This class does NOT compute diffs
+ * - This class does NOT apply policy decisions
+ * - This class does NOT perform dry-run logic
+ *
+ * All mutation decisions are made elsewhere.
+ * This class only performs trusted mechanical operations.
  */
 final class SchedulerSync
 {
     public const SCHEDULE_JSON_PATH = '/home/fpp/media/config/schedule.json';
 
+    /* -------------------------------------------------------------------------
+     * schedule.json I/O
+     * ---------------------------------------------------------------------- */
+
     /**
-     * PURE helper: read schedule.json.
+     * Read schedule.json safely.
+     *
+     * Invalid or malformed content returns an empty array.
      *
      * @return array<int,array<string,mixed>>
      */
     public static function readScheduleJsonStatic(string $path): array
     {
-        if (!file_exists($path)) return [];
+        if (!file_exists($path)) {
+            return [];
+        }
 
         $raw = @file_get_contents($path);
-        if ($raw === false) return [];
+        if ($raw === false) {
+            return [];
+        }
 
         $rawTrim = trim($raw);
-        if ($rawTrim === '') return [];
+        if ($rawTrim === '') {
+            return [];
+        }
 
         $decoded = json_decode($rawTrim, true);
-        if (!is_array($decoded)) return [];
+        if (!is_array($decoded)) {
+            return [];
+        }
 
         $out = [];
         foreach ($decoded as $entry) {
-            if (is_array($entry)) $out[] = $entry;
+            if (is_array($entry)) {
+                $out[] = $entry;
+            }
         }
+
         return $out;
     }
 
     /**
-     * STRICT helper: read schedule.json or throw.
+     * Strict schedule.json reader.
      *
+     * @throws RuntimeException on any structural failure
      * @return array<int,array<string,mixed>>
      */
     public static function readScheduleJsonOrThrow(string $path): array
@@ -65,18 +89,23 @@ final class SchedulerSync
 
         $decoded = json_decode($rawTrim, true);
         if (!is_array($decoded)) {
-            throw new RuntimeException("schedule.json is not valid JSON array at '{$path}'");
+            throw new RuntimeException("schedule.json is not a valid JSON array at '{$path}'");
         }
 
         foreach ($decoded as $i => $entry) {
             if (!is_array($entry)) {
-                throw new RuntimeException("schedule.json entry #{$i} is not an object/array");
+                throw new RuntimeException("schedule.json entry #{$i} is not an object");
             }
         }
 
         return $decoded;
     }
 
+    /**
+     * Create a timestamped backup of schedule.json.
+     *
+     * @return string Backup file path
+     */
     public static function backupScheduleFileOrThrow(string $path): string
     {
         $ts = date('Ymd-His');
@@ -90,6 +119,8 @@ final class SchedulerSync
     }
 
     /**
+     * Atomically replace schedule.json.
+     *
      * @param array<int,array<string,mixed>> $data
      */
     public static function writeScheduleJsonAtomicallyOrThrow(string $path, array $data): void
@@ -105,10 +136,10 @@ final class SchedulerSync
         if (!is_string($json) || $json === '') {
             throw new RuntimeException('Failed to encode schedule.json');
         }
+
         $json .= "\n";
 
-        $written = @file_put_contents($tmp, $json, LOCK_EX);
-        if ($written === false) {
+        if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
             throw new RuntimeException("Failed to write temp schedule file '{$tmp}'");
         }
 
@@ -123,37 +154,54 @@ final class SchedulerSync
     }
 
     /**
-     * Ensure schedule.json matches expected managed-key set after apply.
+     * Post-write verification.
+     *
+     * Ensures all expected managed entries exist and deleted entries are gone.
      *
      * @param array<int,string> $expectedManagedKeys
      * @param array<int,string> $expectedDeletedKeys
      */
-    public static function verifyScheduleJsonKeysOrThrow(array $expectedManagedKeys, array $expectedDeletedKeys): void
-    {
+    public static function verifyScheduleJsonKeysOrThrow(
+        array $expectedManagedKeys,
+        array $expectedDeletedKeys
+    ): void {
         $after = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
 
         $present = [];
-        foreach ($after as $e) {
-            if (!is_array($e)) continue;
-            $k = GcsSchedulerIdentity::extractKey($e);
-            if ($k !== null) $present[$k] = true;
-        }
+        foreach ($after as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
 
-        foreach ($expectedManagedKeys as $k) {
-            if (!isset($present[$k])) {
-                throw new RuntimeException("Post-write verification failed: expected managed key missing in schedule.json: {$k}");
+            $key = GcsSchedulerIdentity::extractKey($entry);
+            if ($key !== null) {
+                $present[$key] = true;
             }
         }
 
-        foreach ($expectedDeletedKeys as $k) {
-            if (isset($present[$k])) {
-                throw new RuntimeException("Post-write verification failed: expected deleted key still present in schedule.json: {$k}");
+        foreach ($expectedManagedKeys as $key) {
+            if (!isset($present[$key])) {
+                throw new RuntimeException(
+                    "Post-write verification failed: expected managed key missing: {$key}"
+                );
+            }
+        }
+
+        foreach ($expectedDeletedKeys as $key) {
+            if (isset($present[$key])) {
+                throw new RuntimeException(
+                    "Post-write verification failed: expected deleted key still present: {$key}"
+                );
             }
         }
     }
 
+    /* -------------------------------------------------------------------------
+     * Intent → scheduler entry mapping
+     * ---------------------------------------------------------------------- */
+
     /**
-     * Public wrapper for canonical intent -> schedule entry mapping.
+     * Public wrapper for intent-to-entry mapping.
      *
      * @param array<string,mixed> $intent
      * @return array<string,mixed>|string
@@ -164,14 +212,12 @@ final class SchedulerSync
     }
 
     /**
-     * PURE mapping: intent -> schedule entry.
+     * Pure mapping: resolved intent → FPP scheduler entry.
      *
-     * NOTE (Phase 20):
-     * FPP schedule.json field "day" is NOT a weekday bitmask.
-     * It is an enum selector value (0..15) as defined in FPP Scheduler.h.
+     * This method performs no I/O and has no side effects.
      *
      * @param array<string,mixed> $intent
-     * @return array<string,mixed>|string
+     * @return array<string,mixed>|string Error message on failure
      */
     private static function intentToScheduleEntryStatic(array $intent)
     {

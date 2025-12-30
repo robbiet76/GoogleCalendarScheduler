@@ -4,14 +4,25 @@ declare(strict_types=1);
 /**
  * SchedulerCleanupApplier (Phase 23.4)
  *
- * Write path to remove unmanaged entries ONLY when a managed equivalent exists.
+ * GUARDED WRITE PATH.
+ *
+ * Removes unmanaged scheduler entries ONLY when a
+ * managed GCS-controlled equivalent is present.
+ *
+ * This is a DESTRUCTIVE operation with strict safeguards.
  *
  * HARD RULES:
- * - Always backup schedule.json
- * - Never delete managed entries
- * - Always compute plan at apply time (no stale indices)
- * - Verify no managed keys were removed
+ * - Always compute a fresh cleanup plan at apply time
+ * - Always back up schedule.json before writing
+ * - NEVER delete managed (GCS-owned) entries
+ * - NEVER rely on stale planner indices
+ * - Always verify managed identity set remains unchanged
+ *
+ * FAILURE POLICY:
+ * - Any safety violation aborts the operation
+ * - schedule.json must remain intact on failure
  */
+
 final class SchedulerCleanupApplier
 {
     /**
@@ -29,7 +40,7 @@ final class SchedulerCleanupApplier
     public static function apply(): array
     {
         try {
-            // Plan fresh at apply time
+            // Plan fresh at apply time to avoid stale indices or race conditions
             $plan = SchedulerCleanupPlanner::plan();
             if (empty($plan['ok'])) {
                 return [
@@ -94,7 +105,11 @@ final class SchedulerCleanupApplier
                 }
 
                 if (!empty($candidateIdx[$idx])) {
-                    // Safety re-check: compute fingerprint and confirm managed equivalent exists
+                    // SAFETY RE-CHECK:
+                    // Even if the planner marked this index removable,
+                    // we recompute the fingerprint and verify a managed
+                    // equivalent STILL exists in the current snapshot.
+
                     $fp = SchedulerCleanupPlanner::fingerprint($entry);
                     if ($fp !== '' && self::managedFingerprintExists($before, $fp)) {
                         $removed++;
@@ -112,7 +127,8 @@ final class SchedulerCleanupApplier
             // Write atomically
             SchedulerSync::writeScheduleJsonAtomicallyOrThrow($path, $after);
 
-            // Verify managed keys unchanged
+            // HARD INVARIANT:
+            // Cleanup must NEVER remove or alter managed scheduler entries.
             $managedKeysAfter = self::managedKeySet(SchedulerSync::readScheduleJsonStatic($path));
             if ($managedKeysAfter !== $managedKeysBefore) {
                 throw new RuntimeException('Post-write verification failed: managed key set changed during cleanup.');

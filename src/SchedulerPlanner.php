@@ -4,28 +4,45 @@ declare(strict_types=1);
 /**
  * SchedulerPlanner
  *
- * Planning-only entry point for scheduler diffs.
+ * Planning-only orchestration layer for scheduler diffs.
  *
  * Responsibilities:
- * - Fetch Google Calendar
- * - Resolve desired scheduler entries
- * - Load existing scheduler state
- * - Compute create/update/delete diff
+ * - Ingest calendar data and resolve scheduling intents
+ * - Translate intents into desired FPP scheduler entries
+ * - Load existing scheduler state from schedule.json
+ * - Compute create / update / delete operations
  *
  * GUARANTEES:
- * - NEVER writes to FPP scheduler
+ * - NEVER writes to the FPP scheduler
+ * - NEVER mutates schedule.json
+ * - Produces a deterministic plan based on current inputs
+ *
+ * All side effects (writes, backups, verification) occur
+ * exclusively in the Apply layer.
  */
 final class SchedulerPlanner
 {
     /**
      * Compute a scheduler plan (diff) without side effects.
      *
-     * @param array $config
-     * @return array{creates:array,updates:array,deletes:array,desiredEntries:array,existingRaw:array}
+     * The returned structure is used by:
+     * - Preview UI (diff visualization)
+     * - Apply pipeline (execution boundary)
+     *
+     * @param array $config Loaded plugin configuration
+     * @return array{
+     *   creates: array,
+     *   updates: array,
+     *   deletes: array,
+     *   desiredEntries: array,
+     *   existingRaw: array
+     * }
      */
     public static function plan(array $config): array
     {
-        // 1. Calendar ingestion → intents
+        /* -----------------------------------------------------------------
+         * 1. Calendar ingestion → scheduling intents
+         * ----------------------------------------------------------------- */
         $runner = new GcsSchedulerRunner(
             $config,
             GcsFppSchedulerHorizon::getDays()
@@ -33,7 +50,9 @@ final class SchedulerPlanner
 
         $runnerResult = $runner->run();
 
-        // 2. Desired schedule entries
+        /* -----------------------------------------------------------------
+         * 2. Desired scheduler entries (intent → entry mapping)
+         * ----------------------------------------------------------------- */
         $desired = [];
 
         if (!empty($runnerResult['intents']) && is_array($runnerResult['intents'])) {
@@ -45,7 +64,9 @@ final class SchedulerPlanner
             }
         }
 
-        // 3. Load existing schedule.json
+        /* -----------------------------------------------------------------
+         * 3. Load existing scheduler state
+         * ----------------------------------------------------------------- */
         $existingRaw = SchedulerSync::readScheduleJsonStatic(
             SchedulerSync::SCHEDULE_JSON_PATH
         );
@@ -57,10 +78,14 @@ final class SchedulerPlanner
             }
         }
 
-        // 4. Immutable scheduler state
+        /* -----------------------------------------------------------------
+         * 4. Immutable scheduler state
+         * ----------------------------------------------------------------- */
         $state = new GcsSchedulerState($existingEntries);
 
-        // 5. Compute diff
+        /* -----------------------------------------------------------------
+         * 5. Compute diff
+         * ----------------------------------------------------------------- */
         $diff = (new GcsSchedulerDiff($desired, $state))->compute();
 
         return [

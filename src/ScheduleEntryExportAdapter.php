@@ -4,16 +4,21 @@ declare(strict_types=1);
 /**
  * ScheduleEntryExportAdapter
  *
- * Phase 23.2
+ * Converts a single unmanaged FPP scheduler entry into a
+ * calendar export intent suitable for ICS generation.
  *
- * Converts a single unmanaged FPP scheduler entry into
- * a calendar-export intent suitable for ICS generation.
+ * Responsibilities:
+ * - Translate one scheduler entry into one calendar event
+ * - Preserve runtime semantics via YAML metadata
+ * - Validate dates and times for export safety
  *
- * HARD RULES:
- * - Read-only
- * - One scheduler entry → one calendar event
- * - Invalid dates (year 0000) are SKIPPED, not coerced
- * - Skipped entries produce warnings, not exceptions
+ * Guarantees:
+ * - Read-only (never mutates scheduler entries)
+ * - Never exports GCS-managed entries (caller responsibility)
+ * - Invalid entries are skipped with warnings, not exceptions
+ *
+ * This adapter performs no scheduling logic and is used
+ * exclusively by export orchestration services.
  */
 final class ScheduleEntryExportAdapter
 {
@@ -26,7 +31,7 @@ final class ScheduleEntryExportAdapter
      */
     public static function adapt(array $entry, array &$warnings): ?array
     {
-        // Determine name (playlist preferred, else command)
+        // Determine event summary (playlist preferred, else command)
         $summary = '';
         if (!empty($entry['playlist']) && is_string($entry['playlist'])) {
             $summary = trim($entry['playlist']);
@@ -39,13 +44,14 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        // Validate dates
+        // Validate export date range
         $startDateRaw = (string)($entry['startDate'] ?? '');
         $endDateRaw   = (string)($entry['endDate'] ?? '');
 
-        if (!self::isValidExportDate($startDateRaw) ||
-            !self::isValidExportDate($endDateRaw)) {
-
+        if (
+            !self::isValidExportDate($startDateRaw) ||
+            !self::isValidExportDate($endDateRaw)
+        ) {
             $warnings[] = "Skipped '{$summary}': invalid date (year 0000)";
             return null;
         }
@@ -60,7 +66,7 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        // Handle 24:00:00 → next day 00:00:00
+        // Handle 24:00:00 as next-day midnight
         if ($endTime === '24:00:00') {
             $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
         } else {
@@ -71,10 +77,10 @@ final class ScheduleEntryExportAdapter
             }
         }
 
-        // Build RRULE (if applicable)
+        // Build RRULE if entry represents a recurring schedule
         $rrule = self::buildRrule($entry, $endDateRaw);
 
-        // YAML metadata (runtime semantics only)
+        // Preserve runtime semantics via YAML metadata
         $yaml = [
             'stopType' => self::stopTypeToString((int)($entry['stopType'] ?? 0)),
             'repeat'   => self::repeatToYaml($entry['repeat'] ?? 0),
@@ -88,7 +94,7 @@ final class ScheduleEntryExportAdapter
             'summary' => $summary,
             'dtstart' => $dtStart,
             'dtend'   => $dtEnd,
-            'rrule'   => $rrule, // string or null
+            'rrule'   => $rrule,
             'yaml'    => $yaml,
         ];
     }
@@ -101,7 +107,7 @@ final class ScheduleEntryExportAdapter
             return false;
         }
 
-        // Explicitly reject year 0000
+        // Explicitly reject year 0000 (invalid in ICS)
         if (strpos($ymd, '0000-') === 0) {
             return false;
         }
@@ -117,11 +123,7 @@ final class ScheduleEntryExportAdapter
     }
 
     /**
-     * Build RRULE based on FPP scheduler fields.
-     *
-     * @param array<string,mixed> $entry
-     * @param string $endDate
-     * @return string|null
+     * Build an RRULE string based on FPP scheduler fields.
      */
     private static function buildRrule(array $entry, string $endDate): ?string
     {
@@ -149,15 +151,15 @@ final class ScheduleEntryExportAdapter
     private static function fppDayEnumToByDay(int $enum): string
     {
         return match ($enum) {
-            0 => 'SU',
-            1 => 'MO',
-            2 => 'TU',
-            3 => 'WE',
-            4 => 'TH',
-            5 => 'FR',
-            6 => 'SA',
-            8 => 'MO,TU,WE,TH,FR', // Weekdays
-            9 => 'SU,SA',          // Weekend
+            0  => 'SU',
+            1  => 'MO',
+            2  => 'TU',
+            3  => 'WE',
+            4  => 'TH',
+            5  => 'FR',
+            6  => 'SA',
+            8  => 'MO,TU,WE,TH,FR', // Weekdays
+            9  => 'SU,SA',          // Weekends
             10 => 'MO,WE,FR',
             11 => 'TU,TH',
             12 => 'SU,MO,TU,WE,TH',

@@ -2,34 +2,40 @@
 declare(strict_types=1);
 
 /**
- * Scheduler identity helper.
+ * GcsSchedulerIdentity
  *
- * CANONICAL OWNERSHIP RULE (Phase 17+):
- * - An entry is GCS-managed if it contains a GCS v1 tag in args[]
- * - Tag format:
- *     |GCS:v1|uid=<uid>|range=<start..end>|days=<shortdays>
+ * Canonical identity and ownership helper for scheduler entries.
  *
- * IDENTITY (Apply boundary):
- * - FULL GCS TAG STRING
+ * Ownership rules:
+ * - A scheduler entry is considered GCS-managed if it contains a
+ *   valid GCS v1 identity tag in args[]
+ *
+ * Identity rules:
+ * - Identity is the FULL GCS tag string
  *   (uid + range + days)
  *
- * RATIONALE:
- * - UID-only identity is insufficient once recurring events
- *   expand into multiple scheduler entries.
- * - Apply must reason about exact raw scheduler entries.
+ * Rationale:
+ * - UID-only identity is insufficient once recurring calendar
+ *   events expand into multiple scheduler entries
+ * - Apply and delete operations must reason about exact raw
+ *   scheduler entries, not logical event groupings
+ *
+ * This class defines the single source of truth for determining
+ * scheduler ownership and identity.
  */
 final class GcsSchedulerIdentity
 {
     public const TAG_MARKER = '|GCS:v1|';
 
     /**
-     * Canonical identity extractor.
+     * Extract the canonical GCS identity key from a scheduler entry.
      *
      * IMPORTANT:
-     * - Identity is the FULL GCS tag string.
-     * - Returning UID-only breaks delete semantics.
+     * - The returned value is the FULL GCS tag string
+     * - Returning UID-only values will break delete and update semantics
      *
      * @param array<string,mixed> $entry
+     * @return string|null Canonical identity tag or null if not present
      */
     public static function extractKey(array $entry): ?string
     {
@@ -37,8 +43,9 @@ final class GcsSchedulerIdentity
     }
 
     /**
-     * Compatibility alias (Phase 17.7)
-     * @deprecated use extractKey()
+     * Compatibility alias for extractKey().
+     *
+     * @deprecated Use extractKey() instead.
      */
     public static function extractUid(array $entry): ?string
     {
@@ -46,7 +53,7 @@ final class GcsSchedulerIdentity
     }
 
     /**
-     * Ownership check helper.
+     * Determine whether a scheduler entry is managed by GCS.
      */
     public static function isGcsManaged(array $entry): bool
     {
@@ -54,9 +61,10 @@ final class GcsSchedulerIdentity
     }
 
     /**
-     * Extract raw GCS tag from args[].
+     * Extract the raw GCS identity tag from args[].
      *
      * @param array<string,mixed> $entry
+     * @return string|null Raw GCS tag or null if not found
      */
     private static function extractTag(array $entry): ?string
     {
@@ -69,7 +77,7 @@ final class GcsSchedulerIdentity
                 continue;
             }
 
-            // Tag must start with the marker to be canonical
+            // Canonical tags must start with the marker
             if (strpos($arg, self::TAG_MARKER) === 0) {
                 return $arg;
             }

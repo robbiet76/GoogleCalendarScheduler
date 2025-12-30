@@ -2,22 +2,40 @@
 declare(strict_types=1);
 
 /**
- * GoogleCalendarScheduler
- * content.php
+ * GoogleCalendarScheduler UI Controller + View
+ *
+ * Responsibilities:
+ * - Render plugin UI
+ * - Handle POSTed UI actions (save, plan-only sync)
+ * - Expose AJAX endpoints for:
+ *   - plan preview
+ *   - apply (guarded write)
+ *   - inventory
+ *   - export
+ *   - cleanup
+ *
+ * HARD RULES:
+ * - This file MAY render HTML
+ * - This file MUST NOT directly write schedule.json
+ * - All scheduler writes MUST flow through dedicated services
+ *
+ * Architectural note:
+ * FPP plugins intentionally combine controller + view in content.php.
+ * This file is the ONLY place where that coupling is allowed.
  */
 
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
-// Phase 23 export support
+// Export support
 require_once __DIR__ . '/src/ScheduleEntryExportAdapter.php';
 require_once __DIR__ . '/src/IcsWriter.php';
 require_once __DIR__ . '/src/SchedulerExportService.php';
 
-// Phase 23 inventory support
+// Inventory support
 require_once __DIR__ . '/src/SchedulerInventoryService.php';
 
-// Phase 23 cleanup support
+// WRITE-CAPABLE SERVICES (guarded; never auto-run)
 require_once __DIR__ . '/src/cleanup/SchedulerCleanupPlanner.php';
 require_once __DIR__ . '/src/cleanup/SchedulerCleanupApplier.php';
 
@@ -46,6 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         }
 
         // Sync = plan-only, never writes (UI removed in Phase 19.3)
+        // Intentionally discard result; UI status polling handles feedback
         if ($_POST['action'] === 'sync') {
             SchedulerPlanner::plan($cfg);
         }
@@ -58,10 +77,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 /*
- * --------------------------------------------------------------------
  * AJAX endpoints
- * --------------------------------------------------------------------
+ *
+ * Contract:
+ * - Each endpoint MUST:
+ *   - be side-effect free unless explicitly documented
+ *   - emit exactly one response
+ *   - exit immediately after handling
  */
+
 if (isset($_GET['endpoint'])) {
 
     try {

@@ -1,70 +1,89 @@
 <?php
+declare(strict_types=1);
 
 /**
- * Resolve Google Calendar event titles into FPP scheduler targets.
+ * GcsTargetResolver
  *
- * Resolution order (per v1.5):
- *   1. Playlist
- *   2. Sequence
+ * Resolves a Google Calendar event title into a concrete FPP
+ * scheduler target.
  *
- * If no valid target exists, return null.
+ * Responsibilities:
+ * - Interpret event summary text
+ * - Determine whether it refers to a valid FPP playlist or sequence
+ *
+ * Resolution Order:
+ * 1. Playlist
+ * 2. Sequence
+ *
+ * Guarantees:
+ * - Read-only filesystem checks only
+ * - No scheduler mutation
+ * - No inference beyond explicit file existence
+ *
+ * If no valid target is found, resolution fails cleanly.
  */
-final class GcsTargetResolver {
-
+final class GcsTargetResolver
+{
     /**
-     * Attempt to resolve a target from the event summary.
+     * Attempt to resolve an FPP scheduler target from a calendar summary.
      *
      * @param string $summary Calendar event title
-     * @return array|null ['type' => ..., 'target' => ...] or null if unresolved
+     * @return array{type:string,target:string}|null
      */
-    public static function resolve(string $summary): ?array {
+    public static function resolve(string $summary): ?array
+    {
         $base = trim($summary);
-
         if ($base === '') {
             return null;
         }
 
-        // 1. Playlist (directory-based OR file-based)
+        /* -------------------------------------------------------------
+         * 1. Playlist resolution
+         * ---------------------------------------------------------- */
         if (self::playlistExists($base)) {
             return [
                 'type'   => 'playlist',
-                'target' => $base
+                'target' => $base,
             ];
         }
 
-        // 2. Sequence (.fseq file)
-        $seq = (substr($base, -5) === '.fseq') ? $base : $base . '.fseq';
+        /* -------------------------------------------------------------
+         * 2. Sequence resolution (.fseq)
+         * ---------------------------------------------------------- */
+        $seq = (str_ends_with($base, '.fseq')) ? $base : $base . '.fseq';
         if (self::sequenceExists($seq)) {
             return [
                 'type'   => 'sequence',
-                'target' => $seq
+                'target' => $seq,
             ];
         }
 
-        // Unresolved
         return null;
     }
 
     /**
-     * Check for an FPP playlist.
+     * Check whether a named FPP playlist exists.
      *
-     * Supported formats:
-     *   - /home/fpp/media/playlists/<name>/playlist.json
-     *   - /home/fpp/media/playlists/<name>.json
+     * Supported layouts:
+     * - /home/fpp/media/playlists/<name>/playlist.json
+     * - /home/fpp/media/playlists/<name>.json
      */
-    private static function playlistExists(string $name): bool {
-        $dirBased  = "/home/fpp/media/playlists/$name/playlist.json";
-        $fileBased = "/home/fpp/media/playlists/$name.json";
+    private static function playlistExists(string $name): bool
+    {
+        $dirBased  = "/home/fpp/media/playlists/{$name}/playlist.json";
+        $fileBased = "/home/fpp/media/playlists/{$name}.json";
 
         return is_file($dirBased) || is_file($fileBased);
     }
 
     /**
-     * Check for an FPP sequence file.
+     * Check whether a named FPP sequence exists.
      *
-     *   /home/fpp/media/sequences/<name>.fseq
+     * Expected layout:
+     * - /home/fpp/media/sequences/<name>.fseq
      */
-    private static function sequenceExists(string $name): bool {
-        return is_file("/home/fpp/media/sequences/$name");
+    private static function sequenceExists(string $name): bool
+    {
+        return is_file("/home/fpp/media/sequences/{$name}");
     }
 }

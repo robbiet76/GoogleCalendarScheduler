@@ -2,9 +2,22 @@
 declare(strict_types=1);
 
 /**
- * Scheduler diff result.
+ * GcsSchedulerDiffResult
  *
- * Immutable value object representing scheduler changes.
+ * Immutable value object representing the result of a scheduler diff.
+ *
+ * Responsibilities:
+ * - Hold CREATE, UPDATE, and DELETE sets produced by diff computation
+ * - Provide structured access to each change category
+ * - Offer simple summary counts for convenience
+ *
+ * Guarantees:
+ * - Immutable after construction
+ * - Contains no business logic
+ * - Does not perform comparisons or scheduler mutations
+ *
+ * This object is used to safely transport diff results between
+ * planning, preview, and apply layers.
  */
 final class GcsSchedulerDiffResult
 {
@@ -29,25 +42,41 @@ final class GcsSchedulerDiffResult
         $this->toDelete = $toDelete;
     }
 
-    /** @return array<int,array<string,mixed>> */
+    /**
+     * Scheduler entries to be created.
+     *
+     * @return array<int,array<string,mixed>>
+     */
     public function creates(): array
     {
         return $this->toCreate;
     }
 
-    /** @return array<int,array<string,mixed>> */
+    /**
+     * Scheduler entries to be updated.
+     *
+     * @return array<int,array<string,mixed>>
+     */
     public function updates(): array
     {
         return $this->toUpdate;
     }
 
-    /** @return array<int,GcsExistingScheduleEntry> */
+    /**
+     * Scheduler entries to be deleted.
+     *
+     * @return array<int,GcsExistingScheduleEntry>
+     */
     public function deletes(): array
     {
         return $this->toDelete;
     }
 
-    /** Convenience counts (optional but useful) */
+    /**
+     * Convenience summary counts for UI and logging.
+     *
+     * @return array{creates:int,updates:int,deletes:int}
+     */
     public function counts(): array
     {
         return [

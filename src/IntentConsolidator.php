@@ -1,17 +1,33 @@
 <?php
+declare(strict_types=1);
 
 /**
- * IntentConsolidator
+ * GcsIntentConsolidator
  *
- * Groups per-occurrence scheduler intents into date ranges.
+ * Losslessly consolidates per-occurrence scheduling intents into
+ * contiguous date ranges suitable for scheduler entry creation.
  *
- * IMPORTANT:
- * - Different start/end TIMES must never be merged into the same range.
- * - Overrides with different times remain isolated (lossless).
+ * Responsibilities:
+ * - Group compatible occurrences by immutable intent characteristics
+ * - Merge consecutive calendar dates into a single range
+ * - Preserve weekday coverage exactly
+ *
+ * HARD GUARANTEES:
+ * - Occurrences with differing start/end TIMES are NEVER merged
+ * - Overrides are NEVER merged with non-overrides
+ * - Consolidation is strictly lossless
+ *
+ * This class does NOT:
+ * - Infer scheduling policy
+ * - Modify intent semantics
+ * - Perform scheduler I/O
  */
-class GcsIntentConsolidator
+final class GcsIntentConsolidator
 {
-    // Weekday bit masks (Sunday = 0, matches PHP DateTime::format('w'))
+    /* ---------------------------------------------------------------------
+     * Weekday bitmask constants (Sunday = 0, matches DateTime::format('w'))
+     * ------------------------------------------------------------------ */
+
     public const WD_SUN = 1 << 0; // 1
     public const WD_MON = 1 << 1; // 2
     public const WD_TUE = 1 << 2; // 4
@@ -29,10 +45,16 @@ class GcsIntentConsolidator
         self::WD_FRI |
         self::WD_SAT;
 
+    /* ---------------------------------------------------------------------
+     * Internal metrics (diagnostic only)
+     * ------------------------------------------------------------------ */
+
     private int $skipped = 0;
     private int $rangeCount = 0;
 
     /**
+     * Consolidate a set of per-occurrence intents into ranged intents.
+     *
      * @param array<int,array<string,mixed>> $intents
      * @return array<int,array<string,mixed>>
      */
@@ -42,6 +64,9 @@ class GcsIntentConsolidator
             return [];
         }
 
+        /* -------------------------------------------------------------
+         * 1. Group intents by immutable identity
+         * ---------------------------------------------------------- */
         $groups = [];
 
         foreach ($intents as $intent) {
@@ -56,7 +81,7 @@ class GcsIntentConsolidator
             $startTime = $start->format('H:i:s');
             $endTime   = $end->format('H:i:s');
 
-            // Stable identity MUST include time + override flag
+            // Stable identity MUST include time and override flag
             $key = implode('|', [
                 (string)($intent['type'] ?? ''),
                 (string)$intent['target'],
@@ -71,11 +96,15 @@ class GcsIntentConsolidator
             $groups[$key][] = $intent;
         }
 
+        /* -------------------------------------------------------------
+         * 2. Merge consecutive dates within each group
+         * ---------------------------------------------------------- */
         $result = [];
 
         foreach ($groups as $items) {
-            usort($items, fn($a, $b) =>
-                strcmp((string)$a['start'], (string)$b['start'])
+            usort(
+                $items,
+                fn($a, $b) => strcmp((string)$a['start'], (string)$b['start'])
             );
 
             $range = null;
@@ -121,6 +150,9 @@ class GcsIntentConsolidator
         return $result;
     }
 
+    /**
+     * Finalize a range structure into a consolidated intent.
+     */
     private function finalizeRange(array $range): array
     {
         return [
@@ -131,10 +163,13 @@ class GcsIntentConsolidator
                 'days'  => self::weekdayMaskToShortDays(
                     self::daysArrayToMask($range['days'])
                 ),
-            ]
+            ],
         ];
     }
 
+    /**
+     * Convert an array of weekdays into a bitmask.
+     */
     private static function daysArrayToMask(array $days): int
     {
         $mask = 0;
@@ -144,12 +179,12 @@ class GcsIntentConsolidator
         return $mask;
     }
 
-    // ============================================================
-    // Static helpers used by FppScheduleMapper
-    // ============================================================
+    /* ---------------------------------------------------------------------
+     * Shared helpers (used by FppScheduleMapper and others)
+     * ------------------------------------------------------------------ */
 
     /**
-     * Convert "SuMoTuWeThFrSa" → weekday bitmask
+     * Convert short-day string (e.g. "SuMoTu") to weekday bitmask.
      */
     public static function shortDaysToWeekdayMask(string $days): int
     {
@@ -174,7 +209,7 @@ class GcsIntentConsolidator
     }
 
     /**
-     * Convert weekday bitmask → "SuMoTuWeThFrSa"
+     * Convert weekday bitmask to short-day string (e.g. "SuMoTu").
      */
     public static function weekdayMaskToShortDays(int $mask): string
     {
@@ -197,6 +232,10 @@ class GcsIntentConsolidator
 
         return $out;
     }
+
+    /* ---------------------------------------------------------------------
+     * Diagnostics
+     * ------------------------------------------------------------------ */
 
     public function getSkippedCount(): int
     {

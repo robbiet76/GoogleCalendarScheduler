@@ -4,24 +4,24 @@ declare(strict_types=1);
 /**
  * SchedulerInventoryService
  *
- * Phase 23.3
- *
- * Read-only inventory of scheduler.json.
+ * Provides a read-only inventory summary of FPP scheduler entries.
  *
  * Responsibilities:
  * - Count total scheduler entries
- * - Count managed vs unmanaged entries
- * - Count disabled unmanaged entries
+ * - Distinguish GCS-managed vs unmanaged entries
+ * - Track disabled unmanaged entries for visibility
  *
- * HARD RULES:
+ * Guarantees:
  * - Never mutates scheduler.json
- * - Never infers ownership beyond GCS identity tag
- * - No UI knowledge
+ * - Never infers ownership beyond the GCS identity tag
+ * - Contains no planner, diff, or apply logic
+ *
+ * This service is intended for informational and UI status purposes only.
  */
 final class SchedulerInventoryService
 {
     /**
-     * Get scheduler inventory counts.
+     * Get a summary inventory of scheduler entries.
      *
      * @return array{
      *   total: int,
@@ -53,7 +53,7 @@ final class SchedulerInventoryService
                 continue;
             }
 
-            // Unmanaged
+            // Unmanaged scheduler entry (non-GCS)
             $unmanaged++;
 
             if (isset($entry['enabled']) && (int)$entry['enabled'] === 0) {

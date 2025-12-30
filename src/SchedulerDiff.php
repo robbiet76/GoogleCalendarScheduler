@@ -1,6 +1,27 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * GcsSchedulerDiff
+ *
+ * Computes semantic differences between desired scheduler entries and
+ * existing scheduler state.
+ *
+ * Responsibilities:
+ * - Match scheduler entries by GCS identity (UID)
+ * - Determine CREATE / UPDATE / DELETE actions
+ * - Delegate semantic equality checks to GcsSchedulerComparator
+ *
+ * Guarantees:
+ * - No writes
+ * - No side effects
+ * - Deterministic output for a given desired set and state snapshot
+ *
+ * Does NOT:
+ * - Resolve calendar intents
+ * - Modify scheduler state
+ * - Perform persistence or apply operations
+ */
 final class GcsSchedulerDiff
 {
     /** @var array<int,array<string,mixed>> */
@@ -19,7 +40,7 @@ final class GcsSchedulerDiff
 
     public function compute(): GcsSchedulerDiffResult
     {
-        // Index existing entries by GCS UID
+        // Index existing scheduler entries by GCS UID
         $existingByUid = [];
 
         foreach ($this->state->getEntries() as $entry) {
@@ -33,7 +54,7 @@ final class GcsSchedulerDiff
         $toUpdate = [];
         $seenUids = [];
 
-        // Process desired entries
+        // Process desired scheduler entries
         foreach ($this->desired as $desiredEntry) {
             if (!is_array($desiredEntry)) {
                 continue;
@@ -41,14 +62,15 @@ final class GcsSchedulerDiff
 
             $uid = GcsSchedulerIdentity::extractKey($desiredEntry);
             if ($uid === null) {
-                // Desired entry without GCS identity is ignored
+                // Desired entries without GCS identity are ignored
                 continue;
             }
 
             $seenUids[$uid] = true;
 
             if (!isset($existingByUid[$uid])) {
-                // 🔹 Phase 20: one-time startDate correction on CREATE
+                // Normalize CREATE entries to use series startDate
+                // encoded in the GCS identity range
                 $desiredEntry = $this->applySeriesStartDateIfPresent($desiredEntry);
 
                 $toCreate[] = $desiredEntry;
@@ -65,7 +87,7 @@ final class GcsSchedulerDiff
             }
         }
 
-        // Anything existing but not seen in desired must be deleted
+        // Any existing entries not present in desired must be deleted
         $toDelete = [];
 
         foreach ($existingByUid as $uid => $entry) {
@@ -78,9 +100,15 @@ final class GcsSchedulerDiff
     }
 
     /**
-     * Phase 20:
-     * Apply calendar series DTSTART as scheduler startDate
-     * ONLY for CREATE entries, using the GCS identity range.
+     * Normalize CREATE entries to use the calendar series startDate
+     * encoded in the GCS identity range.
+     *
+     * This ensures newly created scheduler entries align with the
+     * originating calendar series start.
+     *
+     * NOTE:
+     * - Applied only on CREATE
+     * - UPDATE entries preserve existing scheduler startDate
      *
      * @param array<string,mixed> $entry
      * @return array<string,mixed>
@@ -92,9 +120,15 @@ final class GcsSchedulerDiff
         }
 
         foreach ($entry['args'] as $arg) {
-            if (!is_string($arg)) continue;
+            if (!is_string($arg)) {
+                continue;
+            }
 
-            if (preg_match('/\|GCS:v1\|.*range=([0-9]{4}-[0-9]{2}-[0-9]{2})\.\./', $arg, $m)) {
+            if (preg_match(
+                '/\|GCS:v1\|.*range=([0-9]{4}-[0-9]{2}-[0-9]{2})\.\./',
+                $arg,
+                $m
+            )) {
                 $seriesStart = $m[1];
 
                 if ($this->isValidYmd($seriesStart)) {

@@ -4,24 +4,26 @@ declare(strict_types=1);
 /**
  * SchedulerExportService
  *
- * Phase 23.2
+ * Orchestrates read-only export of unmanaged FPP scheduler entries to ICS.
  *
- * Read-only export orchestration:
- * - Read schedule.json
- * - Select unmanaged entries only
- * - Convert to export intents via ScheduleEntryExportAdapter
- * - Generate ICS via IcsWriter
+ * Responsibilities:
+ * - Read scheduler.json (read-only)
+ * - Select unmanaged scheduler entries only
+ * - Convert scheduler entries into export intents
+ * - Generate an ICS representation of those intents
  *
- * HARD RULES:
- * - Never modifies schedule.json
- * - Never exports managed entries
- * - Invalid entries are skipped with warnings
- * - Best-effort: valid entries still export
+ * Guarantees:
+ * - Never mutates scheduler.json
+ * - Never exports GCS-managed entries
+ * - Best-effort processing: invalid entries are skipped with warnings
+ *
+ * This service performs no scheduling logic and is intended strictly for
+ * export and interoperability use cases.
  */
 final class SchedulerExportService
 {
     /**
-     * Export unmanaged schedules to ICS.
+     * Export unmanaged scheduler entries to an ICS document.
      *
      * @return array{
      *   ok: bool,
@@ -40,7 +42,9 @@ final class SchedulerExportService
 
         // Read scheduler entries (read-only)
         try {
-            $entries = SchedulerSync::readScheduleJsonStatic(SchedulerSync::SCHEDULE_JSON_PATH);
+            $entries = SchedulerSync::readScheduleJsonStatic(
+                SchedulerSync::SCHEDULE_JSON_PATH
+            );
         } catch (Throwable $e) {
             return [
                 'ok' => false,
@@ -53,10 +57,12 @@ final class SchedulerExportService
             ];
         }
 
-        // Filter unmanaged entries only (ownership determined solely by GCS tag)
+        // Select unmanaged scheduler entries only (ownership determined by GCS identity tag)
         $unmanaged = [];
         foreach ($entries as $entry) {
-            if (!is_array($entry)) continue;
+            if (!is_array($entry)) {
+                continue;
+            }
 
             if (!GcsSchedulerIdentity::isGcsManaged($entry)) {
                 $unmanaged[] = $entry;
@@ -65,7 +71,7 @@ final class SchedulerExportService
 
         $unmanagedTotal = count($unmanaged);
 
-        // Convert unmanaged entries -> export intents
+        // Convert unmanaged scheduler entries into export intents
         $exportEvents = [];
         $skipped = 0;
 
@@ -80,7 +86,7 @@ final class SchedulerExportService
 
         $exported = count($exportEvents);
 
-        // Build ICS (even if empty; UI can message appropriately)
+        // Generate ICS output (may be empty; caller can handle messaging)
         $ics = '';
         try {
             $ics = IcsWriter::build($exportEvents);

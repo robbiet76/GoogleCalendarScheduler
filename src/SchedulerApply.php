@@ -1,14 +1,53 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * GcsSchedulerApply
+ *
+ * Phase 17+ APPLY BOUNDARY
+ *
+ * This class is the ONLY component permitted to mutate FPP's schedule.json.
+ *
+ * CORE RESPONSIBILITIES:
+ * - Re-run the planner to obtain a canonical diff
+ * - Enforce dry-run and safety policies
+ * - Merge desired entries with existing unmanaged entries
+ * - Preserve identity and GCS tags exactly
+ * - Apply deterministic ordering rules (Phase 24)
+ * - Write schedule.json atomically
+ * - Verify post-write integrity
+ *
+ * HARD GUARANTEES:
+ * - Unmanaged entries are never modified
+ * - Managed entries are matched by FULL GCS identity tag
+ * - schedule.json is never partially written
+ * - Apply is idempotent for the same planner output
+ *
+ * NON-GOALS:
+ * - No diff computation logic (delegated)
+ * - No calendar parsing
+ * - No UI concerns
+ */
 final class GcsSchedulerApply
 {
+    /**
+     * Execute scheduler apply using plugin configuration.
+     *
+     * This method:
+     * - Recomputes the planner diff
+     * - Optionally performs a dry-run
+     * - Applies changes safely and atomically
+     *
+     * @param array $cfg Plugin configuration
+     * @return array Apply result summary
+     */
     public static function applyFromConfig(array $cfg): array
     {
         GcsLogger::instance()->info('GCS APPLY ENTERED', [
             'dryRun' => !empty($cfg['runtime']['dry_run']),
         ]);
 
+        // Planner is always re-run at apply time to ensure consistency
         $plan   = SchedulerPlanner::plan($cfg);
         $dryRun = !empty($cfg['runtime']['dry_run']);
 
@@ -26,6 +65,11 @@ final class GcsSchedulerApply
             'deletes' => isset($plan['deletes']) && is_array($plan['deletes']) ? count($plan['deletes']) : 0,
         ];
 
+        /*
+         * DRY RUN:
+         * - No filesystem writes
+         * - Return planner output for inspection
+         */
         if ($dryRun) {
             return [
                 'ok'             => true,
@@ -39,8 +83,10 @@ final class GcsSchedulerApply
             ];
         }
 
+        // Build the concrete apply plan
         $applyPlan = self::planApply($existing, $desired);
 
+        // No-op protection: do not touch disk if nothing changed
         if (
             count($applyPlan['creates']) === 0 &&
             count($applyPlan['updates']) === 0 &&
@@ -54,15 +100,18 @@ final class GcsSchedulerApply
             ];
         }
 
+        // Backup existing schedule.json before writing
         $backupPath = SchedulerSync::backupScheduleFileOrThrow(
             SchedulerSync::SCHEDULE_JSON_PATH
         );
 
+        // Atomic replace
         SchedulerSync::writeScheduleJsonAtomicallyOrThrow(
             SchedulerSync::SCHEDULE_JSON_PATH,
             $applyPlan['newSchedule']
         );
 
+        // Post-write verification
         SchedulerSync::verifyScheduleJsonKeysOrThrow(
             $applyPlan['expectedManagedKeys'],
             $applyPlan['expectedDeletedKeys']
@@ -77,10 +126,23 @@ final class GcsSchedulerApply
     }
 
     /**
-     * Build final apply plan.
+     * Build a complete apply plan from existing and desired entries.
+     *
+     * Output includes:
+     * - Final schedule.json contents
+     * - Expected managed/deleted identity keys
+     * - Create/update/delete key lists
+     *
+     * @param array<int,array<string,mixed>> $existing
+     * @param array<int,array<string,mixed>> $desired
+     * @return array<string,mixed>
      */
     private static function planApply(array $existing, array $desired): array
     {
+        /*
+         * Index desired entries by FULL GCS identity key.
+         * Ordering is preserved for create operations.
+         */
         $desiredByKey       = [];
         $desiredKeysInOrder = [];
 
@@ -98,7 +160,7 @@ final class GcsSchedulerApply
                 $desiredKeysInOrder[] = $k;
             }
 
-            // Normalize + HARD-ENFORCE tag preservation
+            // Normalize and enforce identity tag preservation
             $norm = self::normalizeForApply($d);
 
             if (!isset($norm['args']) || !is_array($norm['args'])) {
@@ -120,6 +182,9 @@ final class GcsSchedulerApply
             $desiredByKey[$k] = $norm;
         }
 
+        /*
+         * Index existing managed entries by identity key.
+         */
         $existingManagedByKey = [];
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
@@ -134,6 +199,7 @@ final class GcsSchedulerApply
             $existingManagedByKey[$k] = $ex;
         }
 
+        // Compute create/update/delete sets
         $createsKeys = [];
         $updatesKeys = [];
         $deletesKeys = [];
@@ -155,10 +221,15 @@ final class GcsSchedulerApply
             }
         }
 
+        /*
+         * Construct new schedule.json:
+         * - Preserve unmanaged entries in original order
+         * - Replace managed entries in-place
+         * - Append newly-created entries
+         */
         $newSchedule = [];
         $writtenKeys = [];
 
-        // First pass: preserve all existing unmanaged entries and update existing managed entries in place
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
                 continue;
@@ -167,13 +238,11 @@ final class GcsSchedulerApply
             $k = GcsSchedulerIdentity::extractKey($ex);
 
             if ($k === null) {
-                // Unmanaged entry — preserve content (ordering will be tiered later)
                 $newSchedule[] = $ex;
                 continue;
             }
 
             if (!isset($desiredByKey[$k])) {
-                // Managed but deleted
                 continue;
             }
 
@@ -181,7 +250,6 @@ final class GcsSchedulerApply
             $writtenKeys[$k] = true;
         }
 
-        // Second pass: append any newly-created desired entries (in desired order)
         foreach ($desiredKeysInOrder as $k) {
             if (!isset($writtenKeys[$k])) {
                 $newSchedule[]     = $desiredByKey[$k];
@@ -189,9 +257,7 @@ final class GcsSchedulerApply
             }
         }
 
-        // Phase 24: enforce tiered priority ordering across the final schedule
-        // Unmanaged entries must remain above managed entries (higher priority), preserving relative order.
-        // Managed entries are split into immutable vs reorderable. Reorderable managed entries are sorted deterministically.
+        // Phase 24: deterministic ordering
         $newSchedule = self::applyTieredOrderingPhase24($newSchedule);
 
         return [
@@ -203,6 +269,8 @@ final class GcsSchedulerApply
             'expectedDeletedKeys' => $deletesKeys,
         ];
     }
+
+    /* ---------- helpers below (ordering, normalization, comparison) ---------- */
 
     /**
      * Phase 24 tiered ordering:

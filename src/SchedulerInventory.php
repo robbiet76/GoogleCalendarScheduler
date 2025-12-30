@@ -4,29 +4,25 @@ declare(strict_types=1);
 /**
  * SchedulerInventory
  *
- * Phase 23.1
- *
  * Read-only helper that summarizes scheduler ownership state.
  *
  * Responsibilities:
- * - Read schedule.json safely
- * - Classify entries as managed vs unmanaged
- * - Provide counts for UI, export, and cleanup gating
+ * - Load schedule.json safely
+ * - Classify entries as GCS-managed or unmanaged
+ * - Provide aggregate counts for UI display, export, and cleanup gating
  *
- * HARD RULES:
- * - Ownership is determined ONLY by presence of a valid |GCS:v1| tag
- * - No heuristics
- * - No mutation
+ * HARD GUARANTEES:
+ * - Ownership is determined solely by presence of a valid |GCS:v1| tag
+ * - No heuristics or inference
+ * - No mutation of scheduler data
  * - Never throws
  *
- * NOTE:
- * Uses legacy-named GcsSchedulerIdentity for ownership detection.
- * Naming normalization is planned in a future refactor phase.
+ * This class performs no policy decisions; it only reports facts.
  */
 final class SchedulerInventory
 {
     /**
-     * Summarize scheduler ownership.
+     * Summarize scheduler ownership state.
      *
      * @param string $path Path to schedule.json
      * @return array{
@@ -49,11 +45,11 @@ final class SchedulerInventory
             $entries = SchedulerSync::readScheduleJsonStatic($path);
         } catch (Throwable $e) {
             return [
-                'ok' => false,
-                'managed_count' => 0,
+                'ok'              => false,
+                'managed_count'   => 0,
                 'unmanaged_count' => 0,
-                'invalid_count' => 0,
-                'errors' => [
+                'invalid_count'   => 0,
+                'errors'          => [
                     'Failed to read schedule.json: ' . $e->getMessage(),
                 ],
             ];
@@ -73,11 +69,11 @@ final class SchedulerInventory
         }
 
         return [
-            'ok' => true,
-            'managed_count' => $managed,
+            'ok'              => true,
+            'managed_count'   => $managed,
             'unmanaged_count' => $unmanaged,
-            'invalid_count' => $invalid,
-            'errors' => $errors,
+            'invalid_count'   => $invalid,
+            'errors'          => $errors,
         ];
     }
 }

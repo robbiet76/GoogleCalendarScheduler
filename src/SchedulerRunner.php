@@ -1,6 +1,27 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * GcsSchedulerRunner
+ *
+ * Pure calendar ingestion and intent generation engine.
+ *
+ * Responsibilities:
+ * - Fetch and parse ICS calendar data
+ * - Expand recurring events within a time horizon
+ * - Resolve scheduler targets from event summaries
+ * - Apply YAML metadata overrides
+ * - Generate scheduler intents suitable for consolidation
+ *
+ * Guarantees:
+ * - No scheduler writes
+ * - No scheduler state mutation
+ * - Deterministic output for a given calendar and horizon
+ *
+ * This class is the bridge between calendar semantics and
+ * scheduler intent generation. Persistence and diff logic
+ * are handled downstream.
+ */
 final class GcsSchedulerRunner
 {
     private array $cfg;
@@ -13,12 +34,20 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * Pure calendar ingestion + intent generation.
+     * Execute calendar ingestion and intent generation.
      *
-     * @return array{ok:bool,intents:array<int,array<string,mixed>>,intents_seen:int,errors:array<int,string>}
+     * @return array{
+     *   ok: bool,
+     *   intents: array<int,array<string,mixed>>,
+     *   intents_seen: int,
+     *   errors: array<int,string>
+     * }
      */
     public function run(): array
     {
+        // ------------------------------------------------------------
+        // Calendar fetch & parse
+        // ------------------------------------------------------------
         $icsUrl = trim((string)($this->cfg['calendar']['ics_url'] ?? ''));
         if ($icsUrl === '') {
             GcsLogger::instance()->warn('No ICS URL configured');
@@ -39,7 +68,9 @@ final class GcsSchedulerRunner
             return $this->emptyResult();
         }
 
-        // Group events by UID (base + overrides)
+        // ------------------------------------------------------------
+        // Group events by UID (base event + overrides)
+        // ------------------------------------------------------------
         $byUid = [];
         foreach ($events as $ev) {
             if (!is_array($ev)) continue;
@@ -51,6 +82,9 @@ final class GcsSchedulerRunner
 
         $intentsOut = [];
 
+        // ------------------------------------------------------------
+        // Per-UID intent generation
+        // ------------------------------------------------------------
         foreach ($byUid as $uid => $items) {
             $base = null;
             $overrides = [];
@@ -68,16 +102,21 @@ final class GcsSchedulerRunner
             $refEv = $base ?? $items[0];
             if (!is_array($refEv)) continue;
 
+            // Skip all-day events (unsupported by scheduler)
             if (!empty($refEv['isAllDay'])) {
                 continue;
             }
 
+            // Resolve scheduler target from summary
             $summary = (string)($refEv['summary'] ?? '');
             $resolved = GcsTargetResolver::resolve($summary);
             if (!$resolved) {
                 continue;
             }
 
+            // --------------------------------------------------------
+            // Expand occurrences within horizon
+            // --------------------------------------------------------
             $occurrences = self::expandEventOccurrences(
                 $base,
                 $overrides,
@@ -89,9 +128,10 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            // Determine whether we can safely emit ONE intent per UID.
-            // If overrides exist OR occurrence times vary, we fall back to per-occurrence intents
-            // and let GcsIntentConsolidator split into ranges losslessly.
+            // --------------------------------------------------------
+            // Determine if a single intent can safely represent all
+            // occurrences (no overrides, no time variance, no YAML variance)
+            // --------------------------------------------------------
             $hasOverride = false;
             $timeKey = null;
             $timesVary = false;
@@ -120,7 +160,7 @@ final class GcsSchedulerRunner
                 $rid = (string)($occ['start'] ?? '');
                 $sourceEv = $base;
 
-                if (!empty($occ['isOverride']) && $rid !== '' && isset($overrides[$rid]) && is_array($overrides[$rid])) {
+                if (!empty($occ['isOverride']) && $rid !== '' && isset($overrides[$rid])) {
                     $sourceEv = $overrides[$rid];
                 }
 
@@ -134,6 +174,7 @@ final class GcsSchedulerRunner
                 if (is_array($yaml)) {
                     ksort($yaml);
                 }
+
                 $sig = json_encode($yaml);
                 if ($yamlSig === null) {
                     $yamlSig = $sig;
@@ -141,17 +182,15 @@ final class GcsSchedulerRunner
                     $yamlVaries = true;
                 }
 
-                $rid = (string)($occ['start'] ?? '');
                 $occYaml[$rid] = $yaml;
-            }      
+            }
 
             $canEmitSingle = (!$hasOverride && !$timesVary && !$yamlVaries);
 
+            // --------------------------------------------------------
+            // Single-intent path (one scheduler entry)
+            // --------------------------------------------------------
             if ($canEmitSingle) {
-                // IMPORTANT (Phase 20): We emit ONE intent per UID (one scheduler entry), not one per occurrence.
-                // That means we MUST explicitly provide a range (start/end/days). Consolidator cannot infer
-                // "Everyday" or the correct endDate from a single occurrence.
-
                 $first = $occurrences[0];
                 if (!is_array($first) || empty($first['start']) || empty($first['end'])) {
                     continue;
@@ -160,7 +199,7 @@ final class GcsSchedulerRunner
                 $occStart = new DateTime((string)$first['start']);
                 $occEnd   = new DateTime((string)$first['end']);
 
-                // Series DTSTART date (calendar series start)
+                // Determine series date range
                 $seriesStartDate = $occStart->format('Y-m-d');
                 if ($base && !empty($base['start'])) {
                     $tmp = substr((string)$base['start'], 0, 10);
@@ -169,11 +208,7 @@ final class GcsSchedulerRunner
                     }
                 }
 
-                // Series end date:
-                // Prefer RRULE UNTIL (true series boundary), else use last expanded occurrence date.
-                $seriesEndDate = $occStart->format('Y-m-d');
                 $lastOccDate = $occStart->format('Y-m-d');
-
                 foreach ($occurrences as $occ) {
                     if (!is_array($occ) || empty($occ['start'])) continue;
                     $d = substr((string)$occ['start'], 0, 10);
@@ -184,11 +219,11 @@ final class GcsSchedulerRunner
 
                 $seriesEndDate = $lastOccDate;
 
+                // Prefer RRULE UNTIL if present
                 $rrule = ($base && isset($base['rrule']) && is_array($base['rrule'])) ? $base['rrule'] : null;
                 if (is_array($rrule) && !empty($rrule['UNTIL'])) {
                     $until = self::parseRruleUntil((string)$rrule['UNTIL']);
                     if ($until instanceof DateTime) {
-                        // Normalize to local timezone before taking date
                         try {
                             $until->setTimezone(new DateTimeZone(date_default_timezone_get()));
                         } catch (Throwable $ignored) {}
@@ -199,9 +234,7 @@ final class GcsSchedulerRunner
                     }
                 }
 
-                // Days:
-                // - DAILY => Everyday (SuMoTuWeThFrSa)
-                // - WEEKLY => derive from BYDAY, else fallback to the start DOW only
+                // Determine days mask
                 $daysShort = '';
                 if (is_array($rrule)) {
                     $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
@@ -212,9 +245,7 @@ final class GcsSchedulerRunner
                     }
                 }
                 if ($daysShort === '') {
-                    // Fallback: single day based on DTSTART
-                    $dow = (int)$occStart->format('w'); // 0=Sun..6=Sat
-                    $daysShort = self::dowToShortDay($dow);
+                    $daysShort = self::dowToShortDay((int)$occStart->format('w'));
                 }
 
                 $rid0 = (string)$first['start'];
@@ -225,21 +256,19 @@ final class GcsSchedulerRunner
                     'repeat'   => 'none',
                 ], is_array($yaml0) ? $yaml0 : []);
 
-                $template = [
-                    'uid'        => $uid,
-                    'summary'    => $summary,
-                    'type'       => (string)$resolved['type'],
-                    'target'     => (string)$resolved['target'],
-                    'start'      => $occStart->format('Y-m-d H:i:s'),
-                    'end'        => $occEnd->format('Y-m-d H:i:s'),
-                    'stopType'   => $eff['stopType'],
-                    'repeat'     => $eff['repeat'],
-                    'isOverride' => false,
-                ];
-
                 $intentsOut[] = [
                     'uid'      => $uid,
-                    'template' => $template,
+                    'template' => [
+                        'uid'        => $uid,
+                        'summary'    => $summary,
+                        'type'       => (string)$resolved['type'],
+                        'target'     => (string)$resolved['target'],
+                        'start'      => $occStart->format('Y-m-d H:i:s'),
+                        'end'        => $occEnd->format('Y-m-d H:i:s'),
+                        'stopType'   => $eff['stopType'],
+                        'repeat'     => $eff['repeat'],
+                        'isOverride' => false,
+                    ],
                     'range'    => [
                         'start' => $seriesStartDate,
                         'end'   => $seriesEndDate,
@@ -250,7 +279,9 @@ final class GcsSchedulerRunner
                 continue;
             }
 
-            // Fallback: per-occurrence (lossless), then consolidator will merge into correct ranges/days.
+            // --------------------------------------------------------
+            // Fallback: per-occurrence intents (lossless)
+            // --------------------------------------------------------
             $rawIntents = [];
             foreach ($occurrences as $occ) {
                 if (!is_array($occ)) continue;
@@ -278,7 +309,7 @@ final class GcsSchedulerRunner
             try {
                 $consolidator = new GcsIntentConsolidator();
                 $maybe = $consolidator->consolidate($rawIntents);
-                if (is_array($maybe) && !empty($maybe)) {
+                if (is_array($maybe)) {
                     foreach ($maybe as $row) {
                         if (is_array($row)) {
                             $intentsOut[] = $row;
@@ -286,7 +317,6 @@ final class GcsSchedulerRunner
                     }
                 }
             } catch (Throwable $ignored) {
-                // If consolidation fails, still return the raw intents (best effort)
                 foreach ($rawIntents as $ri) {
                     $intentsOut[] = $ri;
                 }
@@ -311,16 +341,12 @@ final class GcsSchedulerRunner
         ];
     }
 
-        /**
-     * Apply YAML values onto a small defaults array for template keys.
+    /**
+     * Apply YAML metadata onto a defaults template.
      *
-     * Expected YAML keys (already proven in prior Phase 21 work):
+     * Supported YAML keys:
      * - stopType: graceful | graceful_loop | hard
      * - repeat: none | immediate | <minutes as int>
-     *
-     * @param array<string,mixed> $defaults
-     * @param array<string,mixed> $yaml
-     * @return array<string,mixed>
      */
     private static function applyYamlToTemplate(array $defaults, array $yaml): array
     {
@@ -331,7 +357,6 @@ final class GcsSchedulerRunner
         }
 
         if (isset($yaml['repeat'])) {
-            // Allow strings like "none"/"immediate" OR numeric minutes like 10
             if (is_string($yaml['repeat']) && trim($yaml['repeat']) !== '') {
                 $out['repeat'] = strtolower(trim($yaml['repeat']));
             } elseif (is_int($yaml['repeat'])) {
@@ -358,9 +383,8 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * Recurrence expansion helper.
-     *
-     * Generates concrete occurrences intersecting the horizon.
+     * Expand recurring and non-recurring events into concrete
+     * occurrences intersecting the horizon.
      */
     private static function expandEventOccurrences(
         ?array $base,
@@ -393,7 +417,7 @@ final class GcsSchedulerRunner
         $end   = new DateTime($base['end']);
         $duration = max(0, $end->getTimestamp() - $start->getTimestamp());
 
-        // Non-recurring
+        // Non-recurring events
         if (empty($base['rrule'])) {
             if ($start >= $horizonStart && $start <= $horizonEnd) {
                 $rid = $start->format('Y-m-d H:i:s');
@@ -409,15 +433,12 @@ final class GcsSchedulerRunner
             return $out;
         }
 
+        // Recurring events (DAILY / WEEKLY)
         $rrule = $base['rrule'];
         $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
         $interval = max(1, (int)($rrule['INTERVAL'] ?? 1));
 
-        $until = null;
-        if (!empty($rrule['UNTIL'])) {
-            $until = self::parseRruleUntil((string)$rrule['UNTIL']);
-        }
-
+        $until = !empty($rrule['UNTIL']) ? self::parseRruleUntil((string)$rrule['UNTIL']) : null;
         $countLimit = isset($rrule['COUNT']) ? max(1, (int)$rrule['COUNT']) : null;
 
         $exDates = [];
@@ -561,8 +582,8 @@ final class GcsSchedulerRunner
     }
 
     /**
-     * Convert RRULE BYDAY like "SU,MO,TU,WE,TH,FR,SA" into "SuMoTuWeThFrSa".
-     * Returns empty string if BYDAY missing/invalid.
+     * Convert RRULE BYDAY (e.g. "SU,MO,TU") into compact form ("SuMoTu").
+     * Returns empty string if BYDAY is missing or invalid.
      */
     private static function shortDaysFromByDay(string $bydayRaw): string
     {
@@ -581,7 +602,7 @@ final class GcsSchedulerRunner
         ];
 
         foreach ($tokens as $tok) {
-            $tok = preg_replace('/^[+-]?\d+/', '', trim($tok)); // remove ordinal like 1MO
+            $tok = preg_replace('/^[+-]?\d+/', '', trim($tok));
             if (isset($present[$tok])) {
                 $present[$tok] = true;
             }

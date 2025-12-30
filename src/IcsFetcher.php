@@ -1,10 +1,41 @@
 <?php
+declare(strict_types=1);
 
-class GcsIcsFetcher
+/**
+ * GcsIcsFetcher
+ *
+ * Low-level HTTP fetcher for calendar ICS data.
+ *
+ * RESPONSIBILITIES:
+ * - Retrieve raw ICS text from a configured URL
+ * - Apply a conservative timeout
+ * - Log failures without throwing
+ *
+ * HARD RULES:
+ * - Never throws
+ * - Never parses ICS content
+ * - Never mutates configuration
+ *
+ * ERROR HANDLING:
+ * - All failures return an empty string
+ * - Errors are logged via GcsLogger
+ *
+ * NOTE:
+ * SSL verification is explicitly disabled to match common
+ * Google Calendar / self-hosted ICS usage in constrained
+ * FPP environments.
+ */
+final class GcsIcsFetcher
 {
+    /**
+     * Fetch raw ICS content from a URL.
+     *
+     * @param string $url Fully-qualified ICS URL
+     * @return string Raw ICS data or empty string on failure
+     */
     public function fetch(string $url): string
     {
-        if (empty($url)) {
+        if ($url === '') {
             GcsLogger::instance()->error('ICS URL is empty');
             return '';
         }
@@ -14,7 +45,8 @@ class GcsIcsFetcher
                 'timeout' => 10,
             ],
             'ssl' => [
-                'verify_peer' => false,
+                // Intentionally disabled for FPP environments
+                'verify_peer'      => false,
                 'verify_peer_name' => false,
             ],
         ]);
@@ -32,4 +64,3 @@ class GcsIcsFetcher
         return (string)$data;
     }
 }
-

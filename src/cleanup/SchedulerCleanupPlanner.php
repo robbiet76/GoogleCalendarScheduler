@@ -4,14 +4,25 @@ declare(strict_types=1);
 /**
  * SchedulerCleanupPlanner (Phase 23.4)
  *
- * Read-only planner that identifies unmanaged entries that can be safely removed
- * because an equivalent managed entry exists.
+ * READ-ONLY CLEANUP PLANNER.
+ *
+ * Identifies unmanaged scheduler entries that MAY be safely removed
+ * because a semantically equivalent managed (GCS-controlled) entry exists.
+ *
+ * This class performs NO mutation and makes NO guarantees about removability
+ * beyond equivalence detection.
  *
  * HARD RULES:
- * - Never deletes anything
- * - Never treats unmanaged as safe unless a managed equivalent exists
- * - Managed equivalence is semantic (type/target/time/day/date/repeat/stopType)
+ * - Never deletes or modifies scheduler entries
+ * - Never marks unmanaged entries as removable unless a managed equivalent exists
+ * - Equivalence is SEMANTIC, not identity-based
+ * - Planner output MUST be revalidated at apply time
+ *
+ * SAFETY NOTE:
+ * Planner results are advisory only and MUST NOT be applied without
+ * runtime verification (see SchedulerCleanupApplier).
  */
+
 final class SchedulerCleanupPlanner
 {
     /**
@@ -32,7 +43,7 @@ final class SchedulerCleanupPlanner
             $managedCount = 0;
             $unmanagedCount = 0;
 
-            // Build managed fingerprint set
+            // Build fingerprint set for ALL managed entries (used as equivalence targets)
             $managedFingerprints = [];
             foreach ($entries as $idx => $e) {
                 if (!is_array($e)) continue;
@@ -47,6 +58,8 @@ final class SchedulerCleanupPlanner
                 }
             }
 
+            // Candidates: unmanaged entries with a matching managed fingerprint
+            // Blocked: unmanaged entries with no safe managed equivalent
             $candidates = [];
             $blocked = [];
 
