@@ -9,6 +9,18 @@ declare(strict_types=1);
 require_once __DIR__ . '/src/bootstrap.php';
 require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
+// Phase 23 export support
+require_once __DIR__ . '/src/ScheduleEntryExportAdapter.php';
+require_once __DIR__ . '/src/IcsWriter.php';
+require_once __DIR__ . '/src/SchedulerExportService.php';
+
+// Phase 23 inventory support
+require_once __DIR__ . '/src/SchedulerInventoryService.php';
+
+// Phase 23 cleanup support
+require_once __DIR__ . '/src/cleanup/SchedulerCleanupPlanner.php';
+require_once __DIR__ . '/src/cleanup/SchedulerCleanupApplier.php';
+
 // Experimental scaffolding
 require_once __DIR__ . '/src/experimental/ExecutionContext.php';
 require_once __DIR__ . '/src/experimental/ScopedLogger.php';
@@ -16,6 +28,7 @@ require_once __DIR__ . '/src/experimental/ExecutionController.php';
 require_once __DIR__ . '/src/experimental/HealthProbe.php';
 require_once __DIR__ . '/src/experimental/CalendarReader.php';
 require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
+
 
 $cfg = GcsConfig::load();
 
@@ -55,12 +68,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
  * --------------------------------------------------------------------
  */
 if (isset($_GET['endpoint'])) {
-    header('Content-Type: application/json');
 
     try {
 
         // Auto status check (plan-only)
         if ($_GET['endpoint'] === 'experimental_plan_status') {
+            header('Content-Type: application/json');
+
             if (empty($cfg['experimental']['enabled'])) {
                 echo json_encode(['ok' => false]);
                 exit;
@@ -82,6 +96,8 @@ if (isset($_GET['endpoint'])) {
 
         // Preview (plan-only)
         if ($_GET['endpoint'] === 'experimental_diff') {
+            header('Content-Type: application/json');
+
             if (empty($cfg['experimental']['enabled'])) {
                 echo json_encode(['ok' => false]);
                 exit;
@@ -104,6 +120,8 @@ if (isset($_GET['endpoint'])) {
 
         // Apply (ONLY write path)
         if ($_GET['endpoint'] === 'experimental_apply') {
+            header('Content-Type: application/json');
+
             $result = DiffPreviewer::apply($cfg);
             $counts = DiffPreviewer::countsFromResult($result);
 
@@ -114,7 +132,76 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
+        // Export unmanaged scheduler entries to ICS
+        if ($_GET['endpoint'] === 'export_unmanaged_ics') {
+
+            $result = SchedulerExportService::exportUnmanaged();
+
+            if (empty($result['ics'])) {
+                header('Content-Type: application/json');
+                echo json_encode([
+                    'ok' => false,
+                    'error' => 'No unmanaged scheduler entries available for export.',
+                ]);
+                exit;
+            }
+
+            // IMPORTANT: no JSON headers here
+            header('Content-Type: text/calendar; charset=utf-8');
+            header('Content-Disposition: attachment; filename="gcs-unmanaged-export.ics"');
+            header('Cache-Control: no-store');
+
+            echo $result['ics'];
+            exit;
+        }
+
+        // Scheduler inventory (read-only counts)
+        if ($_GET['endpoint'] === 'experimental_scheduler_inventory') {
+            header('Content-Type: application/json');
+
+            try {
+                $inv = SchedulerInventoryService::getInventory();
+
+                echo json_encode([
+                    'ok' => true,
+                    'inventory' => $inv,
+                ]);
+                exit;
+
+            } catch (Throwable $e) {
+                echo json_encode([
+                    'ok' => false,
+                    'error' => $e->getMessage(),
+                ]);
+                exit;
+            }
+        }
+
+        // Cleanup preview (read-only)
+        if ($_GET['endpoint'] === 'experimental_cleanup_preview') {
+            header('Content-Type: application/json');
+
+            $plan = SchedulerCleanupPlanner::plan();
+
+            echo json_encode([
+                'ok' => !empty($plan['ok']),
+                'plan' => $plan,
+            ]);
+            exit;
+        }
+
+        // Cleanup apply (guarded write)
+        if ($_GET['endpoint'] === 'experimental_cleanup_apply') {
+            header('Content-Type: application/json');
+
+            $res = SchedulerCleanupApplier::apply();
+
+            echo json_encode($res);
+            exit;
+        }
+
     } catch (Throwable $e) {
+        header('Content-Type: application/json');
         echo json_encode([
             'ok'    => false,
             'error' => $e->getMessage(),
@@ -133,6 +220,7 @@ function looksLikeIcs(string $url): bool {
 $isEmpty    = ($icsUrl === '');
 $isIcsValid = (!$isEmpty && looksLikeIcs($icsUrl));
 $canSave    = ($isEmpty || $isIcsValid);
+
 ?>
 
 <div class="settings">
@@ -198,6 +286,30 @@ $canSave    = ($isEmpty || $isIcsValid);
         <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
+</div>
+
+<div id="gcs-unmanaged-section" class="gcs-hidden">
+
+    <hr style="margin:20px 0;">
+
+    <div id="gcs-unmanaged-status"
+         class="gcs-status gcs-status--info">
+        <span class="gcs-status-dot"></span>
+        <span class="gcs-status-text">
+            <!-- Filled dynamically -->
+        </span>
+    </div>
+
+    <div style="margin-top:12px;">
+        <button
+            type="button"
+            class="buttons"
+            id="gcs-export-unmanaged-btn"
+        >
+            Export Unmanaged Schedules
+        </button>
+    </div>
+
 </div>
 
 <style>
@@ -276,6 +388,23 @@ function gcsSetStatus(level, message) {
     text.textContent = message;
 }
 
+function gcsSetUnmanagedStatus(level, message) {
+    var bar = document.getElementById('gcs-unmanaged-status');
+    if (!bar) return;
+
+    var text = bar.querySelector('.gcs-status-text');
+
+    bar.classList.remove(
+        'gcs-status--info',
+        'gcs-status--success',
+        'gcs-status--warning',
+        'gcs-status--error'
+    );
+
+    bar.classList.add('gcs-status--' + level);
+    text.textContent = message;
+}
+
 function hidePreviewUi() {
     diffSummary.classList.add('gcs-hidden');
     diffSummary.innerHTML = '';
@@ -329,6 +458,42 @@ function runPlanStatus() {
 }
 
 runPlanStatus();
+
+// ------------------------------------------------------------------
+// Unmanaged scheduler section
+// ------------------------------------------------------------------
+
+var unmanagedSection = document.getElementById('gcs-unmanaged-section');
+var unmanagedStatus  = document.getElementById('gcs-unmanaged-status');
+var unmanagedText    = unmanagedStatus.querySelector('.gcs-status-text');
+var exportBtn        = document.getElementById('gcs-export-unmanaged-btn');
+
+fetch(ENDPOINT + '&endpoint=experimental_scheduler_inventory')
+    .then(r => r.json())
+    .then(d => {
+        if (!d || !d.ok || !d.inventory) return;
+
+        var inv = d.inventory;
+        if (typeof inv.unmanaged !== 'number' || inv.unmanaged <= 0) {
+            unmanagedSection.classList.add('gcs-hidden');
+            return;
+        }
+
+        var msg = 'You have ' + inv.unmanaged + ' unmanaged scheduler entr' +
+                  (inv.unmanaged === 1 ? 'y' : 'ies') + '.';
+
+        if (inv.unmanaged_disabled > 0) {
+            msg += ' (' + inv.unmanaged_disabled + ' disabled)';
+        }
+
+        msg += ' These are not controlled by Google Calendar.';
+
+        unmanagedText.textContent = msg;
+        unmanagedSection.classList.remove('gcs-hidden');
+    })
+    .catch(() => {
+        // Inventory is informational only — ignore failures
+    });
 
 previewBtn.addEventListener('click', function () {
 
@@ -390,6 +555,26 @@ applyBtn.addEventListener('click', function () {
             closePreviewBtn.disabled = false;
         });
 });
+
+if (exportBtn) {
+    exportBtn.addEventListener('click', function () {
+
+        gcsSetUnmanagedStatus(
+            'info',
+            'Preparing export of unmanaged scheduler entries…'
+        );
+
+        var url = ENDPOINT + '&endpoint=export_unmanaged_ics';
+        window.location.href = url;
+
+        setTimeout(function () {
+            gcsSetUnmanagedStatus(
+                'success',
+                'Export complete. Import the downloaded file into Google Calendar.'
+            );
+        }, 800);
+    });
+}
 
 })();
 </script>

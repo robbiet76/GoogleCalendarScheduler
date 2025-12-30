@@ -9,16 +9,21 @@ final class GcsSchedulerApply
             'dryRun' => !empty($cfg['runtime']['dry_run']),
         ]);
 
-        $plan = SchedulerPlanner::plan($cfg);
+        $plan   = SchedulerPlanner::plan($cfg);
         $dryRun = !empty($cfg['runtime']['dry_run']);
 
-        $existing = (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [];
-        $desired  = (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [];
+        $existing = (isset($plan['existingRaw']) && is_array($plan['existingRaw']))
+            ? $plan['existingRaw']
+            : [];
+
+        $desired = (isset($plan['desiredEntries']) && is_array($plan['desiredEntries']))
+            ? $plan['desiredEntries']
+            : [];
 
         $previewCounts = [
-            'creates' => (isset($plan['creates']) && is_array($plan['creates'])) ? count($plan['creates']) : 0,
-            'updates' => (isset($plan['updates']) && is_array($plan['updates'])) ? count($plan['updates']) : 0,
-            'deletes' => (isset($plan['deletes']) && is_array($plan['deletes'])) ? count($plan['deletes']) : 0,
+            'creates' => isset($plan['creates']) && is_array($plan['creates']) ? count($plan['creates']) : 0,
+            'updates' => isset($plan['updates']) && is_array($plan['updates']) ? count($plan['updates']) : 0,
+            'deletes' => isset($plan['deletes']) && is_array($plan['deletes']) ? count($plan['deletes']) : 0,
         ];
 
         if ($dryRun) {
@@ -49,7 +54,10 @@ final class GcsSchedulerApply
             ];
         }
 
-        $backupPath = SchedulerSync::backupScheduleFileOrThrow(SchedulerSync::SCHEDULE_JSON_PATH);
+        $backupPath = SchedulerSync::backupScheduleFileOrThrow(
+            SchedulerSync::SCHEDULE_JSON_PATH
+        );
+
         SchedulerSync::writeScheduleJsonAtomicallyOrThrow(
             SchedulerSync::SCHEDULE_JSON_PATH,
             $applyPlan['newSchedule']
@@ -68,31 +76,60 @@ final class GcsSchedulerApply
         ];
     }
 
+    /**
+     * Build final apply plan.
+     */
     private static function planApply(array $existing, array $desired): array
     {
-        $desiredByKey = [];
+        $desiredByKey      = [];
         $desiredKeysInOrder = [];
 
         foreach ($desired as $d) {
-            if (!is_array($d)) continue;
+            if (!is_array($d)) {
+                continue;
+            }
 
             $k = GcsSchedulerIdentity::extractKey($d);
-            if ($k === null) continue;
+            if ($k === null) {
+                continue;
+            }
 
             if (!isset($desiredByKey[$k])) {
                 $desiredKeysInOrder[] = $k;
             }
 
-            // 🔒 Normalize desired entry BEFORE apply
-            $desiredByKey[$k] = self::normalizeForApply($d);
+            // Normalize + HARD-ENFORCE tag preservation
+            $norm = self::normalizeForApply($d);
+
+            if (!isset($norm['args']) || !is_array($norm['args'])) {
+                $norm['args'] = [];
+            }
+
+            $hasTag = false;
+            foreach ($norm['args'] as $a) {
+                if (is_string($a) && strpos($a, GcsSchedulerIdentity::TAG_MARKER) === 0) {
+                    $hasTag = true;
+                    break;
+                }
+            }
+
+            if (!$hasTag) {
+                $norm['args'][] = $k;
+            }
+
+            $desiredByKey[$k] = $norm;
         }
 
         $existingManagedByKey = [];
         foreach ($existing as $ex) {
-            if (!is_array($ex)) continue;
+            if (!is_array($ex)) {
+                continue;
+            }
 
             $k = GcsSchedulerIdentity::extractKey($ex);
-            if ($k === null) continue;
+            if ($k === null) {
+                continue;
+            }
 
             $existingManagedByKey[$k] = $ex;
         }
@@ -122,16 +159,20 @@ final class GcsSchedulerApply
         $writtenKeys = [];
 
         foreach ($existing as $ex) {
-            if (!is_array($ex)) continue;
+            if (!is_array($ex)) {
+                continue;
+            }
 
             $k = GcsSchedulerIdentity::extractKey($ex);
 
             if ($k === null) {
+                // Unmanaged entry — preserve exactly
                 $newSchedule[] = $ex;
                 continue;
             }
 
             if (!isset($desiredByKey[$k])) {
+                // Managed but deleted
                 continue;
             }
 
@@ -156,21 +197,38 @@ final class GcsSchedulerApply
         ];
     }
 
+    /**
+     * Normalize entry for FPP apply.
+     */
     private static function normalizeForApply(array $entry): array
     {
-        // 🔥 FPP REQUIREMENT: day must ALWAYS be present and valid
-        if (!isset($entry['day']) || !is_int($entry['day']) || $entry['day'] <= 0) {
-            $entry['day'] = 127; // Everyday
+        // FPP "day" is an enum (0..15), NOT a bitmask
+        if (!isset($entry['day']) || !is_int($entry['day']) || $entry['day'] < 0 || $entry['day'] > 15) {
+            $entry['day'] = 7; // Everyday
+        }
+
+        if (isset($entry['args']) && !is_array($entry['args'])) {
+            $entry['args'] = [];
         }
 
         return $entry;
     }
 
+    /**
+     * Compare scheduler entries ignoring runtime noise.
+     */
     private static function entriesEquivalentForCompare(array $a, array $b): bool
     {
-        unset($a['id'], $a['lastRun'], $b['id']);
+        unset(
+            $a['id'],
+            $a['lastRun'],
+            $b['id'],
+            $b['lastRun']
+        );
+
         ksort($a);
         ksort($b);
+
         return $a === $b;
     }
 }
