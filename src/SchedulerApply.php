@@ -265,16 +265,20 @@ final class GcsSchedulerApply
         }
 
         usort($managedSortable, static function (array $a, array $b): int {
+            // Later-starting (more specific) schedules first
             if ($a['start'] !== $b['start']) {
-                return $a['start'] <=> $b['start'];
+                return $b['start'] <=> $a['start'];   // DESC ✅
             }
-            // End DESC (longer span first when starts tie)
+
+            // Shorter window first when starts match
             if ($a['end'] !== $b['end']) {
-                return $b['end'] <=> $a['end'];
+                return $a['end'] <=> $b['end'];       // ASC ✅
             }
+
             if ($a['uid'] !== $b['uid']) {
                 return strcmp($a['uid'], $b['uid']);
             }
+
             return $a['orig'] <=> $b['orig'];
         });
 
