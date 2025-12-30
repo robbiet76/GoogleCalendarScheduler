@@ -58,12 +58,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
  * --------------------------------------------------------------------
  */
 if (isset($_GET['endpoint'])) {
-    header('Content-Type: application/json');
 
     try {
 
         // Auto status check (plan-only)
         if ($_GET['endpoint'] === 'experimental_plan_status') {
+            header('Content-Type: application/json');
+
             if (empty($cfg['experimental']['enabled'])) {
                 echo json_encode(['ok' => false]);
                 exit;
@@ -85,6 +86,8 @@ if (isset($_GET['endpoint'])) {
 
         // Preview (plan-only)
         if ($_GET['endpoint'] === 'experimental_diff') {
+            header('Content-Type: application/json');
+
             if (empty($cfg['experimental']['enabled'])) {
                 echo json_encode(['ok' => false]);
                 exit;
@@ -107,6 +110,8 @@ if (isset($_GET['endpoint'])) {
 
         // Apply (ONLY write path)
         if ($_GET['endpoint'] === 'experimental_apply') {
+            header('Content-Type: application/json');
+
             $result = DiffPreviewer::apply($cfg);
             $counts = DiffPreviewer::countsFromResult($result);
 
@@ -119,35 +124,29 @@ if (isset($_GET['endpoint'])) {
 
         // Export unmanaged scheduler entries to ICS
         if ($_GET['endpoint'] === 'export_unmanaged_ics') {
-            try {
-                $result = SchedulerExportService::exportUnmanaged();
 
-                if (empty($result['ics'])) {
-                    echo json_encode([
-                        'ok' => false,
-                        'error' => 'No unmanaged scheduler entries available for export.',
-                    ]);
-                    exit;
-                }
+            $result = SchedulerExportService::exportUnmanaged();
 
-                // Send file download
-                header('Content-Type: text/calendar; charset=utf-8');
-                header('Content-Disposition: attachment; filename="gcs-unmanaged-export.ics"');
-                header('Cache-Control: no-store');
-
-                echo $result['ics'];
-                exit;
-
-            } catch (Throwable $e) {
+            if (empty($result['ics'])) {
+                header('Content-Type: application/json');
                 echo json_encode([
                     'ok' => false,
-                    'error' => 'Export failed: ' . $e->getMessage(),
+                    'error' => 'No unmanaged scheduler entries available for export.',
                 ]);
                 exit;
             }
+
+            // IMPORTANT: no JSON headers here
+            header('Content-Type: text/calendar; charset=utf-8');
+            header('Content-Disposition: attachment; filename="gcs-unmanaged-export.ics"');
+            header('Cache-Control: no-store');
+
+            echo $result['ics'];
+            exit;
         }
 
     } catch (Throwable $e) {
+        header('Content-Type: application/json');
         echo json_encode([
             'ok'    => false,
             'error' => $e->getMessage(),
@@ -155,6 +154,8 @@ if (isset($_GET['endpoint'])) {
         exit;
     }
 }
+
+
 
 $icsUrl = trim($cfg['calendar']['ics_url'] ?? '');
 $dryRun = !empty($cfg['runtime']['dry_run']);
