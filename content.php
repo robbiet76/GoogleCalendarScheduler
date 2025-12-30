@@ -427,7 +427,41 @@ function runPlanStatus() {
         });
 }
 
+function appendInventoryMessage(inv) {
+    if (!inv || typeof inv.unmanaged !== 'number') return;
+
+    if (inv.unmanaged <= 0) return;
+
+    var msg = 'Scheduler contains ' + inv.unmanaged + ' unmanaged entr' +
+              (inv.unmanaged === 1 ? 'y' : 'ies');
+
+    if (inv.unmanaged_disabled > 0) {
+        msg += ' (' + inv.unmanaged_disabled + ' disabled)';
+    }
+
+    msg += '.';
+
+    var bar = document.getElementById('gcs-status-bar');
+    var text = bar.querySelector('.gcs-status-text');
+
+    // Append — do not replace existing status text
+    text.textContent += '  ' + msg;
+}
+
 runPlanStatus();
+
+// Fetch scheduler inventory (read-only)
+fetch(ENDPOINT + '&endpoint=experimental_scheduler_inventory')
+    .then(r => r.json())
+    .then(d => {
+        if (d && d.ok && d.inventory) {
+            appendInventoryMessage(d.inventory);
+        }
+    })
+    .catch(() => {
+        // Inventory is informational only — ignore failures
+    });
+
 
 previewBtn.addEventListener('click', function () {
 
