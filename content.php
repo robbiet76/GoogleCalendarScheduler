@@ -321,6 +321,7 @@ var closePreviewBtn = document.getElementById('gcs-close-preview-btn');
 var saveBtn = document.getElementById('gcs-save-btn');
 var icsInput = document.getElementById('gcs-ics-input');
 var exportBtn = document.getElementById('gcs-export-unmanaged-btn');
+var gcsInventorySuffix = '';
 
 function looksLikeIcs(url) {
     return /^https?:\/\/.+\.ics$/i.test(url);
@@ -345,7 +346,13 @@ function gcsSetStatus(level, message) {
     );
 
     bar.classList.add('gcs-status--' + level);
+
     text.textContent = message;
+
+    // Re-append inventory info if present
+    if (gcsInventorySuffix) {
+        text.textContent += gcsInventorySuffix;
+    }
 }
 
 function hidePreviewUi() {
@@ -403,7 +410,10 @@ function runPlanStatus() {
 function appendInventoryMessage(inv) {
     if (!inv || typeof inv.unmanaged !== 'number') return;
 
-    if (inv.unmanaged <= 0) return;
+    if (inv.unmanaged <= 0) {
+        gcsInventorySuffix = '';
+        return;
+    }
 
     var msg = 'Scheduler contains ' + inv.unmanaged + ' unmanaged entr' +
               (inv.unmanaged === 1 ? 'y' : 'ies');
@@ -414,11 +424,12 @@ function appendInventoryMessage(inv) {
 
     msg += '.';
 
+    gcsInventorySuffix = '  ' + msg;
+
+    // Apply immediately if status already exists
     var bar = document.getElementById('gcs-status-bar');
     var text = bar.querySelector('.gcs-status-text');
-
-    // Append — do not replace existing status text
-    text.textContent += '  ' + msg;
+    text.textContent += gcsInventorySuffix;
 }
 
 runPlanStatus();
