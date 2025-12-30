@@ -22,11 +22,6 @@ require_once __DIR__ . '/src/cleanup/SchedulerCleanupPlanner.php';
 require_once __DIR__ . '/src/cleanup/SchedulerCleanupApplier.php';
 
 // Experimental scaffolding
-require_once __DIR__ . '/src/experimental/ExecutionContext.php';
-require_once __DIR__ . '/src/experimental/ScopedLogger.php';
-require_once __DIR__ . '/src/experimental/ExecutionController.php';
-require_once __DIR__ . '/src/experimental/HealthProbe.php';
-require_once __DIR__ . '/src/experimental/CalendarReader.php';
 require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 
 
