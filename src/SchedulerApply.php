@@ -385,14 +385,6 @@ final class GcsSchedulerApply
             $entry['day'] = 7; // Everyday
         }
 
-        // Default repeat behavior should match FPP UI (Immediate)
-        // FPP uses:
-        //   0 = None
-        //   1 = Immediate
-        if (!isset($entry['repeat']) || !is_int($entry['repeat'])) {
-            $entry['repeat'] = 1; // Immediate
-        }
-
         if (isset($entry['args']) && !is_array($entry['args'])) {
             $entry['args'] = [];
         }
