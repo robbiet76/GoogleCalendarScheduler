@@ -465,26 +465,18 @@ exportBtn.addEventListener('click', function () {
 
     gcsSetStatus('info', 'Preparing export of unmanaged scheduler entries…');
 
-    // Trigger file download via navigation (not fetch)
+    // Trigger download via direct navigation (RELIABLE)
     var url = ENDPOINT + '&endpoint=export_unmanaged_ics';
+    window.location.href = url;
 
-    // Create a hidden iframe to allow download without navigation
-    var iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    iframe.src = url;
-
-    document.body.appendChild(iframe);
-
-    // Best-effort messaging (download may still succeed even if warnings exist)
+    // Status update (best-effort UX)
     setTimeout(function () {
         gcsSetStatus(
             'success',
             'Export complete. Import the downloaded file into Google Calendar.'
         );
-        document.body.removeChild(iframe);
-    }, 1200);
+    }, 800);
 });
-
 
 })();
 </script>
