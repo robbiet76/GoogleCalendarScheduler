@@ -14,6 +14,9 @@ require_once __DIR__ . '/src/ScheduleEntryExportAdapter.php';
 require_once __DIR__ . '/src/IcsWriter.php';
 require_once __DIR__ . '/src/SchedulerExportService.php';
 
+// Phase 23 inventory support
+require_once __DIR__ . '/src/SchedulerInventoryService.php';
+
 // Experimental scaffolding
 require_once __DIR__ . '/src/experimental/ExecutionContext.php';
 require_once __DIR__ . '/src/experimental/ScopedLogger.php';
