@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Responsibilities:
  * - Match scheduler entries by GCS identity (UID)
  * - Determine CREATE / UPDATE / DELETE actions
- * - Delegate semantic equality checks to GcsSchedulerComparator
+ * - Delegate semantic equality checks to SchedulerComparator
  *
  * Guarantees:
  * - No writes
@@ -79,7 +79,7 @@ final class GcsSchedulerDiff
 
             $existing = $existingByUid[$uid];
 
-            if (!GcsSchedulerComparator::isEquivalent($existing, $desiredEntry)) {
+            if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
                 $toUpdate[] = [
                     'existing' => $existing,
                     'desired'  => $desiredEntry,

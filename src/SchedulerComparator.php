@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerComparator
+ * SchedulerComparator
  *
  * Determines whether an existing scheduler entry is semantically
  * equivalent to a desired entry produced by the planner.
@@ -20,7 +20,7 @@ declare(strict_types=1);
  * - No mutation of inputs
  * - No normalization beyond simple structural comparison
  */
-final class GcsSchedulerComparator
+final class SchedulerComparator
 {
     /**
      * Determine whether an existing scheduler entry and a desired entry
