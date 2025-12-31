@@ -39,8 +39,8 @@ require_once __DIR__ . '/src/SchedulerInventoryService.php';
 require_once __DIR__ . '/src/cleanup/SchedulerCleanupPlanner.php';
 require_once __DIR__ . '/src/cleanup/SchedulerCleanupApplier.php';
 
-// Experimental scaffolding
-require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
+// Infrastructre support
+require_once __DIR__ . '/src/Infrastructure/DiffPreviewer.php';
 
 
 $cfg = GcsConfig::load();
