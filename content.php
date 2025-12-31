@@ -25,7 +25,6 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/src/bootstrap.php';
-require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
 // Export support
 require_once __DIR__ . '/src/ScheduleEntryExportAdapter.php';
