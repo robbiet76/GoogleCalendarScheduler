@@ -99,7 +99,7 @@ final class SchedulerCleanupApplier
                 }
 
                 // Never remove managed
-                if (GcsSchedulerIdentity::isGcsManaged($entry)) {
+                if (SchedulerIdentity::isGcsManaged($entry)) {
                     $after[] = $entry;
                     continue;
                 }
@@ -169,7 +169,7 @@ final class SchedulerCleanupApplier
         $set = [];
         foreach ($entries as $e) {
             if (!is_array($e)) continue;
-            $k = GcsSchedulerIdentity::extractKey($e);
+            $k = SchedulerIdentity::extractKey($e);
             if ($k !== null) $set[$k] = true;
         }
         $keys = array_keys($set);
@@ -186,7 +186,7 @@ final class SchedulerCleanupApplier
     {
         foreach ($entries as $e) {
             if (!is_array($e)) continue;
-            if (!GcsSchedulerIdentity::isGcsManaged($e)) continue;
+            if (!SchedulerIdentity::isGcsManaged($e)) continue;
             if (SchedulerCleanupPlanner::fingerprint($e) === $fp) return true;
         }
         return false;

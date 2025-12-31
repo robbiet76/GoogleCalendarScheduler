@@ -2,48 +2,56 @@
 declare(strict_types=1);
 
 /**
- * GoogleCalendarScheduler UI Controller + View
+ * GoogleCalendarScheduler — UI Controller + View
  *
- * Responsibilities:
- * - Render plugin UI
+ * RESPONSIBILITIES:
+ * - Render plugin UI (HTML + JS)
  * - Handle POSTed UI actions (save, plan-only sync)
  * - Expose AJAX endpoints for:
- *   - plan preview
- *   - apply (guarded write)
- *   - inventory
- *   - export
- *   - cleanup
+ *   - plan preview (PURE)
+ *   - apply (guarded WRITE)
+ *   - inventory (read-only)
+ *   - export (read-only)
+ *   - cleanup (explicit WRITE)
  *
  * HARD RULES:
  * - This file MAY render HTML
- * - This file MUST NOT directly write schedule.json
- * - All scheduler writes MUST flow through dedicated services
+ * - This file MUST NOT directly modify schedule.json
+ * - All scheduler writes MUST flow through Apply-layer services
  *
- * Architectural note:
- * FPP plugins intentionally combine controller + view in content.php.
- * This file is the ONLY place where that coupling is allowed.
+ * ARCHITECTURAL NOTE:
+ * Falcon Player plugins intentionally combine controller + view
+ * logic in content.php. This file is the ONLY place where that
+ * coupling is allowed.
  */
 
+// ---------------------------------------------------------------------
+// Bootstrap (authoritative dependency map)
+// ---------------------------------------------------------------------
 require_once __DIR__ . '/src/bootstrap.php';
-require_once __DIR__ . '/src/FppSchedulerHorizon.php';
 
-// Export support
-require_once __DIR__ . '/src/ScheduleEntryExportAdapter.php';
-require_once __DIR__ . '/src/IcsWriter.php';
-require_once __DIR__ . '/src/SchedulerExportService.php';
+// ---------------------------------------------------------------------
+// Core helpers (PURE domain / infrastructure)
+// ---------------------------------------------------------------------
+require_once __DIR__ . '/src/Core/DiffPreviewer.php';
+require_once __DIR__ . '/src/Core/ScheduleEntryExportAdapter.php';
+require_once __DIR__ . '/src/Core/IcsWriter.php';
 
-// Inventory support
-require_once __DIR__ . '/src/SchedulerInventoryService.php';
+// ---------------------------------------------------------------------
+// Planner services (PURE — no writes)
+// ---------------------------------------------------------------------
+require_once __DIR__ . '/src/Planner/ExportService.php';
+require_once __DIR__ . '/src/Planner/InventoryService.php';
 
-// WRITE-CAPABLE SERVICES (guarded; never auto-run)
-require_once __DIR__ . '/src/cleanup/SchedulerCleanupPlanner.php';
-require_once __DIR__ . '/src/cleanup/SchedulerCleanupApplier.php';
+// ---------------------------------------------------------------------
+// Apply services (WRITE boundary — guarded, never auto-run)
+// ---------------------------------------------------------------------
+require_once __DIR__ . '/src/Apply/SchedulerCleanupPlanner.php';
+require_once __DIR__ . '/src/Apply/SchedulerCleanupApplier.php';
 
-// Experimental scaffolding
-require_once __DIR__ . '/src/experimental/DiffPreviewer.php';
 
 
-$cfg = GcsConfig::load();
+$cfg = Config::load();
 
 /*
  * --------------------------------------------------------------------
@@ -58,9 +66,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $cfg['calendar']['ics_url'] = trim($_POST['ics_url'] ?? '');
             $cfg['runtime']['dry_run']  = !empty($_POST['dry_run']);
 
-            GcsConfig::save($cfg);
+            Config::save($cfg);
             clearstatcache();
-            $cfg = GcsConfig::load();
+            $cfg = Config::load();
         }
 
         // Sync = plan-only, never writes (UI removed in Phase 19.3)
@@ -154,7 +162,7 @@ if (isset($_GET['endpoint'])) {
         // Export unmanaged scheduler entries to ICS
         if ($_GET['endpoint'] === 'export_unmanaged_ics') {
 
-            $result = SchedulerExportService::exportUnmanaged();
+            $result = ExportService::exportUnmanaged();
 
             if (empty($result['ics'])) {
                 header('Content-Type: application/json');
@@ -179,7 +187,7 @@ if (isset($_GET['endpoint'])) {
             header('Content-Type: application/json');
 
             try {
-                $inv = SchedulerInventoryService::getInventory();
+                $inv = InventoryService::getInventory();
 
                 echo json_encode([
                     'ok' => true,

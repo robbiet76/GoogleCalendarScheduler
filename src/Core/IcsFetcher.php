@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsIcsFetcher
+ * IcsFetcher
  *
  * Low-level HTTP fetcher for calendar ICS data.
  *
@@ -25,7 +25,7 @@ declare(strict_types=1);
  * Google Calendar / self-hosted ICS usage in constrained
  * FPP environments.
  */
-final class GcsIcsFetcher
+final class IcsFetcher
 {
     /**
      * Fetch raw ICS content from a URL.

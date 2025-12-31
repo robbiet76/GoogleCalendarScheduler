@@ -15,7 +15,7 @@ declare(strict_types=1);
  *
  * HARD RULES:
  * - Preview ALWAYS uses SchedulerPlanner (plan-only)
- * - Apply is the ONLY place allowed to execute writes (via GcsSchedulerApply)
+ * - Apply is the ONLY place allowed to execute writes (via SchedulerApply)
  * - This class MUST NOT modify scheduler state directly
  */
 
@@ -74,7 +74,7 @@ final class DiffPreviewer
      *
      * IMPORTANT:
      * - Preview and Apply must operate on the same plan representation
-     * - Writes MUST happen only via GcsSchedulerApply
+     * - Writes MUST happen only via SchedulerApply
      * - MUST NOT be called from non-UI contexts
      *
      * @throws RuntimeException if blocked
@@ -110,7 +110,7 @@ final class DiffPreviewer
         }
 
         // Execute the only permitted write boundary
-        $applyResult = GcsSchedulerApply::applyFromConfig($config);
+        $applyResult = SchedulerApply::applyFromConfig($config);
 
         return [
             'ok'    => true,
@@ -163,7 +163,7 @@ final class DiffPreviewer
     {
         $out = [];
         foreach ($rows as $row) {
-            if ($row instanceof GcsExistingScheduleEntry) {
+            if ($row instanceof ExistingScheduleEntry) {
                 $out[] = self::normalizeEntryRow($row->raw(), 'delete');
             } elseif (is_array($row)) {
                 $out[] = self::normalizeEntryRow($row, 'delete');
@@ -177,7 +177,7 @@ final class DiffPreviewer
      */
     private static function normalizeEntryRow(array $entry, string $type): array
     {
-        $uid = GcsSchedulerIdentity::extractKey($entry);
+        $uid = SchedulerIdentity::extractKey($entry);
 
         return [
             'type'      => $type,

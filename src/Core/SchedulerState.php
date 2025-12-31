@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerState
+ * SchedulerState
  *
  * Immutable snapshot of the current FPP scheduler state.
  *
@@ -18,13 +18,13 @@ declare(strict_types=1);
  * This class exists to clearly separate the concept of
  * "current scheduler state" from planning, diffing, and apply logic.
  */
-final class GcsSchedulerState
+final class SchedulerState
 {
-    /** @var array<int,GcsExistingScheduleEntry> */
+    /** @var array<int,ExistingScheduleEntry> */
     private array $entries;
 
     /**
-     * @param array<int,GcsExistingScheduleEntry> $entries
+     * @param array<int,ExistingScheduleEntry> $entries
      */
     public function __construct(array $entries)
     {
@@ -34,7 +34,7 @@ final class GcsSchedulerState
     /**
      * Retrieve all existing scheduler entries.
      *
-     * @return array<int,GcsExistingScheduleEntry>
+     * @return array<int,ExistingScheduleEntry>
      */
     public function getEntries(): array
     {

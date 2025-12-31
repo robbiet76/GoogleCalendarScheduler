@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsIntentConsolidator
+ * IntentConsolidator
  *
  * Losslessly consolidates per-occurrence scheduling intents into
  * contiguous date ranges suitable for scheduler entry creation.
@@ -22,7 +22,7 @@ declare(strict_types=1);
  * - Modify intent semantics
  * - Perform scheduler I/O
  */
-final class GcsIntentConsolidator
+final class IntentConsolidator
 {
     /* ---------------------------------------------------------------------
      * Weekday bitmask constants (Sunday = 0, matches DateTime::format('w'))

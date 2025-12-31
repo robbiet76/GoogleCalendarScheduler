@@ -20,13 +20,6 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
 
-/*
- * TEMPORARY / LEGACY:
- * - Horizon abstraction will be removed
- * - Future behavior will hardcode a safe fixed window (e.g., 365 days)
- */
-require_once __DIR__ . '/FppSchedulerHorizon.php';
-
 $action = $_POST['action'] ?? '';
 
 /*
@@ -35,12 +28,12 @@ $action = $_POST['action'] ?? '';
  * --------------------------------------------------------------------
  */
 if ($action === 'save') {
-    $cfg = GcsConfig::load();
+    $cfg = Config::load();
 
     $cfg['calendar']['ics_url'] = trim($_POST['ics_url'] ?? '');
     $cfg['runtime']['dry_run']  = !empty($_POST['dry_run']);
 
-    GcsConfig::save($cfg);
+    Config::save($cfg);
 
     GcsLog::info('Settings saved', [
         'dryRun' => $cfg['runtime']['dry_run'],
@@ -53,7 +46,7 @@ if ($action === 'save') {
  * --------------------------------------------------------------------
  */
 if ($action === 'sync') {
-    $cfg    = GcsConfig::load();
+    $cfg    = Config::load();
     $dryRun = !empty($cfg['runtime']['dry_run']);
 
     GcsLog::info('Starting scheduler sync', [
@@ -63,26 +56,28 @@ if ($action === 'sync') {
 
     /*
      * Horizon:
-     * - Currently delegated to helper for compatibility
-     * - Will be replaced with a fixed large window (Phase 26+)
+     * - Fixed, non-configurable
+     * - Passed only to satisfy runner constructor
+     * - Planning scope is owned by SchedulerPlanner
      */
-    $horizonDays = GcsFppSchedulerHorizon::getDays();
-
-    $runner = new GcsSchedulerRunner(
+    $runner = new SchedulerRunner(
         $cfg,
-        $horizonDays,
+        365,
         $dryRun
     );
 
     $result = $runner->run();
 
-    GcsLog::info('Scheduler sync completed', array_merge(
-        $result,
-        [
-            'dryRun' => $dryRun,
-            'mode'   => $dryRun ? 'dry-run' : 'live',
-        ]
-    ));
+    GcsLog::info(
+        'Scheduler sync completed',
+        array_merge(
+            $result,
+            [
+                'dryRun' => $dryRun,
+                'mode'   => $dryRun ? 'dry-run' : 'live',
+            ]
+        )
+    );
 }
 
 /*

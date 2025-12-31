@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsIcsParser
+ * IcsParser
  *
  * Low-level ICS parser responsible for converting raw ICS text into
  * normalized calendar event records suitable for scheduler planning.
@@ -25,7 +25,7 @@ declare(strict_types=1);
  * - DTSTART/DTEND TZID parameters are honored
  * - All resulting DateTime values are converted to FPP system timezone
  */
-final class GcsIcsParser
+final class IcsParser
 {
     /** Calendar-declared timezone (may be null until detected) */
     private ?DateTimeZone $calendarTz = null;

@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerApply
+ * SchedulerApply
  *
  * Phase 17+ APPLY BOUNDARY
  *
@@ -28,7 +28,7 @@ declare(strict_types=1);
  * - No calendar parsing
  * - No UI concerns
  */
-final class GcsSchedulerApply
+final class SchedulerApply
 {
     /**
      * Execute scheduler apply using plugin configuration.
@@ -43,7 +43,7 @@ final class GcsSchedulerApply
      */
     public static function applyFromConfig(array $cfg): array
     {
-        GcsLogger::instance()->info('GCS APPLY ENTERED', [
+        SchedulerLogger::instance()->info('GCS APPLY ENTERED', [
             'dryRun' => !empty($cfg['runtime']['dry_run']),
         ]);
 
@@ -151,7 +151,7 @@ final class GcsSchedulerApply
                 continue;
             }
 
-            $k = GcsSchedulerIdentity::extractKey($d);
+            $k = SchedulerIdentity::extractKey($d);
             if ($k === null) {
                 continue;
             }
@@ -169,7 +169,7 @@ final class GcsSchedulerApply
 
             $hasTag = false;
             foreach ($norm['args'] as $a) {
-                if (is_string($a) && strpos($a, GcsSchedulerIdentity::TAG_MARKER) === 0) {
+                if (is_string($a) && strpos($a, SchedulerIdentity::TAG_MARKER) === 0) {
                     $hasTag = true;
                     break;
                 }
@@ -191,7 +191,7 @@ final class GcsSchedulerApply
                 continue;
             }
 
-            $k = GcsSchedulerIdentity::extractKey($ex);
+            $k = SchedulerIdentity::extractKey($ex);
             if ($k === null) {
                 continue;
             }
@@ -235,7 +235,7 @@ final class GcsSchedulerApply
                 continue;
             }
 
-            $k = GcsSchedulerIdentity::extractKey($ex);
+            $k = SchedulerIdentity::extractKey($ex);
 
             if ($k === null) {
                 $newSchedule[] = $ex;
@@ -283,7 +283,7 @@ final class GcsSchedulerApply
     private static function applyTieredOrderingPhase24(array $schedule): array
     {
         $log = static function (string $msg, array $ctx = []): void {
-            GcsLogger::instance()->info($msg, $ctx);
+            SchedulerLogger::instance()->info($msg, $ctx);
         };
 
         $unmanaged        = [];
@@ -301,7 +301,7 @@ final class GcsSchedulerApply
                 continue;
             }
 
-            $key = GcsSchedulerIdentity::extractKey($entry);
+            $key = SchedulerIdentity::extractKey($entry);
             if ($key === null) {
                 $unmanaged[] = $entry;
                 continue;

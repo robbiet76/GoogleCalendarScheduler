@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerRunner
+ * SchedulerRunner
  *
  * Pure calendar ingestion and intent generation engine.
  *
@@ -22,7 +22,7 @@ declare(strict_types=1);
  * scheduler intent generation. Persistence and diff logic
  * are handled downstream.
  */
-final class GcsSchedulerRunner
+final class SchedulerRunner
 {
     private array $cfg;
     private int $horizonDays;
@@ -54,7 +54,7 @@ final class GcsSchedulerRunner
             return $this->emptyResult();
         }
 
-        $ics = (new GcsIcsFetcher())->fetch($icsUrl);
+        $ics = (new IcsFetcher())->fetch($icsUrl);
         if ($ics === '') {
             return $this->emptyResult();
         }
@@ -62,7 +62,7 @@ final class GcsSchedulerRunner
         $now = new DateTime('now');
         $horizonEnd = (clone $now)->modify('+' . $this->horizonDays . ' days');
 
-        $parser = new GcsIcsParser();
+        $parser = new IcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
         if (empty($events)) {
             return $this->emptyResult();
@@ -109,7 +109,7 @@ final class GcsSchedulerRunner
 
             // Resolve scheduler target from summary
             $summary = (string)($refEv['summary'] ?? '');
-            $resolved = GcsTargetResolver::resolve($summary);
+            $resolved = TargetResolver::resolve($summary);
             if (!$resolved) {
                 continue;
             }
@@ -165,7 +165,7 @@ final class GcsSchedulerRunner
                 }
 
                 $desc = self::extractDescriptionFromEvent($sourceEv);
-                $yaml = GcsYamlMetadata::parse($desc, [
+                $yaml = YamlMetadata::parse($desc, [
                     'uid'     => $uid,
                     'summary' => $summary,
                     'start'   => $occ['start'],
@@ -307,7 +307,7 @@ final class GcsSchedulerRunner
             }
 
             try {
-                $consolidator = new GcsIntentConsolidator();
+                $consolidator = new IntentConsolidator();
                 $maybe = $consolidator->consolidate($rawIntents);
                 if (is_array($maybe)) {
                     foreach ($maybe as $row) {

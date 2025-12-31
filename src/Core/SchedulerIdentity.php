@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerIdentity
+ * SchedulerIdentity
  *
  * Canonical identity and ownership helper for scheduler entries.
  *
@@ -23,7 +23,7 @@ declare(strict_types=1);
  * This class defines the single source of truth for determining
  * scheduler ownership and identity.
  */
-final class GcsSchedulerIdentity
+final class SchedulerIdentity
 {
     public const TAG_MARKER = '|GCS:v1|';
 

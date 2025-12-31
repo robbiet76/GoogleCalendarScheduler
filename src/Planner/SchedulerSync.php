@@ -173,7 +173,7 @@ final class SchedulerSync
                 continue;
             }
 
-            $key = GcsSchedulerIdentity::extractKey($entry);
+            $key = SchedulerIdentity::extractKey($entry);
             if ($key !== null) {
                 $present[$key] = true;
             }

@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsTargetResolver
+ * TargetResolver
  *
  * Resolves a Google Calendar event title into a concrete FPP
  * scheduler target.
@@ -22,7 +22,7 @@ declare(strict_types=1);
  *
  * If no valid target is found, resolution fails cleanly.
  */
-final class GcsTargetResolver
+final class TargetResolver
 {
     /**
      * Attempt to resolve an FPP scheduler target from a calendar summary.

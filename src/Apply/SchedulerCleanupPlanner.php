@@ -49,7 +49,7 @@ final class SchedulerCleanupPlanner
                 if (!is_array($e)) continue;
                 $total++;
 
-                if (GcsSchedulerIdentity::isGcsManaged($e)) {
+                if (SchedulerIdentity::isGcsManaged($e)) {
                     $managedCount++;
                     $fp = self::fingerprint($e);
                     if ($fp !== '') {
@@ -66,7 +66,7 @@ final class SchedulerCleanupPlanner
             foreach ($entries as $idx => $e) {
                 if (!is_array($e)) continue;
 
-                if (GcsSchedulerIdentity::isGcsManaged($e)) {
+                if (SchedulerIdentity::isGcsManaged($e)) {
                     continue;
                 }
 

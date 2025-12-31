@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerDiffResult
+ * SchedulerDiffResult
  *
  * Immutable value object representing the result of a scheduler diff.
  *
@@ -19,7 +19,7 @@ declare(strict_types=1);
  * This object is used to safely transport diff results between
  * planning, preview, and apply layers.
  */
-final class GcsSchedulerDiffResult
+final class SchedulerDiffResult
 {
     /** @var array<int,array<string,mixed>> */
     private array $toCreate;
@@ -27,13 +27,13 @@ final class GcsSchedulerDiffResult
     /** @var array<int,array<string,mixed>> */
     private array $toUpdate;
 
-    /** @var array<int,GcsExistingScheduleEntry> */
+    /** @var array<int,ExistingScheduleEntry> */
     private array $toDelete;
 
     /**
      * @param array<int,array<string,mixed>>      $toCreate
      * @param array<int,array<string,mixed>>      $toUpdate
-     * @param array<int,GcsExistingScheduleEntry> $toDelete
+     * @param array<int,ExistingScheduleEntry> $toDelete
      */
     public function __construct(array $toCreate, array $toUpdate, array $toDelete)
     {
@@ -65,7 +65,7 @@ final class GcsSchedulerDiffResult
     /**
      * Scheduler entries to be deleted.
      *
-     * @return array<int,GcsExistingScheduleEntry>
+     * @return array<int,ExistingScheduleEntry>
      */
     public function deletes(): array
     {

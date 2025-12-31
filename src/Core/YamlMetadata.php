@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsYamlMetadata
+ * YamlMetadata
  *
  * Lightweight, read-only YAML metadata extractor for calendar events.
  *
@@ -19,7 +19,7 @@ declare(strict_types=1);
  *
  * If no valid YAML metadata is present, an empty array is returned.
  */
-final class GcsYamlMetadata
+final class YamlMetadata
 {
     /**
      * Parse YAML metadata from a calendar event description.

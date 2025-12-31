@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsExistingScheduleEntry
+ * ExistingScheduleEntry
  *
  * Lightweight wrapper around a raw FPP scheduler entry.
  *
@@ -16,7 +16,7 @@ declare(strict_types=1);
  * - Identity is derived solely from GCS identity tags
  * - No scheduler state inference beyond raw entry contents
  */
-final class GcsExistingScheduleEntry
+final class ExistingScheduleEntry
 {
     /** @var array<string,mixed> */
     private array $raw;
@@ -36,7 +36,7 @@ final class GcsExistingScheduleEntry
      */
     public function getGcsUid(): ?string
     {
-        return GcsSchedulerIdentity::extractKey($this->raw);
+        return SchedulerIdentity::extractKey($this->raw);
     }
 
     /**
@@ -44,7 +44,7 @@ final class GcsExistingScheduleEntry
      */
     public function isGcsManaged(): bool
     {
-        return GcsSchedulerIdentity::isGcsManaged($this->raw);
+        return SchedulerIdentity::isGcsManaged($this->raw);
     }
 
     /**

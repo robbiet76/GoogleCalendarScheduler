@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerComparator
+ * SchedulerComparator
  *
  * Determines whether an existing scheduler entry is semantically
  * equivalent to a desired entry produced by the planner.
@@ -20,7 +20,7 @@ declare(strict_types=1);
  * - No mutation of inputs
  * - No normalization beyond simple structural comparison
  */
-final class GcsSchedulerComparator
+final class SchedulerComparator
 {
     /**
      * Determine whether an existing scheduler entry and a desired entry
@@ -29,12 +29,12 @@ final class GcsSchedulerComparator
      * If this returns true, the planner will treat the entry as a NO-OP.
      * If false, the entry will be scheduled for UPDATE.
      *
-     * @param GcsExistingScheduleEntry $existing Existing scheduler entry
+     * @param ExistingScheduleEntry $existing Existing scheduler entry
      * @param array<string,mixed>      $desired  Desired scheduler entry
      * @return bool True if equivalent; false if update required
      */
     public static function isEquivalent(
-        GcsExistingScheduleEntry $existing,
+        ExistingScheduleEntry $existing,
         array $desired
     ): bool {
         $a = $existing->raw();

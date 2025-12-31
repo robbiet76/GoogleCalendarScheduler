@@ -25,7 +25,7 @@ declare(strict_types=1);
 
 // Defensive fallback — normally provided by controller logic
 if (!isset($cfg) || !is_array($cfg)) {
-    $cfg = GcsConfig::load();
+    $cfg = Config::load();
 }
 ?>
 

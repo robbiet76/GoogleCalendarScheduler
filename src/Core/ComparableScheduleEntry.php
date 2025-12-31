@@ -2,7 +2,10 @@
 declare(strict_types=1);
 
 /**
- * GcsComparableScheduleEntry
+ * 
+ * THIS IS LEGACY CODE AND IS NO LONGER IN ACTIVE USE.
+ * 
+ * ComparableScheduleEntry
  *
  * Lightweight value wrapper for a scheduler entry intended
  * for comparison or normalization purposes.
@@ -20,7 +23,7 @@ declare(strict_types=1);
  * entry is being treated purely as a comparable value rather
  * than as a domain object with behavior.
  */
-final class GcsComparableScheduleEntry
+final class ComparableScheduleEntry
 {
     /** @var array<string,mixed> */
     private array $entry;

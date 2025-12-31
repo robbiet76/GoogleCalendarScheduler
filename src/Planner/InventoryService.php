@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * SchedulerInventoryService
+ * 
  *
  * Provides a read-only inventory summary of FPP scheduler entries.
  *
@@ -18,7 +18,7 @@ declare(strict_types=1);
  *
  * This service is intended for informational and UI status purposes only.
  */
-final class SchedulerInventoryService
+final class InventoryService
 {
     /**
      * Get a summary inventory of scheduler entries.
@@ -48,7 +48,7 @@ final class SchedulerInventoryService
 
             $total++;
 
-            if (GcsSchedulerIdentity::isGcsManaged($entry)) {
+            if (SchedulerIdentity::isGcsManaged($entry)) {
                 $managed++;
                 continue;
             }

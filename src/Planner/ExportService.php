@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * SchedulerExportService
+ * ExportService
  *
  * Orchestrates read-only export of unmanaged FPP scheduler entries to ICS.
  *
@@ -20,7 +20,7 @@ declare(strict_types=1);
  * This service performs no scheduling logic and is intended strictly for
  * export and interoperability use cases.
  */
-final class SchedulerExportService
+final class ExportService
 {
     /**
      * Export unmanaged scheduler entries to an ICS document.
@@ -64,7 +64,7 @@ final class SchedulerExportService
                 continue;
             }
 
-            if (!GcsSchedulerIdentity::isGcsManaged($entry)) {
+            if (!SchedulerIdentity::isGcsManaged($entry)) {
                 $unmanaged[] = $entry;
             }
         }

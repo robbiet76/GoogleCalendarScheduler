@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * GcsSchedulerIntent
+ * SchedulerIntent
  *
  * Legacy value object representing a single scheduling intent.
  *
@@ -19,7 +19,7 @@ declare(strict_types=1);
  * - Simple data container only
  * - No validation, inference, or side effects
  */
-final class GcsSchedulerIntent
+final class SchedulerIntent
 {
     /** @var string */
     public $uid;

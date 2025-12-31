@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * SchedulerInventory
+ * InventorySnapshot
  *
  * Read-only helper that summarizes scheduler ownership state.
  *
@@ -19,7 +19,7 @@ declare(strict_types=1);
  *
  * This class performs no policy decisions; it only reports facts.
  */
-final class SchedulerInventory
+final class InventorySnapshot
 {
     /**
      * Summarize scheduler ownership state.
@@ -61,7 +61,7 @@ final class SchedulerInventory
                 continue;
             }
 
-            if (GcsSchedulerIdentity::isGcsManaged($entry)) {
+            if (SchedulerIdentity::isGcsManaged($entry)) {
                 $managed++;
             } else {
                 $unmanaged++;
