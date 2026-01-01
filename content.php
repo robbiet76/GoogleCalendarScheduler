@@ -326,8 +326,7 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
     <a
         href="/scheduler.php"
-        target="_blank"
-        class="buttons"
+        class="gcs-nav-link"
     >
         Open Schedule
     </a>
