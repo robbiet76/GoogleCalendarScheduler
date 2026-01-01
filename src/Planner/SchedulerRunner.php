@@ -262,7 +262,7 @@ final class SchedulerRunner
 
                 $eff = self::applyYamlToTemplate([
                     'stopType' => 'graceful',
-                    'repeat'   => 'none',
+                    'repeat'   => 'immediate',
                 ], is_array($yaml0) ? $yaml0 : []);
 
                 $intentsOut[] = [
@@ -299,7 +299,7 @@ final class SchedulerRunner
 
                 $eff = self::applyYamlToTemplate([
                     'stopType' => 'graceful',
-                    'repeat'   => 'none',
+                    'repeat'   => 'immediate',
                 ], is_array($yaml) ? $yaml : []);
 
                 $rawIntents[] = [
