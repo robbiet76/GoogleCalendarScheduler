@@ -252,6 +252,17 @@ $canSave    = ($isEmpty || $isIcsValid);
 
 <div class="settings">
 
+<div class="gcs-global-links">
+    <a
+        href="https://calendar.google.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="gcs-external-link"
+    >
+        Open Google Calendar ↗
+    </a>
+</div>
+
 <div id="gcs-status-bar" class="gcs-status gcs-status--info">
     <span class="gcs-status-dot"></span>
     <span class="gcs-status-text">
@@ -346,6 +357,23 @@ $canSave    = ($isEmpty || $isIcsValid);
     padding-bottom: 36px; /* space for dev toggle */
 }
 
+.gcs-global-links {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    font-size: 0.9em;
+}
+
+.gcs-external-link {
+    color: #2563eb;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.gcs-external-link:hover {
+    text-decoration: underline;
+}
+
 .gcs-hidden { display:none; }
 .gcs-summary-row { display:flex; gap:24px; margin-top:6px; }
 .gcs-summary-item { white-space:nowrap; }
@@ -413,6 +441,25 @@ function gcsSetStatus(level, message) {
 
     bar.classList.add('gcs-status--' + level);
     text.textContent = message;
+}
+
+function gcsShowOpenSchedulerLink() {
+    var bar = document.getElementById('gcs-status-bar');
+    var text = bar.querySelector('.gcs-status-text');
+
+    // Prevent duplicate links
+    if (text.querySelector('.gcs-open-scheduler-link')) return;
+
+    var link = document.createElement('a');
+    link.href = '/scheduler.php';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open Schedule ↗';
+    link.className = 'gcs-open-scheduler-link';
+    link.style.marginLeft = '12px';
+    link.style.fontWeight = '600';
+
+    text.appendChild(link);
 }
 
 function gcsSetUnmanagedStatus(level, message) {
@@ -574,6 +621,8 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
+            gcsSetStatus('success', 'Scheduler updated successfully.');
+            gcsShowOpenSchedulerLink();
             runPlanStatus();
         })
         .catch(() => {
