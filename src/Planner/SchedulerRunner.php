@@ -145,6 +145,10 @@ final class SchedulerRunner
             $timeKey = null;
             $timesVary = false;
 
+            // NEW: detect day-of-week variance
+            $dayKey = null;
+            $daysVary = false;
+
             $yamlSig = null;
             $yamlVaries = false;
             $occYaml = [];
@@ -159,11 +163,20 @@ final class SchedulerRunner
                 $s = new DateTime((string)($occ['start'] ?? ''));
                 $e = new DateTime((string)($occ['end'] ?? ''));
 
+                // Time variance detection
                 $k = $s->format('H:i:s') . '|' . $e->format('H:i:s');
                 if ($timeKey === null) {
                     $timeKey = $k;
                 } elseif ($timeKey !== $k) {
                     $timesVary = true;
+                }
+
+                // Day-of-week variance detection (NEW)
+                $dow = (int)$s->format('w');
+                if ($dayKey === null) {
+                    $dayKey = $dow;
+                } elseif ($dayKey !== $dow) {
+                    $daysVary = true;
                 }
 
                 $rid = (string)($occ['start'] ?? '');
@@ -194,7 +207,13 @@ final class SchedulerRunner
                 $occYaml[$rid] = $yaml;
             }
 
-            $canEmitSingle = (!$hasOverride && !$timesVary && !$yamlVaries);
+            // If occurrences span multiple weekdays, a single intent cannot represent them safely.
+            $canEmitSingle = (
+                !$hasOverride &&
+                !$timesVary &&
+                !$yamlVaries &&
+                !$daysVary
+            );
 
             // --------------------------------------------------------
             // Single-intent path (one scheduler entry)
