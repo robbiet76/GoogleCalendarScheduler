@@ -324,14 +324,14 @@ $canSave    = ($isEmpty || $isIcsValid);
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
     <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
-    <a
-        href="/scheduler.php"
-        class="gcs-nav-link"
-    >
-        Open Schedule
-    </a>
-</div>
-
+        <button
+            type="button"
+            class="buttons gcs-nav-btn"
+            onclick="window.location.href='/scheduler.php';"
+        >
+            Open Schedule
+        </button>
+    </div>
 </div>
 
 <div id="gcs-unmanaged-section" class="gcs-hidden">
