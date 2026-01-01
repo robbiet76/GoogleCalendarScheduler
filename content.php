@@ -324,6 +324,16 @@ $canSave    = ($isEmpty || $isIcsValid);
         <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
+    <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
+    <a
+        href="/scheduler.php"
+        target="_blank"
+        class="buttons"
+    >
+        Open Schedule ↗
+    </a>
+</div>
+
 </div>
 
 <div id="gcs-unmanaged-section" class="gcs-hidden">
@@ -571,6 +581,11 @@ fetch(ENDPOINT + '&endpoint=experimental_scheduler_inventory')
 
 previewBtn.addEventListener('click', function () {
 
+    var postApply = document.getElementById('gcs-post-apply-actions');
+    if (postApply) {
+        postApply.classList.add('gcs-hidden');
+    }
+
     hidePreviewButton();
 
     fetch(ENDPOINT + '&endpoint=experimental_diff')
@@ -621,14 +636,13 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
-            gcsSetStatus('success', 'Scheduler updated successfully.');
-            gcsShowOpenSchedulerLink();
+            // Show post-apply actions (persistent)
+            var postApply = document.getElementById('gcs-post-apply-actions');
+            if (postApply) {
+                postApply.classList.remove('gcs-hidden');
+            }
+
             runPlanStatus();
-        })
-        .catch(() => {
-            gcsSetStatus('error', 'Error communicating with Google Calendar.');
-            applyBtn.disabled = false;
-            closePreviewBtn.disabled = false;
         });
 });
 
