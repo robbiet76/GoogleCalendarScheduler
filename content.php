@@ -329,7 +329,7 @@ $canSave    = ($isEmpty || $isIcsValid);
         target="_blank"
         class="buttons"
     >
-        Open Schedule ↗
+        Open Schedule
     </a>
 </div>
 
