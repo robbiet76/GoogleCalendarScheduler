@@ -148,18 +148,42 @@ if (isset($_GET['endpoint'])) {
         // Apply (ONLY write path)
         if ($_GET['endpoint'] === 'experimental_apply') {
 
+            // Enforce persisted runtime dry-run (Developer mode)
+            $runtimeDryRun = !empty($cfg['runtime']['dry_run']);
+
+            // Also honor explicit dry-run request flags (defensive)
             $dry = $_GET['dryRun'] ?? $_POST['dryRun'] ?? $_GET['dry_run'] ?? $_POST['dry_run'] ?? null;
-            $isDryRun = ($dry === '1' || $dry === 1 || $dry === true || $dry === 'true' || $dry === 'on');
+            $requestDryRun = ($dry === '1' || $dry === 1 || $dry === true || $dry === 'true' || $dry === 'on');
+
+            $isDryRun = ($runtimeDryRun || $requestDryRun);
 
             if ($isDryRun) {
-                // Route to preview-only behavior (NO WRITES)
-                // Use the same code path as your existing experimental_diff handler.
-                // Option 1 (preferred): call the same DiffPreviewer method used by experimental_diff.
-                $result = DiffPreviewer::diff($cfg);   // <-- if this exists
-                // Option 2: inline/copy the experimental_diff handler block here if method name differs.
-            } else {
-                $result = DiffPreviewer::apply($cfg);
+                // EXACT same behavior as experimental_diff (plan-only, NO WRITES)
+                header('Content-Type: application/json');
+
+                if (empty($cfg['experimental']['enabled'])) {
+                    echo json_encode(['ok' => false]);
+                    exit;
+                }
+
+                $plan = SchedulerPlanner::plan($cfg);
+
+                echo json_encode([
+                    'ok'   => true,
+                    'mode' => 'dry-run',
+                    'diff' => [
+                        'creates'        => (isset($plan['creates']) && is_array($plan['creates'])) ? $plan['creates'] : [],
+                        'updates'        => (isset($plan['updates']) && is_array($plan['updates'])) ? $plan['updates'] : [],
+                        'deletes'        => (isset($plan['deletes']) && is_array($plan['deletes'])) ? $plan['deletes'] : [],
+                        'desiredEntries' => (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [],
+                        'existingRaw'    => (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [],
+                    ],
+                ]);
+                exit;
             }
+
+            // Normal apply (writes allowed)
+            $result = DiffPreviewer::apply($cfg);
 
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode(['ok' => true, 'result' => $result]);
@@ -312,7 +336,7 @@ $canSave    = ($isEmpty || $isIcsValid);
 
     <div class="gcs-dev-toggle">
         <label>
-            <input type="checkbox" name="dry_run" <?php if ($dryRun) echo 'checked'; ?>>
+            <input type="checkbox" id="gcs-dry-run" name="dry_run" <?php if ($dryRun) echo 'checked'; ?>>
             Developer mode: dry run
         </label>
     </div>
@@ -632,11 +656,17 @@ applyBtn.addEventListener('click', function () {
     closePreviewBtn.disabled = true;
     gcsSetStatus('info', 'Applying scheduler changes…');
 
-    var dryRunCb = document.getElementById('dry-run');
+    var dryRunCb = document.getElementById('gcs-dry-run');
     var isDryRun = dryRunCb && dryRunCb.checked;
 
     var ep = isDryRun ? 'experimental_diff' : 'experimental_apply';
-    fetch(ENDPOINT + '&endpoint=' + ep)
+    var url = ENDPOINT + '&endpoint=' + ep;
+
+    if (isDryRun) {
+        url += '&dryRun=1';
+    }
+
+    fetch(url)
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) {
