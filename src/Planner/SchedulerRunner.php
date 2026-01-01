@@ -47,6 +47,8 @@ final class SchedulerRunner
      */
     public function run(): array
     {
+        file_put_contents('/tmp/gcs_runner_ran.txt', date('c') . PHP_EOL, FILE_APPEND);
+
         // ------------------------------------------------------------
         // Calendar fetch & parse
         // ------------------------------------------------------------
