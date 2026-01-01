@@ -73,6 +73,31 @@ final class SchedulerRunner
 
         $parser = new IcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
+
+
+        // DEBUG (Phase 28): Dump parsed ICS events to verify weekend VEVENT ingestion.
+        // This is diagnostic only and must not be merged to master.
+        try {
+            $dump = [];
+            foreach ($events as $ev) {
+                if (!is_array($ev)) continue;
+                $dump[] = [
+                    'uid'       => (string)($ev['uid'] ?? ''),
+                    'summary'   => (string)($ev['summary'] ?? ''),
+                    'start'     => (string)($ev['start'] ?? ''),
+                    'end'       => (string)($ev['end'] ?? ''),
+                    'rrule'     => $ev['rrule'] ?? null,
+                    'isOverride'=> !empty($ev['isOverride']),
+                ];
+            }
+            file_put_contents(
+                '/tmp/gcs_parsed_events_debug.json',
+                json_encode($dump, JSON_PRETTY_PRINT)
+            );
+        } catch (Throwable $ignored) {}
+
+
+
         if (empty($events)) {
             return $this->emptyResult();
         }
