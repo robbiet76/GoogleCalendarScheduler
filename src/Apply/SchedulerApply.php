@@ -43,7 +43,7 @@ final class SchedulerApply
      */
     public static function applyFromConfig(array $cfg): array
     {
-        SchedulerLogger::instance()->info('GCS APPLY ENTERED', [
+        GcsLogger::instance()->info('GCS APPLY ENTERED', [
             'dryRun' => !empty($cfg['runtime']['dry_run']),
         ]);
 
@@ -283,7 +283,7 @@ final class SchedulerApply
     private static function applyTieredOrderingPhase24(array $schedule): array
     {
         $log = static function (string $msg, array $ctx = []): void {
-            SchedulerLogger::instance()->info($msg, $ctx);
+            GcsLogger::instance()->info($msg, $ctx);
         };
 
         $unmanaged        = [];

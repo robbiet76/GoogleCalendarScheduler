@@ -23,13 +23,12 @@ declare(strict_types=1);
 final class SchedulerPlanner
 {
     /**
-     * Fixed planning horizon (days).
+     * Maximum number of managed scheduler entries allowed.
      *
      * Planner-owned, deterministic, and intentionally not configurable.
-     * This bounds planning scope for release stability and prevents
-     * cross-layer or UI influence over scheduler behavior.
+     * This bounds materialized scheduler size for release stability.
      */
-    private const HORIZON_DAYS = 365;
+    private const MAX_MANAGED_ENTRIES = 100;
 
     /**
      * Compute a scheduler plan (diff) without side effects.
@@ -38,43 +37,105 @@ final class SchedulerPlanner
      * - Preview UI (diff visualization)
      * - Apply pipeline (execution boundary)
      *
+     * On capacity violation, returns:
+     * - ok=false
+     * - error payload with limit + attempted count
+     *
      * @param array $config Loaded plugin configuration
      * @return array{
-     *   creates: array,
-     *   updates: array,
-     *   deletes: array,
-     *   desiredEntries: array,
-     *   existingRaw: array
+     *   ok?: bool,
+     *   error?: array{
+     *     type: string,
+     *     limit: int,
+     *     attempted: int,
+     *     guardDate: string
+     *   },
+     *   creates?: array,
+     *   updates?: array,
+     *   deletes?: array,
+     *   desiredEntries?: array,
+     *   existingRaw?: array
      * }
      */
     public static function plan(array $config): array
     {
         /* -----------------------------------------------------------------
+         * 0. Fixed guard date (calendar-aligned, based on FPP system time)
+         *
+         * Guard date = Dec 31 of (currentYear + 2)
+         *
+         * Rules:
+         * - Entry is valid only if startDate < guardDate
+         * - endDate is capped to guardDate if it exceeds it
+         * ----------------------------------------------------------------- */
+        $currentYear = (int)date('Y');
+        $guardYear   = $currentYear + 2;
+        $guardDate   = sprintf('%04d-12-31', $guardYear);
+
+        /* -----------------------------------------------------------------
          * 1. Calendar ingestion → scheduling intents
          * ----------------------------------------------------------------- */
+        // Note: Runner is still passed a fixed planning days value for compatibility.
+        // The Planner enforces the authoritative guard rules below.
         $runner = new SchedulerRunner(
             $config,
-            self::HORIZON_DAYS
+            365
         );
 
         $runnerResult = $runner->run();
 
         /* -----------------------------------------------------------------
          * 2. Desired scheduler entries (intent → entry mapping)
+         *    + Planner-owned guard enforcement
          * ----------------------------------------------------------------- */
         $desired = [];
 
         if (!empty($runnerResult['intents']) && is_array($runnerResult['intents'])) {
             foreach ($runnerResult['intents'] as $intent) {
                 $entry = SchedulerSync::intentToScheduleEntryPublic($intent);
-                if (is_array($entry)) {
-                    $desired[] = $entry;
+                if (!is_array($entry)) {
+                    continue;
                 }
+
+                // Start-date validity gate: valid only if startDate < guardDate
+                $start = $entry['startDate'] ?? '';
+                if (!is_string($start) || $start === '') {
+                    // Defensive: malformed entry, skip
+                    continue;
+                }
+                if ($start >= $guardDate) {
+                    // Invalid entry (starts on/after guard) → do not materialize
+                    continue;
+                }
+
+                // End-date cap: if endDate exceeds guardDate, cap it
+                $end = $entry['endDate'] ?? '';
+                if (is_string($end) && $end !== '' && $end > $guardDate) {
+                    $entry['endDate'] = $guardDate;
+                }
+
+                $desired[] = $entry;
             }
         }
 
         /* -----------------------------------------------------------------
-         * 3. Load existing scheduler state
+         * 3. Global managed entry cap (hard fail; no partial scheduling)
+         * ----------------------------------------------------------------- */
+        $attempted = count($desired);
+        if ($attempted > self::MAX_MANAGED_ENTRIES) {
+            return [
+                'ok' => false,
+                'error' => [
+                    'type'      => 'scheduler_entry_limit_exceeded',
+                    'limit'     => self::MAX_MANAGED_ENTRIES,
+                    'attempted' => $attempted,
+                    'guardDate' => $guardDate,
+                ],
+            ];
+        }
+
+        /* -----------------------------------------------------------------
+         * 4. Load existing scheduler state
          * ----------------------------------------------------------------- */
         $existingRaw = SchedulerSync::readScheduleJsonStatic(
             SchedulerSync::SCHEDULE_JSON_PATH
@@ -88,16 +149,17 @@ final class SchedulerPlanner
         }
 
         /* -----------------------------------------------------------------
-         * 4. Immutable scheduler state
+         * 5. Immutable scheduler state
          * ----------------------------------------------------------------- */
         $state = new SchedulerState($existingEntries);
 
         /* -----------------------------------------------------------------
-         * 5. Compute diff
+         * 6. Compute diff
          * ----------------------------------------------------------------- */
         $diff = (new SchedulerDiff($desired, $state))->compute();
 
         return [
+            'ok'             => true,
             'creates'        => $diff->creates(),
             'updates'        => $diff->updates(),
             'deletes'        => $diff->deletes(),

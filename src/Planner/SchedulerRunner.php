@@ -8,7 +8,7 @@ declare(strict_types=1);
  *
  * Responsibilities:
  * - Fetch and parse ICS calendar data
- * - Expand recurring events within a time horizon
+ * - Expand recurring events within a bounded window
  * - Resolve scheduler targets from event summaries
  * - Apply YAML metadata overrides
  * - Generate scheduler intents suitable for consolidation
@@ -16,21 +16,23 @@ declare(strict_types=1);
  * Guarantees:
  * - No scheduler writes
  * - No scheduler state mutation
- * - Deterministic output for a given calendar and horizon
+ * - Deterministic output for a given calendar and guard window
  *
- * This class is the bridge between calendar semantics and
- * scheduler intent generation. Persistence and diff logic
- * are handled downstream.
+ * Guard window:
+ * - Based on FPP system time
+ * - End boundary is fixed to Dec 31 of (currentYear + 2)
+ *
+ * NOTE:
+ * Final scheduling policy (start-date validity + end-date capping + max entries)
+ * is enforced in SchedulerPlanner. This runner only bounds occurrence expansion.
  */
 final class SchedulerRunner
 {
     private array $cfg;
-    private int $horizonDays;
 
-    public function __construct(array $cfg, int $horizonDays)
+    public function __construct(array $cfg)
     {
         $this->cfg = $cfg;
-        $this->horizonDays = $horizonDays;
     }
 
     /**
@@ -59,8 +61,15 @@ final class SchedulerRunner
             return $this->emptyResult();
         }
 
+        // Horizon start is "now" (FPP system time)
         $now = new DateTime('now');
-        $horizonEnd = (clone $now)->modify('+' . $this->horizonDays . ' days');
+
+        // Fixed, calendar-aligned horizon end:
+        // Dec 31 of (currentYear + 2) at 23:59:59 local time
+        $currentYear = (int)$now->format('Y');
+        $guardYear   = $currentYear + 2;
+
+        $horizonEnd = new DateTime(sprintf('%04d-12-31 23:59:59', $guardYear));
 
         $parser = new IcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
@@ -253,7 +262,7 @@ final class SchedulerRunner
 
                 $eff = self::applyYamlToTemplate([
                     'stopType' => 'graceful',
-                    'repeat'   => 'none',
+                    'repeat'   => 'immediate',
                 ], is_array($yaml0) ? $yaml0 : []);
 
                 $intentsOut[] = [
@@ -290,7 +299,7 @@ final class SchedulerRunner
 
                 $eff = self::applyYamlToTemplate([
                     'stopType' => 'graceful',
-                    'repeat'   => 'none',
+                    'repeat'   => 'immediate',
                 ], is_array($yaml) ? $yaml : []);
 
                 $rawIntents[] = [

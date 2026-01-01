@@ -283,15 +283,25 @@ $canSave    = ($isEmpty || $isIcsValid);
         >
     </div>
 
-    <button
-        type="submit"
-        class="buttons"
-        id="gcs-save-btn"
-        style="margin-top:8px;"
-        <?php if (!$canSave) echo 'disabled'; ?>
-    >
-        Save Settings
-    </button>
+    <div class="gcs-save-row">
+        <button
+            type="submit"
+            class="buttons"
+            id="gcs-save-btn"
+            <?php if (!$canSave) echo 'disabled'; ?>
+        >
+            Save Settings
+        </button>
+
+        <a
+            href="https://calendar.google.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="gcs-open-calendar-link"
+        >
+            Open Google Calendar ↗
+        </a>
+    </div>
 
     <div class="gcs-dev-toggle">
         <label>
@@ -312,6 +322,15 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div id="gcs-preview-actions" class="gcs-hidden" style="margin-top:12px;">
         <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
+    </div>
+    <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
+        <button
+            type="button"
+            class="buttons gcs-nav-btn"
+            onclick="window.location.href='/scheduler.php';"
+        >
+            Open Schedule
+        </button>
     </div>
 </div>
 
@@ -344,6 +363,24 @@ $canSave    = ($isEmpty || $isIcsValid);
 .settings {
     position: relative;
     padding-bottom: 36px; /* space for dev toggle */
+}
+
+.gcs-save-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.gcs-open-calendar-link {
+    color: #000;
+    font-weight: normal;
+    text-decoration: none;
+    font-size: 0.95em;
+}
+
+.gcs-open-calendar-link:hover {
+    text-decoration: underline;
 }
 
 .gcs-hidden { display:none; }
@@ -413,6 +450,25 @@ function gcsSetStatus(level, message) {
 
     bar.classList.add('gcs-status--' + level);
     text.textContent = message;
+}
+
+function gcsShowOpenSchedulerLink() {
+    var bar = document.getElementById('gcs-status-bar');
+    var text = bar.querySelector('.gcs-status-text');
+
+    // Prevent duplicate links
+    if (text.querySelector('.gcs-open-scheduler-link')) return;
+
+    var link = document.createElement('a');
+    link.href = '/scheduler.php';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = 'Open Schedule ↗';
+    link.className = 'gcs-open-scheduler-link';
+    link.style.marginLeft = '12px';
+    link.style.fontWeight = '600';
+
+    text.appendChild(link);
 }
 
 function gcsSetUnmanagedStatus(level, message) {
@@ -524,6 +580,11 @@ fetch(ENDPOINT + '&endpoint=experimental_scheduler_inventory')
 
 previewBtn.addEventListener('click', function () {
 
+    var postApply = document.getElementById('gcs-post-apply-actions');
+    if (postApply) {
+        postApply.classList.add('gcs-hidden');
+    }
+
     hidePreviewButton();
 
     fetch(ENDPOINT + '&endpoint=experimental_diff')
@@ -574,12 +635,13 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
+            // Show post-apply actions (persistent)
+            var postApply = document.getElementById('gcs-post-apply-actions');
+            if (postApply) {
+                postApply.classList.remove('gcs-hidden');
+            }
+
             runPlanStatus();
-        })
-        .catch(() => {
-            gcsSetStatus('error', 'Error communicating with Google Calendar.');
-            applyBtn.disabled = false;
-            closePreviewBtn.disabled = false;
         });
 });
 
