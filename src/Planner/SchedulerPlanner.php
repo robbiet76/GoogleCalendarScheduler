@@ -285,14 +285,30 @@ final class SchedulerPlanner
             }
 
             // -------------------------------------------------------------
-            // TRUE OVERLAP → FPP precedence:
-            // later DAILY start time must be above (DESC)
+            // CONTAINMENT RULE (background schedules):
+            // If one daily window fully CONTAINS the other,
+            // the containing window must be ordered LOWER.
             // -------------------------------------------------------------
             $aStartSec = self::timeToSeconds(substr((string)($at['start'] ?? ''), 11));
+            $aEndSec   = self::timeToSeconds(substr((string)($at['end'] ?? ''), 11));
             $bStartSec = self::timeToSeconds(substr((string)($bt['start'] ?? ''), 11));
+            $bEndSec   = self::timeToSeconds(substr((string)($bt['end'] ?? ''), 11));
 
-            if ($aStartSec !== $bStartSec) {
-                return $bStartSec <=> $aStartSec; // DESC
+            $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
+            $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
+
+            // Normalize wrap windows for containment check
+            $aEndNorm = ($aEndSec <= $aStartSec) ? $aEndSec + 86400 : $aEndSec;
+            $bEndNorm = ($bEndSec <= $bStartSec) ? $bEndSec + 86400 : $bEndSec;
+
+            // A fully contains B → A goes AFTER B
+            if ($aStartSec <= $bStartSec && $aEndNorm >= $bEndNorm && $aDur > $bDur) {
+                return 1;
+            }
+
+            // B fully contains A → B goes AFTER A
+            if ($bStartSec <= $aStartSec && $bEndNorm >= $aEndNorm && $bDur > $aDur) {
+                return -1;
             }
 
             // Tie-breaker: shorter daily window first (more specific)
