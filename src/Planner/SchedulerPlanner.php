@@ -7,143 +7,90 @@ declare(strict_types=1);
  * Planning-only orchestration layer for scheduler diffs.
  *
  * Responsibilities:
- * - Ingest calendar data and resolve scheduling analysis
- * - Translate analysis into desired FPP scheduler entries
- * - (Phase 28) Emit ScheduleBundles (base + overrides) as semantic unit
- * - Flatten bundles into desiredEntries for existing diff/apply compatibility
- * - Load existing scheduler state from schedule.json
- * - Compute create / update / delete operations via SchedulerDiff
+ * - Ingest calendar analysis from SchedulerRunner
+ * - Translate series-level analysis into FPP-native schedule entries
+ * - Emit ScheduleBundles (base + overrides)
+ * - Order bundles using FPP-native overlap rules
+ * - Flatten bundles for Diff / Apply compatibility
  *
  * GUARANTEES:
  * - NEVER writes to the FPP scheduler
  * - NEVER mutates schedule.json
- * - Deterministic plan based on current inputs
- *
- * All side effects occur exclusively in the Apply layer.
+ * - Deterministic output for a given input
  */
 final class SchedulerPlanner
 {
-    /**
-     * Maximum number of managed scheduler entries allowed.
-     *
-     * Planner-owned, deterministic, and intentionally not configurable.
-     */
     private const MAX_MANAGED_ENTRIES = 100;
 
-    /**
-     * Compute a scheduler plan (diff) without side effects.
-     *
-     * @param array $config Loaded plugin configuration
-     * @return array{
-     *   ok?: bool,
-     *   error?: array{ type: string, limit: int, attempted: int, guardDate: string },
-     *   creates?: array,
-     *   updates?: array,
-     *   deletes?: array,
-     *   desiredEntries?: array,
-     *   desiredBundles?: array,
-     *   existingRaw?: array
-     * }
-     */
     public static function plan(array $config): array
     {
-        /* -----------------------------------------------------------------
-         * 0. Fixed guard date (calendar-aligned, based on FPP system time)
-         *
-         * Guard date = Dec 31 of (currentYear + 2)
-         *
-         * Rules (Planner-owned):
-         * - Entry is valid only if startDate < guardDate
-         * - endDate is capped to guardDate if it exceeds it
-         * ----------------------------------------------------------------- */
+        /* ------------------------------------------------------------
+         * Guard date (Dec 31 of currentYear + 2)
+         * ---------------------------------------------------------- */
         $currentYear = (int)date('Y');
         $guardYear   = $currentYear + 2;
         $guardDate   = sprintf('%04d-12-31', $guardYear);
 
-        /* -----------------------------------------------------------------
-         * 1. Calendar ingestion → analysis (Runner)
-         * ----------------------------------------------------------------- */
+        /* ------------------------------------------------------------
+         * Run analysis
+         * ---------------------------------------------------------- */
         $runner = new SchedulerRunner($config);
         $runnerResult = $runner->run();
 
-        $series = (isset($runnerResult['series']) && is_array($runnerResult['series']))
-            ? $runnerResult['series']
-            : [];
-
-        /* -----------------------------------------------------------------
-         * 2. Build ScheduleBundles (Phase 28)
-         *
-         * Bundle shape (array form to minimize churn):
-         *   ['overrides' => array<int, array{template: array, range: array}>, 'base' => array{template: array, range: array}]
-         *
-         * Planner is the semantic authority for:
-         * - base schedule existence (NOT gated by occurrence expansion)
-         * - override modeling (narrow entries placed directly above base)
-         * - bundling adjacency
-         * ----------------------------------------------------------------- */
+        $seriesList = $runnerResult['series'] ?? [];
         $bundles = [];
 
-        foreach ($series as $s) {
-            if (!is_array($s)) {
+        /* ------------------------------------------------------------
+         * Build bundles (base + overrides)
+         * ---------------------------------------------------------- */
+        foreach ($seriesList as $s) {
+            if (!is_array($s)) continue;
+
+            $uid      = (string)($s['uid'] ?? '');
+            $summary  = (string)($s['summary'] ?? '');
+            $resolved = $s['resolved'] ?? null;
+            $baseEv   = $s['base'] ?? null;
+
+            if (
+                $uid === '' ||
+                !is_array($resolved) ||
+                !isset($resolved['type'], $resolved['target']) ||
+                !is_array($baseEv) ||
+                empty($baseEv['start']) ||
+                empty($baseEv['end'])
+            ) {
                 continue;
             }
 
-            $uid = (string)($s['uid'] ?? '');
-            if ($uid === '') {
-                continue;
-            }
-
-            $summary = (string)($s['summary'] ?? '');
-            $resolved = (isset($s['resolved']) && is_array($s['resolved'])) ? $s['resolved'] : null;
-            if (!$resolved || empty($resolved['type']) || !array_key_exists('target', $resolved)) {
-                // Unresolved targets are skipped (Runner already traces this).
-                continue;
-            }
-
-            // Base event is required to create a series-level schedule.
-            $baseEv = (isset($s['base']) && is_array($s['base'])) ? $s['base'] : null;
-            if (!$baseEv || empty($baseEv['start']) || empty($baseEv['end'])) {
-                continue;
-            }
-
-            // Compute base start/end timestamps from DTSTART/DTEND (series-level, not occurrence-gated)
             try {
-                $baseStartDT = new DateTime((string)$baseEv['start']);
-                $baseEndDT   = new DateTime((string)$baseEv['end']);
-            } catch (\Throwable $e) {
+                $baseStartDT = new DateTime($baseEv['start']);
+                $baseEndDT   = new DateTime($baseEv['end']);
+            } catch (Throwable) {
                 continue;
             }
 
-            // Series start date must anchor to original DTSTART date when available
             $seriesStartDate = substr($baseStartDT->format('c'), 0, 10);
+            $seriesEndDate   = self::pickSeriesEndDateFromRrule($baseEv, $guardDate) ?? $guardDate;
+            $daysShort       = self::deriveDaysShortFromBase($baseEv, $baseStartDT);
 
-            // Series end date: prefer UNTIL if present, else guardDate (Planner will cap endDate anyway)
-            $seriesEndDate = self::pickSeriesEndDateFromRrule($baseEv, $guardDate) ?? $guardDate;
-
-            // Day mask: derive from RRULE when possible, fallback to DTSTART weekday
-            $daysShort = self::deriveDaysShortFromBase($baseEv, $baseStartDT);
-
-            // YAML (stable): Runner provides parsed YAML signature info; pick a representative YAML blob if available
-            $baseYaml = (isset($s['yamlBase']) && is_array($s['yamlBase'])) ? $s['yamlBase'] : [];
-
-            $baseEff = self::applyYamlToTemplate(
+            $baseYaml = is_array($s['yamlBase'] ?? null) ? $s['yamlBase'] : [];
+            $effBase  = self::applyYamlToTemplate(
                 ['stopType' => 'graceful', 'repeat' => 'immediate'],
                 $baseYaml
             );
 
-            // Build BASE intent (template + range)
             $baseIntent = [
                 'uid' => $uid,
                 'template' => [
-                    'uid'       => $uid,
-                    'summary'   => $summary,
-                    'type'      => (string)$resolved['type'],
-                    'target'    => $resolved['target'],
-                    'start'     => $baseStartDT->format('Y-m-d H:i:s'),
-                    'end'       => $baseEndDT->format('Y-m-d H:i:s'),
-                    'stopType'  => $baseEff['stopType'],
-                    'repeat'    => $baseEff['repeat'],
-                    'isOverride'=> false,
+                    'uid'        => $uid,
+                    'summary'    => $summary,
+                    'type'       => $resolved['type'],
+                    'target'     => $resolved['target'],
+                    'start'      => $baseStartDT->format('Y-m-d H:i:s'),
+                    'end'        => $baseEndDT->format('Y-m-d H:i:s'),
+                    'stopType'   => $effBase['stopType'],
+                    'repeat'     => $effBase['repeat'],
+                    'isOverride' => false,
                 ],
                 'range' => [
                     'start' => $seriesStartDate,
@@ -152,146 +99,136 @@ final class SchedulerPlanner
                 ],
             ];
 
-            // OVERRIDES: Runner provides override occurrences (bounded) with per-occ YAML already parsed
+            /* ---------------- Overrides ---------------- */
             $overrideIntents = [];
-            $overrideOccs = (isset($s['overrideOccs']) && is_array($s['overrideOccs'])) ? $s['overrideOccs'] : [];
+            $overrideOccs = $s['overrideOccs'] ?? [];
 
-            // Sort overrides chronologically (important for intuitive UI)
-            usort($overrideOccs, static function ($a, $b): int {
-                $as = is_array($a) ? (string)($a['start'] ?? '') : '';
-                $bs = is_array($b) ? (string)($b['start'] ?? '') : '';
-                return strcmp($as, $bs);
-            });
+            usort($overrideOccs, static fn($a, $b) =>
+                strcmp((string)($a['start'] ?? ''), (string)($b['start'] ?? ''))
+            );
 
             foreach ($overrideOccs as $ov) {
-                if (!is_array($ov) || empty($ov['start']) || empty($ov['end'])) {
-                    continue;
-                }
+                if (!is_array($ov) || empty($ov['start']) || empty($ov['end'])) continue;
 
                 try {
-                    $ovStartDT = new DateTime((string)$ov['start']);
-                    $ovEndDT   = new DateTime((string)$ov['end']);
-                } catch (\Throwable $e) {
+                    $ovStart = new DateTime($ov['start']);
+                    $ovEnd   = new DateTime($ov['end']);
+                } catch (Throwable) {
                     continue;
                 }
 
-                $ovDate = substr($ovStartDT->format('c'), 0, 10);
-
-                // Override YAML (per-occ)
-                $yaml = (isset($ov['yaml']) && is_array($ov['yaml'])) ? $ov['yaml'] : [];
+                $yaml = is_array($ov['yaml'] ?? null) ? $ov['yaml'] : [];
                 $eff  = self::applyYamlToTemplate(
                     ['stopType' => 'graceful', 'repeat' => 'immediate'],
                     $yaml
                 );
 
-                // Override is a single-day entry: day mask should be "Everyday" per your rule-of-thumb for one-day schedules.
+                $date = substr($ovStart->format('c'), 0, 10);
+
                 $overrideIntents[] = [
                     'uid' => $uid,
                     'template' => [
-                        'uid'       => $uid,
-                        'summary'   => $summary,
-                        'type'      => (string)$resolved['type'],
-                        'target'    => $resolved['target'],
-                        'start'     => $ovStartDT->format('Y-m-d H:i:s'),
-                        'end'       => $ovEndDT->format('Y-m-d H:i:s'),
-                        'stopType'  => $eff['stopType'],
-                        'repeat'    => $eff['repeat'],
-                        'isOverride'=> true,
+                        'uid'        => $uid,
+                        'summary'    => $summary,
+                        'type'       => $resolved['type'],
+                        'target'     => $resolved['target'],
+                        'start'      => $ovStart->format('Y-m-d H:i:s'),
+                        'end'        => $ovEnd->format('Y-m-d H:i:s'),
+                        'stopType'   => $eff['stopType'],
+                        'repeat'     => $eff['repeat'],
+                        'isOverride' => true,
                     ],
                     'range' => [
-                        'start' => $ovDate,
-                        'end'   => $ovDate,
+                        'start' => $date,
+                        'end'   => $date,
                         'days'  => 'SuMoTuWeThFrSa',
                     ],
                 ];
             }
 
             $bundles[] = [
-                'overrides' => $overrideIntents,
                 'base'      => $baseIntent,
+                'overrides' => $overrideIntents,
             ];
         }
 
-        /* -----------------------------------------------------------------
-         * 3. Flatten bundles into desiredEntries (compatibility with existing Diff/Apply)
+        /* ------------------------------------------------------------
+         * OVERLAP-AWARE ORDERING (core Phase 28 rule)
          *
-         * Invariant:
-         * - Overrides directly precede their base (bundle adjacency)
-         * - Bundles are sorted chronologically by base startDate + startTime for a sane scheduler view
-         * ----------------------------------------------------------------- */
+         * - If bundles overlap → later start takes priority
+         * - If they do not overlap → chronological order
+         * ---------------------------------------------------------- */
         usort($bundles, static function (array $a, array $b): int {
-            $ab = $a['base']['template']['start'] ?? '';
-            $bb = $b['base']['template']['start'] ?? '';
-            // Use template start time as tie-breaker; startDate in range is also relevant but template start is stable.
-            return strcmp((string)$ab, (string)$bb);
+            $baseA = $a['base'];
+            $baseB = $b['base'];
+
+            $startA = $baseA['template']['start'] ?? '';
+            $startB = $baseB['template']['start'] ?? '';
+
+            if ($startA === '' || $startB === '') {
+                return 0;
+            }
+
+            if (self::basesOverlap($baseA, $baseB)) {
+                return strcmp($startB, $startA); // later first
+            }
+
+            return strcmp($startA, $startB); // chronological
         });
 
+        /* ------------------------------------------------------------
+         * Flatten bundles (overrides directly above base)
+         * ---------------------------------------------------------- */
         $desiredIntents = [];
         foreach ($bundles as $bundle) {
-            foreach (($bundle['overrides'] ?? []) as $ovIntent) {
-                if (is_array($ovIntent)) {
-                    $desiredIntents[] = $ovIntent;
-                }
+            foreach ($bundle['overrides'] as $ov) {
+                $desiredIntents[] = $ov;
             }
-            $base = $bundle['base'] ?? null;
-            if (is_array($base)) {
-                $desiredIntents[] = $base;
-            }
+            $desiredIntents[] = $bundle['base'];
         }
 
-        // Map intents → schedule entries (existing mapper)
+        /* ------------------------------------------------------------
+         * Map to scheduler entries + guard enforcement
+         * ---------------------------------------------------------- */
         $desiredEntries = [];
         foreach ($desiredIntents as $intent) {
             $entry = SchedulerSync::intentToScheduleEntryPublic($intent);
-            if (!is_array($entry)) {
-                continue;
-            }
+            if (!is_array($entry)) continue;
 
-            // Planner-owned guard enforcement
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
-            if ($guarded === null) {
-                continue;
+            if ($guarded !== null) {
+                $desiredEntries[] = $guarded;
             }
-
-            $desiredEntries[] = $guarded;
         }
 
-        /* -----------------------------------------------------------------
-         * 4. Global managed entry cap (hard fail; no partial scheduling)
-         * ----------------------------------------------------------------- */
-        $attempted = count($desiredEntries);
-        if ($attempted > self::MAX_MANAGED_ENTRIES) {
+        if (count($desiredEntries) > self::MAX_MANAGED_ENTRIES) {
             return [
                 'ok' => false,
                 'error' => [
                     'type'      => 'scheduler_entry_limit_exceeded',
                     'limit'     => self::MAX_MANAGED_ENTRIES,
-                    'attempted' => $attempted,
+                    'attempted' => count($desiredEntries),
                     'guardDate' => $guardDate,
                 ],
             ];
         }
 
-        /* -----------------------------------------------------------------
-         * 5. Load existing scheduler state (raw + wrapped)
-         * ----------------------------------------------------------------- */
+        /* ------------------------------------------------------------
+         * Load existing scheduler state + diff
+         * ---------------------------------------------------------- */
         $existingRaw = SchedulerSync::readScheduleJsonStatic(
             SchedulerSync::SCHEDULE_JSON_PATH
         );
 
-        $existingEntries = [];
+        $existingWrapped = [];
         foreach ($existingRaw as $row) {
             if (is_array($row)) {
-                $existingEntries[] = new ExistingScheduleEntry($row);
+                $existingWrapped[] = new ExistingScheduleEntry($row);
             }
         }
 
-        $state = new SchedulerState($existingEntries);
-
-        /* -----------------------------------------------------------------
-         * 6. Compute diff (unchanged)
-         * ----------------------------------------------------------------- */
-        $diff = (new SchedulerDiff($desiredEntries, $state))->compute();
+        $state = new SchedulerState($existingWrapped);
+        $diff  = (new SchedulerDiff($desiredEntries, $state))->compute();
 
         return [
             'ok'             => true,
@@ -304,84 +241,71 @@ final class SchedulerPlanner
         ];
     }
 
-    /**
-     * Apply guard rules to a single schedule entry.
-     *
-     * @param array $entry
-     * @param string $guardDate YYYY-MM-DD
-     * @return array|null
-     */
+    /* ============================================================
+     * Overlap helpers
+     * ========================================================== */
+
+    private static function basesOverlap(array $a, array $b): bool
+    {
+        $ra = $a['range'];
+        $rb = $b['range'];
+
+        if ($ra['end'] < $rb['start'] || $rb['end'] < $ra['start']) {
+            return false;
+        }
+
+        if (!self::daysOverlap($ra['days'], $rb['days'])) {
+            return false;
+        }
+
+        return self::timeWindowsOverlap(
+            $a['template']['start'],
+            $a['template']['end'],
+            $b['template']['start'],
+            $b['template']['end']
+        );
+    }
+
+    private static function daysOverlap(string $a, string $b): bool
+    {
+        for ($i = 0; $i < strlen($a); $i += 2) {
+            if (strpos($b, substr($a, $i, 2)) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static function timeWindowsOverlap(
+        string $startA,
+        string $endA,
+        string $startB,
+        string $endB
+    ): bool {
+        $sa = substr($startA, 11);
+        $ea = substr($endA, 11);
+        $sb = substr($startB, 11);
+        $eb = substr($endB, 11);
+
+        return !($ea <= $sb || $eb <= $sa);
+    }
+
+    /* ============================================================
+     * Misc helpers (unchanged)
+     * ========================================================== */
+
     private static function applyGuardRulesToEntry(array $entry, string $guardDate): ?array
     {
         $start = $entry['startDate'] ?? '';
-        if (!is_string($start) || $start === '') {
+        if ($start === '' || $start >= $guardDate) {
             return null;
         }
 
-        if ($start >= $guardDate) {
-            return null;
-        }
-
-        $end = $entry['endDate'] ?? '';
-        if (is_string($end) && $end !== '' && $end > $guardDate) {
+        if (!empty($entry['endDate']) && $entry['endDate'] > $guardDate) {
             $entry['endDate'] = $guardDate;
         }
 
         return $entry;
-    }
-
-    /**
-     * Derive compact days string from RRULE or DTSTART weekday.
-     */
-    private static function deriveDaysShortFromBase(array $baseEv, DateTime $dtStart): string
-    {
-        $rrule = $baseEv['rrule'] ?? null;
-        if (is_array($rrule)) {
-            $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
-            if ($freq === 'DAILY') {
-                return 'SuMoTuWeThFrSa';
-            }
-            if ($freq === 'WEEKLY') {
-                $byday = (string)($rrule['BYDAY'] ?? '');
-                $days = self::shortDaysFromByDay($byday);
-                if ($days !== '') {
-                    return $days;
-                }
-            }
-        }
-
-        // Fallback to DTSTART weekday
-        return self::dowToShortDay((int)$dtStart->format('w'));
-    }
-
-    /**
-     * Prefer series end date from RRULE UNTIL when available; otherwise null.
-     * Planner will use guardDate for open-ended series.
-     */
-    private static function pickSeriesEndDateFromRrule(array $baseEv, string $guardDate): ?string
-    {
-        $rrule = $baseEv['rrule'] ?? null;
-        if (!is_array($rrule)) {
-            return null;
-        }
-
-        if (!empty($rrule['UNTIL'])) {
-            $until = (string)$rrule['UNTIL'];
-            // Accept YYYYMMDD or YYYYMMDDT... variants; normalize to YYYY-MM-DD
-            $ymd = null;
-            if (preg_match('/^\d{8}$/', $until)) {
-                $ymd = substr($until, 0, 4) . '-' . substr($until, 4, 2) . '-' . substr($until, 6, 2);
-            } elseif (preg_match('/^(\d{8})T/', $until, $m)) {
-                $raw = $m[1];
-                $ymd = substr($raw, 0, 4) . '-' . substr($raw, 4, 2) . '-' . substr($raw, 6, 2);
-            }
-            if ($ymd !== null && self::isValidYmd($ymd)) {
-                // Cap to guardDate if needed (planner guard will also cap schedule entry)
-                return ($ymd > $guardDate) ? $guardDate : $ymd;
-            }
-        }
-
-        return null;
     }
 
     private static function applyYamlToTemplate(array $defaults, array $yaml): array
@@ -391,7 +315,57 @@ final class SchedulerPlanner
             $out['stopType'] = strtolower((string)$yaml['stopType']);
         }
         if (isset($yaml['repeat'])) {
-            $out['repeat'] = is_numeric($yaml['repeat']) ? (int)$yaml['repeat'] : strtolower((string)$yaml['repeat']);
+            $out['repeat'] = is_numeric($yaml['repeat'])
+                ? (int)$yaml['repeat']
+                : strtolower((string)$yaml['repeat']);
+        }
+        return $out;
+    }
+
+    private static function deriveDaysShortFromBase(array $baseEv, DateTime $dtStart): string
+    {
+        $rrule = $baseEv['rrule'] ?? null;
+
+        if (is_array($rrule)) {
+            $freq = strtoupper((string)($rrule['FREQ'] ?? ''));
+            if ($freq === 'DAILY') {
+                return 'SuMoTuWeThFrSa';
+            }
+            if ($freq === 'WEEKLY') {
+                $byday = self::shortDaysFromByDay((string)($rrule['BYDAY'] ?? ''));
+                if ($byday !== '') {
+                    return $byday;
+                }
+            }
+        }
+
+        return self::dowToShortDay((int)$dtStart->format('w'));
+    }
+
+    private static function pickSeriesEndDateFromRrule(array $baseEv, string $guardDate): ?string
+    {
+        $rrule = $baseEv['rrule'] ?? null;
+        if (!is_array($rrule) || empty($rrule['UNTIL'])) {
+            return null;
+        }
+
+        if (preg_match('/^(\d{8})/', (string)$rrule['UNTIL'], $m)) {
+            $ymd = substr($m[1], 0, 4) . '-' . substr($m[1], 4, 2) . '-' . substr($m[1], 6, 2);
+            return ($ymd > $guardDate) ? $guardDate : $ymd;
+        }
+
+        return null;
+    }
+
+    private static function shortDaysFromByDay(string $raw): string
+    {
+        $map = ['SU'=>'Su','MO'=>'Mo','TU'=>'Tu','WE'=>'We','TH'=>'Th','FR'=>'Fr','SA'=>'Sa'];
+        $out = '';
+        foreach (explode(',', strtoupper($raw)) as $tok) {
+            $tok = preg_replace('/^[+-]?\d+/', '', trim($tok));
+            if (isset($map[$tok])) {
+                $out .= $map[$tok];
+            }
         }
         return $out;
     }
@@ -399,52 +373,9 @@ final class SchedulerPlanner
     private static function dowToShortDay(int $dow): string
     {
         return match ($dow) {
-            0 => 'Su',
-            1 => 'Mo',
-            2 => 'Tu',
-            3 => 'We',
-            4 => 'Th',
-            5 => 'Fr',
-            6 => 'Sa',
+            0 => 'Su', 1 => 'Mo', 2 => 'Tu', 3 => 'We',
+            4 => 'Th', 5 => 'Fr', 6 => 'Sa',
             default => '',
         };
-    }
-
-    private static function shortDaysFromByDay(string $bydayRaw): string
-    {
-        $bydayRaw = strtoupper(trim($bydayRaw));
-        if ($bydayRaw === '') return '';
-
-        $tokens = explode(',', $bydayRaw);
-        $present = [
-            'SU' => false, 'MO' => false, 'TU' => false, 'WE' => false,
-            'TH' => false, 'FR' => false, 'SA' => false,
-        ];
-
-        foreach ($tokens as $tok) {
-            $tok = preg_replace('/^[+-]?\d+/', '', trim($tok));
-            if (isset($present[$tok])) {
-                $present[$tok] = true;
-            }
-        }
-
-        $out = '';
-        if ($present['SU']) $out .= 'Su';
-        if ($present['MO']) $out .= 'Mo';
-        if ($present['TU']) $out .= 'Tu';
-        if ($present['WE']) $out .= 'We';
-        if ($present['TH']) $out .= 'Th';
-        if ($present['FR']) $out .= 'Fr';
-        if ($present['SA']) $out .= 'Sa';
-        return $out;
-    }
-
-    private static function isValidYmd(string $s): bool
-    {
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $s)) {
-            return false;
-        }
-        $dt = DateTime::createFromFormat('Y-m-d', $s);
-        return ($dt instanceof DateTime) && ($dt->format('Y-m-d') === $s);
     }
 }
