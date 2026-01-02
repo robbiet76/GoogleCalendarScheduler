@@ -75,6 +75,13 @@ final class SchedulerRunner
 
         $parser = new IcsParser();
         $events = $parser->parse($ics, $now, $horizonEnd);
+
+        // Debug dump of parsed events
+        file_put_contents(
+            '/tmp/gcs_parsed_events_debug.json',
+            json_encode($events, JSON_PRETTY_PRINT)
+        );
+
         if (empty($events)) {
             return $this->emptyResult();
         }
