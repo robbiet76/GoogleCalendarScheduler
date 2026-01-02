@@ -217,48 +217,113 @@ final class SchedulerPlanner
          *
          * Invariant:
          * - Overrides directly precede their base (bundle adjacency)
-         * - Bundles are sorted chronologically by base startDate + startTime for a sane scheduler view
          *
-         * PHASE 28 (FPP-native priority refinement):
-         * - If two bundles OVERLAP, the bundle with the later DAILY start time must be ordered above
-         * - If two bundles do NOT overlap, keep pure chronological ordering
+         * PHASE 28 (FPP-native, mechanical ordering):
+         * - PRIMARY: if two bundles do NOT overlap in DATE RANGE, order chronologically by date range
+         * - ONLY IF date ranges overlap: apply FPP priority rule (later DAILY start time first)
+         *
+         * This ensures:
+         * - Non-overlapping calendar entries appear in intuitive chronological order
+         * - Overlapping entries are ordered to match FPP top-down precedence
          * ----------------------------------------------------------------- */
         usort($bundles, static function (array $a, array $b): int {
-            $ab = $a['base']['template']['start'] ?? '';
-            $bb = $b['base']['template']['start'] ?? '';
+            $aBase = $a['base'] ?? null;
+            $bBase = $b['base'] ?? null;
 
-            // Defensive: if missing, treat as equal
-            if (!is_string($ab) || $ab === '' || !is_string($bb) || $bb === '') {
+            if (!is_array($aBase) || !is_array($bBase)) {
                 return 0;
             }
 
-            // If bases overlap, later DAILY start time has priority (comes first)
-            if (self::basesOverlap($a['base'], $b['base'])) {
-                $aStartSec = self::timeToSeconds(substr($ab, 11));
-                $bStartSec = self::timeToSeconds(substr($bb, 11));
+            $ar = $aBase['range'] ?? null;
+            $br = $bBase['range'] ?? null;
+            $at = $aBase['template'] ?? null;
+            $bt = $bBase['template'] ?? null;
 
-                // Later start first (DESC)
-                if ($aStartSec !== $bStartSec) {
-                    return $bStartSec <=> $aStartSec;
-                }
-
-                // Tie-breaker: shorter window first (more specific)
-                $aEndSec = self::timeToSeconds(substr((string)($a['base']['template']['end'] ?? ''), 11));
-                $bEndSec = self::timeToSeconds(substr((string)($b['base']['template']['end'] ?? ''), 11));
-
-                $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
-                $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
-
-                if ($aDur !== $bDur) {
-                    return $aDur <=> $bDur; // ASC
-                }
-
-                // Final tie-breaker: stable chronological by full timestamp
-                return strcmp($ab, $bb);
+            if (!is_array($ar) || !is_array($br) || !is_array($at) || !is_array($bt)) {
+                return 0;
             }
 
-            // No overlap → pure chronological ordering
-            return strcmp($ab, $bb);
+            $aStartDate = (string)($ar['start'] ?? '');
+            $aEndDate   = (string)($ar['end'] ?? '');
+            $bStartDate = (string)($br['start'] ?? '');
+            $bEndDate   = (string)($br['end'] ?? '');
+
+            // Defensive: if missing dates, fall back to template timestamp ordering
+            $aTplStart = (string)($at['start'] ?? '');
+            $bTplStart = (string)($bt['start'] ?? '');
+            if ($aStartDate === '' || $aEndDate === '' || $bStartDate === '' || $bEndDate === '') {
+                if ($aTplStart === '' || $bTplStart === '') {
+                    return 0;
+                }
+                return strcmp($aTplStart, $bTplStart);
+            }
+
+            // -------------------------------------------------------------
+            // PRIMARY: Non-overlapping DATE RANGES → pure chronological by date
+            // (YYYY-MM-DD lexicographic compares correctly)
+            // -------------------------------------------------------------
+            if ($aEndDate < $bStartDate) {
+                return -1; // A strictly before B
+            }
+            if ($bEndDate < $aStartDate) {
+                return 1;  // B strictly before A
+            }
+
+            // -------------------------------------------------------------
+            // DATE RANGES OVERLAP → apply full overlap model (days + times)
+            // If they don't actually overlap on active days/times, keep chronological.
+            // -------------------------------------------------------------
+            if (!self::basesOverlap($aBase, $bBase)) {
+                // Chronological within overlapping date spans (stable UI)
+                if ($aStartDate !== $bStartDate) {
+                    return strcmp($aStartDate, $bStartDate);
+                }
+                if ($aTplStart !== '' && $bTplStart !== '') {
+                    return strcmp($aTplStart, $bTplStart);
+                }
+                return strcmp($aEndDate, $bEndDate);
+            }
+
+            // -------------------------------------------------------------
+            // TRUE OVERLAP → FPP precedence:
+            // later DAILY start time must be above (DESC)
+            // -------------------------------------------------------------
+            $aStartSec = self::timeToSeconds(substr((string)($at['start'] ?? ''), 11));
+            $bStartSec = self::timeToSeconds(substr((string)($bt['start'] ?? ''), 11));
+
+            if ($aStartSec !== $bStartSec) {
+                return $bStartSec <=> $aStartSec; // DESC
+            }
+
+            // Tie-breaker: shorter daily window first (more specific)
+            $aEndSec = self::timeToSeconds(substr((string)($at['end'] ?? ''), 11));
+            $bEndSec = self::timeToSeconds(substr((string)($bt['end'] ?? ''), 11));
+
+            $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
+            $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
+
+            if ($aDur !== $bDur) {
+                return $aDur <=> $bDur; // ASC
+            }
+
+            // Next: earlier date-range start first (readability)
+            if ($aStartDate !== $bStartDate) {
+                return strcmp($aStartDate, $bStartDate);
+            }
+
+            // Final stable tie-breakers
+            $aUid = (string)($aBase['uid'] ?? '');
+            $bUid = (string)($bBase['uid'] ?? '');
+            if ($aUid !== '' && $bUid !== '' && $aUid !== $bUid) {
+                return strcmp($aUid, $bUid);
+            }
+
+            // Fall back to template timestamp
+            if ($aTplStart !== '' && $bTplStart !== '' && $aTplStart !== $bTplStart) {
+                return strcmp($aTplStart, $bTplStart);
+            }
+
+            return 0;
         });
 
         $desiredIntents = [];
