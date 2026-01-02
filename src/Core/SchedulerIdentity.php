@@ -6,15 +6,16 @@ declare(strict_types=1);
  *
  * Canonical identity and ownership helper for scheduler entries.
  *
- * Ownership rules:
- * - A scheduler entry is considered GCS-managed if it contains a
- *   valid GCS identity tag in args[]
+ * Ownership rules (Phase 29+):
+ * - A scheduler entry is considered GCS-managed if it contains
+ *   a valid GCS v1 tag in args[]
  *
- * Identity rules (Phase 29+):
- * - Identity is the UID ONLY
- * - Planner semantics must not leak into scheduler state
+ * Identity rules:
+ * - Identity is UID ONLY
+ * - Planner semantics (ranges, days, ordering) MUST NOT leak
+ *   into scheduler identity or apply logic
  *
- * Tag format (two-part):
+ * Tag format (two-part, Phase 29+):
  *   |M|GCS:v1|<uid>
  *
  * Where:
@@ -22,14 +23,15 @@ declare(strict_types=1);
  * - |GCS:v1|   = internal ownership + versioning
  * - <uid>      = canonical calendar series UID
  *
- * Backward compatibility:
- * - Legacy tags beginning with |GCS:v1|uid=... are still recognized
- * - UID is extracted safely for update/delete semantics
+ * This class is the single source of truth for:
+ * - scheduler ownership
+ * - identity extraction
+ * - tag construction
  */
 final class SchedulerIdentity
 {
     /**
-     * Human-visible managed marker (Phase 29+)
+     * Human-visible managed marker
      */
     public const DISPLAY_TAG = '|M|';
 
@@ -39,7 +41,7 @@ final class SchedulerIdentity
     public const INTERNAL_TAG = '|GCS:v1|';
 
     /**
-     * Full canonical prefix for new tags
+     * Full canonical prefix for all managed scheduler entries
      */
     public const FULL_PREFIX = self::DISPLAY_TAG . self::INTERNAL_TAG;
 
@@ -60,21 +62,9 @@ final class SchedulerIdentity
                 continue;
             }
 
-            // ---------------------------------------------------------
-            // Phase 29+ canonical format: |M|GCS:v1|<uid>
-            // ---------------------------------------------------------
             if (str_starts_with($arg, self::FULL_PREFIX)) {
                 $uid = substr($arg, strlen(self::FULL_PREFIX));
                 return $uid !== '' ? $uid : null;
-            }
-
-            // ---------------------------------------------------------
-            // Backward compatibility: legacy |GCS:v1|uid=... tags
-            // ---------------------------------------------------------
-            if (str_starts_with($arg, self::INTERNAL_TAG)) {
-                if (preg_match('/uid=([^|]+)/', $arg, $m)) {
-                    return $m[1];
-                }
             }
         }
 

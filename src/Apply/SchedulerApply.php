@@ -12,20 +12,19 @@ declare(strict_types=1);
  * - Re-run the planner to obtain a canonical diff
  * - Enforce dry-run and safety policies
  * - Merge desired managed entries with existing unmanaged entries
- * - Preserve identity and GCS tags exactly
  * - Write schedule.json atomically
  * - Verify post-write integrity
  *
- * HARD GUARANTEES:
+ * HARD GUARANTEES (Phase 29+):
  * - Unmanaged entries are never modified
- * - Managed entries are matched by FULL GCS identity tag (current model)
+ * - Managed entries are matched by UID ONLY
+ * - Exactly one canonical managed tag per entry
  * - schedule.json is never partially written
  * - Apply is idempotent for the same planner output
  *
- * Phase 28 change:
- * - Apply no longer "fixes" planner output ordering.
- * - Managed entries are written in the exact order provided by Planner.
- * - Overrides adjacency is therefore controlled by Planner bundles.
+ * Phase 28/29:
+ * - Apply preserves Planner ordering exactly
+ * - No implicit re-sorting
  */
 final class SchedulerApply
 {
@@ -106,7 +105,10 @@ final class SchedulerApply
     /**
      * Build apply plan:
      * - Unmanaged entries preserved in original order
-     * - Managed entries rewritten in Planner-provided order (NO global resort)
+     * - Managed entries rewritten in Planner-provided order
+     *
+     * Identity model (Phase 29+):
+     * - UID-only
      *
      * @param array<int,array<string,mixed>> $existing
      * @param array<int,array<string,mixed>> $desired
@@ -114,128 +116,106 @@ final class SchedulerApply
      */
     private static function planApply(array $existing, array $desired): array
     {
-        // Index desired entries by FULL GCS identity key (current model)
-        $desiredByKey       = [];
-        $desiredKeysInOrder = [];
+        // Desired managed entries indexed by UID
+        $desiredByUid   = [];
+        $uidsInOrder    = [];
 
         foreach ($desired as $d) {
             if (!is_array($d)) {
                 continue;
             }
 
-            $k = SchedulerIdentity::extractKey($d);
-            if ($k === null) {
+            $uid = SchedulerIdentity::extractKey($d);
+            if ($uid === null) {
                 continue;
             }
 
-            if (!isset($desiredByKey[$k])) {
-                $desiredKeysInOrder[] = $k;
+            if (!isset($desiredByUid[$uid])) {
+                $uidsInOrder[] = $uid;
             }
 
-            $norm = self::normalizeForApply($d);
-
-            if (!isset($norm['args']) || !is_array($norm['args'])) {
-                $norm['args'] = [];
-            }
-
-            $hasTag = false;
-            foreach ($norm['args'] as $a) {
-                if (is_string($a) && strpos($a, SchedulerIdentity::TAG_MARKER) === 0) {
-                    $hasTag = true;
-                    break;
-                }
-            }
-
-            if (!$hasTag) {
-                $norm['args'][] = $k;
-            }
-
-            $desiredByKey[$k] = $norm;
+            $desiredByUid[$uid] = self::normalizeForApply($d);
         }
 
-        // Index existing managed entries by identity key
-        $existingManagedByKey = [];
+        // Existing managed entries indexed by UID
+        $existingManagedByUid = [];
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
                 continue;
             }
 
-            $k = SchedulerIdentity::extractKey($ex);
-            if ($k === null) {
+            $uid = SchedulerIdentity::extractKey($ex);
+            if ($uid === null) {
                 continue;
             }
 
-            $existingManagedByKey[$k] = $ex;
+            $existingManagedByUid[$uid] = $ex;
         }
 
-        // Compute create/update/delete sets
-        $createsKeys = [];
-        $updatesKeys = [];
-        $deletesKeys = [];
+        // Compute creates / updates / deletes
+        $creates = [];
+        $updates = [];
+        $deletes = [];
 
-        foreach ($desiredByKey as $k => $d) {
-            if (!isset($existingManagedByKey[$k])) {
-                $createsKeys[] = $k;
+        foreach ($desiredByUid as $uid => $d) {
+            if (!isset($existingManagedByUid[$uid])) {
+                $creates[] = $uid;
                 continue;
             }
 
-            if (!self::entriesEquivalentForCompare($existingManagedByKey[$k], $d)) {
-                $updatesKeys[] = $k;
+            if (!self::entriesEquivalentForCompare($existingManagedByUid[$uid], $d)) {
+                $updates[] = $uid;
             }
         }
 
-        foreach ($existingManagedByKey as $k => $_) {
-            if (!isset($desiredByKey[$k])) {
-                $deletesKeys[] = $k;
+        foreach ($existingManagedByUid as $uid => $_) {
+            if (!isset($desiredByUid[$uid])) {
+                $deletes[] = $uid;
             }
         }
 
         /*
          * Construct new schedule.json:
-         * - Preserve unmanaged entries in original order
-         * - Append managed entries in Planner order (desiredKeysInOrder)
-         *
-         * This intentionally stops global re-sorting. Planner controls adjacency.
+         * 1) Preserve unmanaged entries in original order
+         * 2) Append managed entries in Planner order
          */
         $newSchedule = [];
 
-        // 1) Unmanaged entries preserved
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
                 $newSchedule[] = $ex;
                 continue;
             }
-            $k = SchedulerIdentity::extractKey($ex);
-            if ($k === null) {
+
+            if (SchedulerIdentity::extractKey($ex) === null) {
                 $newSchedule[] = $ex;
             }
         }
 
-        // 2) Managed entries in Planner order
-        foreach ($desiredKeysInOrder as $k) {
-            if (isset($desiredByKey[$k])) {
-                $newSchedule[] = $desiredByKey[$k];
+        foreach ($uidsInOrder as $uid) {
+            if (isset($desiredByUid[$uid])) {
+                $newSchedule[] = $desiredByUid[$uid];
             }
         }
 
         return [
-            'creates'             => $createsKeys,
-            'updates'             => $updatesKeys,
-            'deletes'             => $deletesKeys,
+            'creates'             => $creates,
+            'updates'             => $updates,
+            'deletes'             => $deletes,
             'newSchedule'         => $newSchedule,
-            'expectedManagedKeys' => array_keys($desiredByKey),
-            'expectedDeletedKeys' => $deletesKeys,
+            'expectedManagedKeys' => array_keys($desiredByUid),
+            'expectedDeletedKeys' => $deletes,
         ];
     }
 
     private static function normalizeForApply(array $entry): array
     {
-        // FPP "day" is an enum (0..15), NOT a bitmask
+        // Ensure FPP "day" enum sanity
         if (!isset($entry['day']) || !is_int($entry['day']) || $entry['day'] < 0 || $entry['day'] > 15) {
             $entry['day'] = 7; // Everyday
         }
 
-        if (isset($entry['args']) && !is_array($entry['args'])) {
+        if (!isset($entry['args']) || !is_array($entry['args'])) {
             $entry['args'] = [];
         }
 
