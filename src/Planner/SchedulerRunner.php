@@ -205,29 +205,43 @@ final class SchedulerRunner
             /* --------------------------------------------------------
              * SINGLE-INTENT GATE (CORRECT)
              * ------------------------------------------------------ */
+            //Remove later
             $canEmitSingle = (
                 !$hasOverride &&
                 !$timesVary &&
                 !$yamlVaries &&
-                $distinctDayCount === 1
+                $distinctDayCount >= 1
             );
 
             /* --------------------------------------------------------
-             * Single intent
-             * ------------------------------------------------------ */
+            * Single intent
+            * ------------------------------------------------------ */
             if ($canEmitSingle) {
+
                 $first = $occurrences[0];
                 $occStart = new DateTime($first['start']);
                 $occEnd   = new DateTime($first['end']);
 
-                $seriesStartDate = substr($occStart->format('c'), 0, 10);
-                $seriesEndDate   = $seriesStartDate;
-
-                foreach ($occurrences as $occ) {
-                    $d = substr($occ['start'], 0, 10);
-                    if ($d > $seriesEndDate) $seriesEndDate = $d;
+                // --- SERIES START / END (already patched earlier) ---
+                if ($base && !empty($base['start'])) {
+                    $tmp = substr((string)$base['start'], 0, 10);
+                    $seriesStartDate = self::isValidYmd($tmp)
+                        ? $tmp
+                        : substr($occStart->format('c'), 0, 10);
+                } else {
+                    $seriesStartDate = substr($occStart->format('c'), 0, 10);
                 }
 
+                $seriesEndDate = $seriesStartDate;
+                foreach ($occurrences as $occ) {
+                    $d = substr($occ['start'], 0, 10);
+                    if ($d > $seriesEndDate) {
+                        $seriesEndDate = $d;
+                    }
+                }
+
+                // EVERYDAY DETECTION:
+                // --- RRULE / BYDAY logic ---
                 $rrule = $base['rrule'] ?? null;
                 $daysShort = '';
 
@@ -240,8 +254,33 @@ final class SchedulerRunner
                     }
                 }
 
+                // Fallback if RRULE missing/unsupported
                 if ($daysShort === '') {
                     $daysShort = self::dowToShortDay((int)$occStart->format('w'));
+                }
+
+                // EVERYDAY DETECTION (post-rrule):
+                // If every calendar day between seriesStartDate and seriesEndDate
+                // is represented, force mask to Everyday.
+                $hasEveryDayCoverage = true;
+                try {
+                    $d = new DateTime($seriesStartDate);
+                    $e = new DateTime($seriesEndDate);
+
+                    while ($d <= $e) {
+                        $dow = (int)$d->format('w');
+                        if (empty($maskSet[$dow])) {
+                            $hasEveryDayCoverage = false;
+                            break;
+                        }
+                        $d->modify('+1 day');
+                    }
+                } catch (Throwable $ignored) {
+                    $hasEveryDayCoverage = false;
+                }
+
+                if ($hasEveryDayCoverage) {
+                    $daysShort = 'SuMoTuWeThFrSa';
                 }
 
                 $yaml0 = $occYaml[$first['start']] ?? [];
