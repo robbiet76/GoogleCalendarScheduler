@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /**
  * DiffPreviewer
- * 
+ *
  * UI-SCOPED FILE
  *
  * This file exists ONLY to support web UI preview/apply flows.
@@ -18,7 +18,6 @@ declare(strict_types=1);
  * - Apply is the ONLY place allowed to execute writes (via SchedulerApply)
  * - This class MUST NOT modify scheduler state directly
  */
-
 final class DiffPreviewer
 {
     /**
@@ -81,14 +80,6 @@ final class DiffPreviewer
      */
     public static function apply(array $config): array
     {
-        if (empty($config['experimental']['enabled'])) {
-            throw new RuntimeException('Experimental mode is not enabled');
-        }
-
-        if (empty($config['experimental']['allow_apply'])) {
-            throw new RuntimeException('Experimental apply is not allowed');
-        }
-
         if (!empty($config['runtime']['dry_run'])) {
             throw new RuntimeException('Apply blocked while dry-run is enabled');
         }

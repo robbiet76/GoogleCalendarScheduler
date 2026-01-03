@@ -8,11 +8,13 @@ declare(strict_types=1);
  * - Render plugin UI (HTML + JS)
  * - Handle POSTed UI actions (save, plan-only sync)
  * - Expose AJAX endpoints for:
- *   - plan preview (PURE)
- *   - apply (guarded WRITE)
+ *   - plan status (PURE)
+ *   - diff preview (PURE)
+ *   - apply (WRITE via SchedulerApply only, dry-run guarded)
  *   - inventory (read-only)
  *   - export (read-only)
- *   - cleanup (explicit WRITE)
+ *   - cleanup preview (read-only)
+ *   - cleanup apply (explicit WRITE)
  *
  * HARD RULES:
  * - This file MAY render HTML
@@ -31,8 +33,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/src/bootstrap.php';
 
 // ---------------------------------------------------------------------
-// Core helpers (PURE domain / infrastructure)
-// ---------------------------------------------------------------------
+// Core helpers (UI-only)
+/// ---------------------------------------------------------------------
 require_once __DIR__ . '/src/Core/DiffPreviewer.php';
 require_once __DIR__ . '/src/Core/ScheduleEntryExportAdapter.php';
 require_once __DIR__ . '/src/Core/IcsWriter.php';
@@ -49,8 +51,6 @@ require_once __DIR__ . '/src/Planner/InventoryService.php';
 require_once __DIR__ . '/src/Apply/SchedulerCleanupPlanner.php';
 require_once __DIR__ . '/src/Apply/SchedulerCleanupApplier.php';
 
-
-
 $cfg = Config::load();
 
 /*
@@ -60,7 +60,6 @@ $cfg = Config::load();
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     try {
-
         if ($_POST['action'] === 'save') {
             // Empty URL is allowed (clears configuration)
             $cfg['calendar']['ics_url'] = trim($_POST['ics_url'] ?? '');
@@ -76,7 +75,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         if ($_POST['action'] === 'sync') {
             SchedulerPlanner::plan($cfg);
         }
-
     } catch (Throwable $e) {
         GcsLogger::instance()->error('GoogleCalendarScheduler error', [
             'error' => $e->getMessage(),
@@ -95,17 +93,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
  */
 
 if (isset($_GET['endpoint'])) {
-
     try {
 
-        // Auto status check (plan-only)
-        if ($_GET['endpoint'] === 'experimental_plan_status') {
+        // --------------------------------------------------------------
+        // Plan status (plan-only): returns counts
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'plan_status') {
             header('Content-Type: application/json');
-
-            if (empty($cfg['experimental']['enabled'])) {
-                echo json_encode(['ok' => false]);
-                exit;
-            }
 
             $plan = SchedulerPlanner::plan($cfg);
             $norm = DiffPreviewer::normalizeResultForUi(['diff' => $plan]);
@@ -121,14 +115,11 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
-        // Preview (plan-only)
-        if ($_GET['endpoint'] === 'experimental_diff') {
+        // --------------------------------------------------------------
+        // Diff (plan-only): returns creates/updates/deletes + snapshots
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'diff') {
             header('Content-Type: application/json');
-
-            if (empty($cfg['experimental']['enabled'])) {
-                echo json_encode(['ok' => false]);
-                exit;
-            }
 
             $plan = SchedulerPlanner::plan($cfg);
 
@@ -145,8 +136,10 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
-        // Apply (ONLY write path)
-        if ($_GET['endpoint'] === 'experimental_apply') {
+        // --------------------------------------------------------------
+        // Apply (WRITE path): blocked if dry-run is enabled
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'apply') {
 
             // Enforce persisted runtime dry-run (Developer mode)
             $runtimeDryRun = !empty($cfg['runtime']['dry_run']);
@@ -158,13 +151,8 @@ if (isset($_GET['endpoint'])) {
             $isDryRun = ($runtimeDryRun || $requestDryRun);
 
             if ($isDryRun) {
-                // EXACT same behavior as experimental_diff (plan-only, NO WRITES)
+                // Exact same behavior as diff (plan-only, NO WRITES)
                 header('Content-Type: application/json');
-
-                if (empty($cfg['experimental']['enabled'])) {
-                    echo json_encode(['ok' => false]);
-                    exit;
-                }
 
                 $plan = SchedulerPlanner::plan($cfg);
 
@@ -183,14 +171,42 @@ if (isset($_GET['endpoint'])) {
             }
 
             // Normal apply (writes allowed)
-            $result = DiffPreviewer::apply($cfg);
+            // We return both the plan (for UI parity) and the apply result.
+            $plan = SchedulerPlanner::plan($cfg);
+
+            $creates = (isset($plan['creates']) && is_array($plan['creates'])) ? count($plan['creates']) : 0;
+            $updates = (isset($plan['updates']) && is_array($plan['updates'])) ? count($plan['updates']) : 0;
+            $deletes = (isset($plan['deletes']) && is_array($plan['deletes'])) ? count($plan['deletes']) : 0;
+
+            if (($creates + $updates + $deletes) === 0) {
+                header('Content-Type: application/json; charset=utf-8');
+                echo json_encode([
+                    'ok'   => true,
+                    'noop' => true,
+                    'result' => [
+                        'plan'  => $plan,
+                        'apply' => ['ok' => true, 'noop' => true],
+                    ],
+                ]);
+                exit;
+            }
+
+            $applyResult = SchedulerApply::applyFromConfig($cfg);
 
             header('Content-Type: application/json; charset=utf-8');
-            echo json_encode(['ok' => true, 'result' => $result]);
+            echo json_encode([
+                'ok' => true,
+                'result' => [
+                    'plan'  => $plan,
+                    'apply' => $applyResult,
+                ],
+            ]);
             exit;
         }
 
+        // --------------------------------------------------------------
         // Export unmanaged scheduler entries to ICS
+        // --------------------------------------------------------------
         if ($_GET['endpoint'] === 'export_unmanaged_ics') {
 
             $result = ExportService::exportUnmanaged();
@@ -213,8 +229,10 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
+        // --------------------------------------------------------------
         // Scheduler inventory (read-only counts)
-        if ($_GET['endpoint'] === 'experimental_scheduler_inventory') {
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'scheduler_inventory') {
             header('Content-Type: application/json');
 
             try {
@@ -225,7 +243,6 @@ if (isset($_GET['endpoint'])) {
                     'inventory' => $inv,
                 ]);
                 exit;
-
             } catch (Throwable $e) {
                 echo json_encode([
                     'ok' => false,
@@ -235,8 +252,10 @@ if (isset($_GET['endpoint'])) {
             }
         }
 
+        // --------------------------------------------------------------
         // Cleanup preview (read-only)
-        if ($_GET['endpoint'] === 'experimental_cleanup_preview') {
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'cleanup_preview') {
             header('Content-Type: application/json');
 
             $plan = SchedulerCleanupPlanner::plan();
@@ -248,8 +267,10 @@ if (isset($_GET['endpoint'])) {
             exit;
         }
 
+        // --------------------------------------------------------------
         // Cleanup apply (guarded write)
-        if ($_GET['endpoint'] === 'experimental_cleanup_apply') {
+        // --------------------------------------------------------------
+        if ($_GET['endpoint'] === 'cleanup_apply') {
             header('Content-Type: application/json');
 
             $res = SchedulerCleanupApplier::apply();
@@ -483,25 +504,6 @@ function gcsSetStatus(level, message) {
     text.textContent = message;
 }
 
-function gcsShowOpenSchedulerLink() {
-    var bar = document.getElementById('gcs-status-bar');
-    var text = bar.querySelector('.gcs-status-text');
-
-    // Prevent duplicate links
-    if (text.querySelector('.gcs-open-scheduler-link')) return;
-
-    var link = document.createElement('a');
-    link.href = '/scheduler.php';
-    link.target = '_blank';
-    link.rel = 'noopener noreferrer';
-    link.textContent = 'Open Schedule ↗';
-    link.className = 'gcs-open-scheduler-link';
-    link.style.marginLeft = '12px';
-    link.style.fontWeight = '600';
-
-    text.appendChild(link);
-}
-
 function gcsSetUnmanagedStatus(level, message) {
     var bar = document.getElementById('gcs-unmanaged-status');
     if (!bar) return;
@@ -547,7 +549,7 @@ function runPlanStatus() {
         return;
     }
 
-    return fetch(ENDPOINT + '&endpoint=experimental_plan_status')
+    return fetch(ENDPOINT + '&endpoint=plan_status')
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) return;
@@ -582,7 +584,7 @@ var unmanagedStatus  = document.getElementById('gcs-unmanaged-status');
 var unmanagedText    = unmanagedStatus.querySelector('.gcs-status-text');
 var exportBtn        = document.getElementById('gcs-export-unmanaged-btn');
 
-fetch(ENDPOINT + '&endpoint=experimental_scheduler_inventory')
+fetch(ENDPOINT + '&endpoint=scheduler_inventory')
     .then(r => r.json())
     .then(d => {
         if (!d || !d.ok || !d.inventory) return;
@@ -618,7 +620,7 @@ previewBtn.addEventListener('click', function () {
 
     hidePreviewButton();
 
-    fetch(ENDPOINT + '&endpoint=experimental_diff')
+    fetch(ENDPOINT + '&endpoint=diff')
         .then(r => r.json())
         .then(d => {
             if (!d || !d.ok) {
@@ -659,7 +661,7 @@ applyBtn.addEventListener('click', function () {
     var dryRunCb = document.getElementById('gcs-dry-run');
     var isDryRun = dryRunCb && dryRunCb.checked;
 
-    var ep = isDryRun ? 'experimental_diff' : 'experimental_apply';
+    var ep = isDryRun ? 'diff' : 'apply';
     var url = ENDPOINT + '&endpoint=' + ep;
 
     if (isDryRun) {

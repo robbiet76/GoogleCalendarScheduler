@@ -3,8 +3,6 @@ declare(strict_types=1);
 
 /**
  * Config
- * 
- * POSSIBLE LEGACY CODE
  *
  * Central configuration container for GoogleCalendarScheduler.
  *
@@ -19,10 +17,14 @@ declare(strict_types=1);
  * - This class performs NO validation beyond structural safety
  * - Callers are responsible for interpreting values
  *
- * CONFIG MODEL:
+ * CONFIG MODEL (Phase 29+):
  * - Defaults define the full schema
  * - Persisted config is always merged over defaults
  * - Missing keys are backfilled automatically
+ *
+ * NOTE:
+ * - All "experimental" configuration has been removed.
+ * - Safety is enforced exclusively via runtime.dry_run.
  */
 final class Config
 {
@@ -46,20 +48,8 @@ final class Config
             ],
 
             'runtime' => [
-                // When true, scheduler.json is never modified
+                // When true, schedule.json is never modified
                 'dry_run' => true,
-            ],
-
-            /*
-             * ------------------------------------------------------------
-             * Experimental features (Phase 11)
-             * ------------------------------------------------------------
-             * All experimental behavior MUST be explicitly enabled.
-             * Defaults MUST remain false for safety.
-             */
-            'experimental' => [
-                'enabled'     => false,
-                'allow_apply' => false,
             ],
 
             /*
@@ -87,6 +77,7 @@ final class Config
      * - If config file does not exist, defaults are returned
      * - If config file is invalid, defaults are returned
      * - Persisted values are merged over defaults
+     * - Legacy keys not present in defaults are ignored
      *
      * @return array<string,mixed>
      */
@@ -102,10 +93,13 @@ final class Config
         }
 
         $cfg = json_decode($raw, true);
+        if (!is_array($cfg)) {
+            return self::defaults();
+        }
 
-        return is_array($cfg)
-            ? array_replace_recursive(self::defaults(), $cfg)
-            : self::defaults();
+        // Merge persisted config over defaults.
+        // Any legacy keys (e.g., "experimental") are implicitly ignored.
+        return array_replace_recursive(self::defaults(), $cfg);
     }
 
     /**
