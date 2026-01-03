@@ -477,27 +477,46 @@ final class SchedulerPlanner
     private static function pickSeriesEndDateFromRrule(array $baseEv, string $guardDate): ?string
     {
         $rrule = $baseEv['rrule'] ?? null;
-        if (!is_array($rrule)) {
+        if (!is_array($rrule) || empty($rrule['UNTIL'])) {
             return null;
         }
 
-        if (!empty($rrule['UNTIL'])) {
-            $until = (string)$rrule['UNTIL'];
-            // Accept YYYYMMDD or YYYYMMDDT... variants; normalize to YYYY-MM-DD
-            $ymd = null;
-            if (preg_match('/^\d{8}$/', $until)) {
-                $ymd = substr($until, 0, 4) . '-' . substr($until, 4, 2) . '-' . substr($until, 6, 2);
-            } elseif (preg_match('/^(\d{8})T/', $until, $m)) {
-                $raw = $m[1];
-                $ymd = substr($raw, 0, 4) . '-' . substr($raw, 4, 2) . '-' . substr($raw, 6, 2);
-            }
-            if ($ymd !== null && self::isValidYmd($ymd)) {
-                // Cap to guardDate if needed (planner guard will also cap schedule entry)
-                return ($ymd > $guardDate) ? $guardDate : $ymd;
-            }
-        }
+        try {
+            $untilRaw = (string)$rrule['UNTIL'];
 
-        return null;
+            if (preg_match('/^\d{8}$/', $untilRaw)) {
+                $until = new DateTime($untilRaw . ' 23:59:59');
+            } elseif (preg_match('/^\d{8}T\d{6}Z$/', $untilRaw)) {
+                $until = new DateTime($untilRaw, new DateTimeZone('UTC'));
+            } elseif (preg_match('/^\d{8}T\d{6}$/', $untilRaw)) {
+                $until = new DateTime($untilRaw);
+            } else {
+                return null;
+            }
+
+            // Anchor semantics to DTSTART
+            $baseStart = new DateTime((string)$baseEv['start']);
+
+            // Normalize UNTIL into DTSTART timezone
+            $until->setTimezone($baseStart->getTimezone());
+
+            // If UNTIL time-of-day is earlier than DTSTART time,
+            // the last valid occurrence was the previous day
+            if ($until->format('H:i:s') < $baseStart->format('H:i:s')) {
+                $until->modify('-1 day');
+            }
+
+            $ymd = $until->format('Y-m-d');
+
+            // Guard cap
+            if ($ymd > $guardDate) {
+                return $guardDate;
+            }
+
+            return self::isValidYmd($ymd) ? $ymd : null;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private static function applyYamlToTemplate(array $defaults, array $yaml): array
