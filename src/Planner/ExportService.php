@@ -273,7 +273,7 @@ final class ExportService
         foreach ($accepted as $iv) {
             $a = (int)$iv['s'];
             $b = (int)$iv['e'];
-            if (max($a, $s) <= min($b, $e)) {
+            if (max($a, $s) < min($b, $e)) {
                 return true;
             }
         }
