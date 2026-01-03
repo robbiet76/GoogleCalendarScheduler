@@ -9,13 +9,8 @@ declare(strict_types=1);
  *
  * EXPORT SEMANTICS (Phase 30 – FINAL):
  * - DTSTART / DTEND represent ONE occurrence only
- * - RRULE defines recurrence and series end
- * - This matches Google Calendar's expected model for timed recurring events
- *
- * Responsibilities:
- * - Translate one scheduler entry into one calendar event
- * - Preserve runtime semantics via YAML metadata
- * - Validate dates and times for export safety
+ * - RRULE defines recurrence and series end (UNTIL)
+ * - EXDATE is used to express FPP schedule precedence overlaps faithfully
  *
  * Guarantees:
  * - Read-only (never mutates scheduler entries)
@@ -108,12 +103,28 @@ final class ScheduleEntryExportAdapter
             $yaml['enabled'] = false;
         }
 
+        // Optional EXDATEs (export-only), provided as YYYY-MM-DD dates
+        $exdates = [];
+        $rawEx = $entry['__gcs_export_exdates'] ?? null;
+        if (is_array($rawEx) && !empty($rawEx)) {
+            foreach ($rawEx as $ymd) {
+                if (!is_string($ymd) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd)) {
+                    continue;
+                }
+                $ex = self::parseDateTime($ymd, $startTime);
+                if ($ex instanceof DateTime) {
+                    $exdates[] = $ex;
+                }
+            }
+        }
+
         return [
-            'summary' => $summary,
-            'dtstart' => $dtStart,
-            'dtend'   => $dtEnd,
-            'rrule'   => $rrule,
-            'yaml'    => $yaml,
+            'summary'  => $summary,
+            'dtstart'  => $dtStart,
+            'dtend'    => $dtEnd,
+            'rrule'    => $rrule,
+            'exdates'  => $exdates,
+            'yaml'     => $yaml,
         ];
     }
 
@@ -124,12 +135,9 @@ final class ScheduleEntryExportAdapter
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd)) {
             return false;
         }
-
-        // Explicitly reject year 0000 (invalid in ICS)
         if (strpos($ymd, '0000-') === 0) {
             return false;
         }
-
         $dt = DateTime::createFromFormat('Y-m-d', $ymd);
         return ($dt instanceof DateTime) && ($dt->format('Y-m-d') === $ymd);
     }
@@ -145,7 +153,10 @@ final class ScheduleEntryExportAdapter
      *
      * RULE:
      * - DTSTART is DATE-TIME → UNTIL must be DATE-TIME (RFC5545)
-     * - UNTIL is inclusive end-of-day in UTC
+     * - UNTIL is inclusive end-of-day in UTC (Google-friendly)
+     *
+     * Note: UNTIL is an absolute instant; we keep it in UTC end-of-day to match Google behavior.
+     * DTSTART/DTEND are local with TZID (writer handles TZID).
      */
     private static function buildRrule(array $entry, string $endDate): ?string
     {
@@ -156,7 +167,6 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        // Inclusive series end
         $untilUtc = str_replace('-', '', $endDate) . 'T235959Z';
 
         // Daily

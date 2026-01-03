@@ -6,19 +6,11 @@ declare(strict_types=1);
  *
  * Pure ICS generator.
  *
- * FINAL EXPORT MODEL (Phase 30 – v1.0):
+ * Phase 30 (final model):
  * - Export uses the FPP system timezone (date_default_timezone_get()).
  * - DTSTART / DTEND are LOCAL wall-clock times with TZID.
- * - A full VTIMEZONE block is emitted so Google handles DST correctly.
- *
- * This preserves FPP scheduler semantics exactly and renders correctly
- * in Google Calendar across DST boundaries.
- *
- * HARD RULES:
- * - No scheduler knowledge
- * - No filtering or validation
- * - No mutation of inputs
- * - Assumes DateTime values represent LOCAL times
+ * - VTIMEZONE is emitted so Google handles DST correctly.
+ * - EXDATE is emitted to represent precedence overlaps faithfully.
  */
 final class IcsWriter
 {
@@ -35,9 +27,6 @@ final class IcsWriter
 
         $lines = [];
 
-        // --------------------------------------------------
-        // Calendar header
-        // --------------------------------------------------
         $lines[] = 'BEGIN:VCALENDAR';
         $lines[] = 'PRODID:-//GoogleCalendarScheduler//Scheduler Export//EN';
         $lines[] = 'VERSION:2.0';
@@ -45,12 +34,8 @@ final class IcsWriter
         $lines[] = 'METHOD:PUBLISH';
         $lines[] = 'X-WR-TIMEZONE:' . $tzName;
 
-        // Timezone definition (required for correct DST handling)
         $lines = array_merge($lines, self::buildVtimezone($tz));
 
-        // --------------------------------------------------
-        // Events
-        // --------------------------------------------------
         foreach ($events as $ev) {
             if (!is_array($ev)) {
                 continue;
@@ -60,19 +45,14 @@ final class IcsWriter
 
         $lines[] = 'END:VCALENDAR';
 
-        // RFC5545 requires CRLF
         return implode("\r\n", $lines) . "\r\n";
     }
-
-    /* ==========================================================
-     * VEVENT generation
-     * ========================================================== */
 
     /**
      * Build a single VEVENT block.
      *
-     * @param array<string,mixed> $ev Export intent
-     * @param string $tzName Timezone identifier
+     * @param array<string,mixed> $ev
+     * @param string $tzName
      * @return array<int,string>
      */
     private static function buildEventBlock(array $ev, string $tzName): array
@@ -87,16 +67,29 @@ final class IcsWriter
         $yaml    = (array)($ev['yaml'] ?? []);
         $uid     = (string)($ev['uid'] ?? '');
 
+        /** @var array<int,DateTime> $exdates */
+        $exdates = [];
+        if (isset($ev['exdates']) && is_array($ev['exdates'])) {
+            foreach ($ev['exdates'] as $d) {
+                if ($d instanceof DateTime) {
+                    $exdates[] = $d;
+                }
+            }
+        }
+
         $lines = [];
         $lines[] = 'BEGIN:VEVENT';
 
-        // Local wall-clock times with TZID
         $lines[] = 'DTSTART;TZID=' . $tzName . ':' . $dtStart->format('Ymd\THis');
         $lines[] = 'DTEND;TZID='   . $tzName . ':' . $dtEnd->format('Ymd\THis');
 
-        // RRULE (already RFC5545-correct from adapter)
         if (is_string($rrule) && $rrule !== '') {
             $lines[] = 'RRULE:' . $rrule;
+        }
+
+        // EXDATE exceptions (one per line for simplicity)
+        foreach ($exdates as $ex) {
+            $lines[] = 'EXDATE;TZID=' . $tzName . ':' . $ex->format('Ymd\THis');
         }
 
         if ($summary !== '') {
@@ -107,7 +100,6 @@ final class IcsWriter
             $lines[] = 'DESCRIPTION:' . self::escapeText(self::yamlToText($yaml));
         }
 
-        // Required metadata
         $lines[] = 'DTSTAMP:' . gmdate('Ymd\THis\Z');
         $lines[] = 'UID:' . ($uid !== '' ? $uid : self::generateUid());
 
@@ -116,15 +108,9 @@ final class IcsWriter
         return $lines;
     }
 
-    /* ==========================================================
-     * VTIMEZONE
-     * ========================================================== */
-
     /**
-     * Build a full VTIMEZONE block for the given timezone.
-     *
-     * This mirrors the structure Google Calendar expects and
-     * ensures DST transitions are applied correctly.
+     * Build a practical VTIMEZONE from transitions.
+     * Uses TZOFFSETFROM/TZOFFSETTO pairs based on successive transitions.
      */
     private static function buildVtimezone(DateTimeZone $tz): array
     {
@@ -134,22 +120,53 @@ final class IcsWriter
             'TZID:' . $tzName,
         ];
 
-        // Use transitions to emit STANDARD / DAYLIGHT blocks
         $transitions = $tz->getTransitions();
+        if (empty($transitions)) {
+            $lines[] = 'END:VTIMEZONE';
+            return $lines;
+        }
+
+        // Keep transitions reasonably bounded to avoid huge ICS.
+        // Include transitions from (now - 1 year) to (now + 6 years).
+        $now = time();
+        $minTs = $now - (365 * 24 * 3600);
+        $maxTs = $now + (6 * 365 * 24 * 3600);
+
+        $prevOffset = null;
 
         foreach ($transitions as $t) {
-            if (!isset($t['ts'], $t['isdst'], $t['offset'])) {
+            if (!isset($t['ts'], $t['offset'], $t['isdst'])) {
                 continue;
             }
 
-            $type = $t['isdst'] ? 'DAYLIGHT' : 'STANDARD';
-            $dt   = (new DateTime('@' . $t['ts']))->setTimezone($tz);
+            $ts = (int)$t['ts'];
+            if ($ts < $minTs || $ts > $maxTs) {
+                $prevOffset = (int)$t['offset'];
+                continue;
+            }
+
+            $currOffset = (int)$t['offset'];
+            $isdst = (bool)$t['isdst'];
+
+            // If we don't have a previous offset, approximate it with current offset
+            $fromOffset = ($prevOffset !== null) ? $prevOffset : $currOffset;
+
+            $type = $isdst ? 'DAYLIGHT' : 'STANDARD';
+
+            $dt = (new DateTime('@' . $ts))->setTimezone($tz);
 
             $lines[] = 'BEGIN:' . $type;
             $lines[] = 'DTSTART:' . $dt->format('Ymd\THis');
-            $lines[] = 'TZOFFSETFROM:' . self::formatOffset($t['offset'] - ($t['isdst'] ? 3600 : 0));
-            $lines[] = 'TZOFFSETTO:'   . self::formatOffset($t['offset']);
+            $lines[] = 'TZOFFSETFROM:' . self::formatOffset($fromOffset);
+            $lines[] = 'TZOFFSETTO:'   . self::formatOffset($currOffset);
+
+            if (isset($t['abbr']) && is_string($t['abbr']) && $t['abbr'] !== '') {
+                $lines[] = 'TZNAME:' . self::escapeText($t['abbr']);
+            }
+
             $lines[] = 'END:' . $type;
+
+            $prevOffset = $currOffset;
         }
 
         $lines[] = 'END:VTIMEZONE';
@@ -159,16 +176,12 @@ final class IcsWriter
 
     private static function formatOffset(int $seconds): string
     {
-        $sign = $seconds >= 0 ? '+' : '-';
+        $sign = ($seconds >= 0) ? '+' : '-';
         $seconds = abs($seconds);
         $hours = intdiv($seconds, 3600);
         $minutes = intdiv($seconds % 3600, 60);
         return sprintf('%s%02d%02d', $sign, $hours, $minutes);
     }
-
-    /* ==========================================================
-     * Helpers
-     * ========================================================== */
 
     private static function yamlToText(array $yaml): string
     {
