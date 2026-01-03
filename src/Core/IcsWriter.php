@@ -4,81 +4,46 @@ declare(strict_types=1);
 /**
  * IcsWriter
  *
- * Phase 23.2
- *
  * Pure ICS generator.
  *
- * PURPOSE:
- * - Convert export intents into a valid RFC5545-compatible ICS document
- * - Intended for re-import into Google Calendar or similar systems
- *
- * RESPONSIBILITIES:
- * - Serialize VEVENT blocks from pre-sanitized export intents
- * - Emit minimal but valid calendar + timezone metadata
- * - Encode YAML metadata into DESCRIPTION field
- *
- * HARD RULES:
- * - No scheduler knowledge
- * - No filtering or validation
- * - No mutation of inputs
- * - Assumes all DateTime values are valid and timezone-correct
+ * - Uses the FPP system timezone (date_default_timezone_get()) with TZID + VTIMEZONE
+ * - DTSTART/DTEND are local wall-clock times
+ * - EXDATE is emitted for overridden occurrences
  */
 final class IcsWriter
 {
     /**
-     * Generate a complete ICS calendar document.
-     *
      * @param array<int,array<string,mixed>> $events Export intents
-     * @param DateTimeZone|null $tz Timezone for DTSTART/DTEND (defaults to system TZ)
-     * @return string RFC5545-compatible ICS content
      */
-    public static function build(array $events, ?DateTimeZone $tz = null): string
+    public static function build(array $events): string
     {
-        if ($tz === null) {
-            $tz = new DateTimeZone(date_default_timezone_get());
-        }
+        $tzName = date_default_timezone_get();
+        $tz     = new DateTimeZone($tzName);
 
         $lines = [];
-
-        // --------------------------------------------------
-        // Calendar header
-        // --------------------------------------------------
         $lines[] = 'BEGIN:VCALENDAR';
         $lines[] = 'PRODID:-//GoogleCalendarScheduler//Scheduler Export//EN';
         $lines[] = 'VERSION:2.0';
         $lines[] = 'CALSCALE:GREGORIAN';
         $lines[] = 'METHOD:PUBLISH';
+        $lines[] = 'X-WR-TIMEZONE:' . $tzName;
 
-        // Minimal timezone block (Google Calendar tolerant)
-        $lines = array_merge($lines, self::buildTimezoneBlock($tz));
+        $lines = array_merge($lines, self::buildVtimezone($tz));
 
-        // --------------------------------------------------
-        // Events
-        // --------------------------------------------------
         foreach ($events as $ev) {
-            if (!is_array($ev)) {
-                continue;
-            }
-            $lines = array_merge($lines, self::buildEventBlock($ev, $tz));
+            if (!is_array($ev)) continue;
+            $lines = array_merge($lines, self::buildEventBlock($ev, $tzName));
         }
 
         $lines[] = 'END:VCALENDAR';
-
         return implode("\r\n", $lines) . "\r\n";
     }
 
-    /* ==========================================================
-     * VEVENT generation
-     * ========================================================== */
-
     /**
-     * Build a single VEVENT block.
-     *
-     * @param array<string,mixed> $ev Export intent
-     * @param DateTimeZone        $tz Timezone used for DTSTART/DTEND
-     * @return array<int,string> RFC5545 VEVENT lines
+     * @param array<string,mixed> $ev
+     * @return array<int,string>
      */
-    private static function buildEventBlock(array $ev, DateTimeZone $tz): array
+    private static function buildEventBlock(array $ev, string $tzName): array
     {
         /** @var DateTime $dtStart */
         $dtStart = $ev['dtstart'];
@@ -88,79 +53,119 @@ final class IcsWriter
         $summary = (string)($ev['summary'] ?? '');
         $rrule   = $ev['rrule'] ?? null;
         $yaml    = (array)($ev['yaml'] ?? []);
+        $uid     = (string)($ev['uid'] ?? '');
+
+        $exdates = [];
+        if (isset($ev['exdates']) && is_array($ev['exdates'])) {
+            foreach ($ev['exdates'] as $d) {
+                if ($d instanceof DateTime) $exdates[] = $d;
+            }
+        }
 
         $lines = [];
         $lines[] = 'BEGIN:VEVENT';
 
-        // DTSTART / DTEND with explicit TZID
-        $lines[] = 'DTSTART;TZID=' . $tz->getName() . ':' . $dtStart->format('Ymd\THis');
-        $lines[] = 'DTEND;TZID='   . $tz->getName() . ':' . $dtEnd->format('Ymd\THis');
+        $lines[] = 'DTSTART;TZID=' . $tzName . ':' . $dtStart->format('Ymd\THis');
+        $lines[] = 'DTEND;TZID='   . $tzName . ':' . $dtEnd->format('Ymd\THis');
 
-        // RRULE (optional)
         if (is_string($rrule) && $rrule !== '') {
             $lines[] = 'RRULE:' . $rrule;
         }
 
-        // SUMMARY
+        foreach ($exdates as $ex) {
+            $lines[] = 'EXDATE;TZID=' . $tzName . ':' . $ex->format('Ymd\THis');
+        }
+
         if ($summary !== '') {
             $lines[] = 'SUMMARY:' . self::escapeText($summary);
         }
 
-        // DESCRIPTION (embedded YAML metadata)
         if (!empty($yaml)) {
             $lines[] = 'DESCRIPTION:' . self::escapeText(self::yamlToText($yaml));
         }
 
-        // Required metadata
         $lines[] = 'DTSTAMP:' . gmdate('Ymd\THis\Z');
-        $lines[] = 'UID:' . self::generateUid();
+        $lines[] = 'UID:' . ($uid !== '' ? $uid : self::generateUid());
 
         $lines[] = 'END:VEVENT';
-
         return $lines;
     }
 
-    /* ==========================================================
-     * Calendar helpers
-     * ========================================================== */
-
-    /**
-     * Build a minimal VTIMEZONE block.
-     *
-     * NOTE:
-     * - Google Calendar accepts simplified timezone definitions
-     *   as long as TZID matches DTSTART/DTEND.
-     */
-    private static function buildTimezoneBlock(DateTimeZone $tz): array
+    private static function buildVtimezone(DateTimeZone $tz): array
     {
-        return [
+        $tzName = $tz->getName();
+        $lines = [
             'BEGIN:VTIMEZONE',
-            'TZID:' . $tz->getName(),
-            'END:VTIMEZONE',
+            'TZID:' . $tzName,
         ];
+
+        $transitions = $tz->getTransitions();
+        if (empty($transitions)) {
+            $lines[] = 'END:VTIMEZONE';
+            return $lines;
+        }
+
+        // Bound transitions to keep ICS manageable
+        $now = time();
+        $minTs = $now - (365 * 24 * 3600);
+        $maxTs = $now + (6 * 365 * 24 * 3600);
+
+        $prevOffset = null;
+
+        foreach ($transitions as $t) {
+            if (!isset($t['ts'], $t['offset'], $t['isdst'])) continue;
+
+            $ts = (int)$t['ts'];
+            $currOffset = (int)$t['offset'];
+            $isdst = (bool)$t['isdst'];
+
+            if ($ts < $minTs || $ts > $maxTs) {
+                $prevOffset = $currOffset;
+                continue;
+            }
+
+            $fromOffset = ($prevOffset !== null) ? $prevOffset : $currOffset;
+
+            $type = $isdst ? 'DAYLIGHT' : 'STANDARD';
+            $dt = (new DateTime('@' . $ts))->setTimezone($tz);
+
+            $lines[] = 'BEGIN:' . $type;
+            $lines[] = 'DTSTART:' . $dt->format('Ymd\THis');
+            $lines[] = 'TZOFFSETFROM:' . self::formatOffset($fromOffset);
+            $lines[] = 'TZOFFSETTO:'   . self::formatOffset($currOffset);
+
+            if (isset($t['abbr']) && is_string($t['abbr']) && $t['abbr'] !== '') {
+                $lines[] = 'TZNAME:' . self::escapeText($t['abbr']);
+            }
+
+            $lines[] = 'END:' . $type;
+
+            $prevOffset = $currOffset;
+        }
+
+        $lines[] = 'END:VTIMEZONE';
+        return $lines;
     }
 
-    /**
-     * Convert YAML metadata array into plain-text block.
-     *
-     * @param array<string,mixed> $yaml
-     * @return string
-     */
+    private static function formatOffset(int $seconds): string
+    {
+        $sign = ($seconds >= 0) ? '+' : '-';
+        $seconds = abs($seconds);
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+        return sprintf('%s%02d%02d', $sign, $hours, $minutes);
+    }
+
     private static function yamlToText(array $yaml): string
     {
         $out = [];
         foreach ($yaml as $k => $v) {
-            if (is_bool($v)) {
-                $v = $v ? 'true' : 'false';
-            }
+            if (is_bool($v)) $v = $v ? 'true' : 'false';
             $out[] = $k . ': ' . $v;
         }
         return implode("\n", $out);
     }
 
-    /**
-     * Escape text for inclusion in ICS fields (RFC5545).
-     */
     private static function escapeText(string $text): string
     {
         $text = str_replace('\\', '\\\\', $text);
@@ -170,13 +175,6 @@ final class IcsWriter
         return $text;
     }
 
-    /**
-     * Generate a unique UID for exported events.
-     *
-     * NOTE:
-     * - UID stability is not required for export use-case
-     * - Google Calendar will normalize or replace as needed
-     */
     private static function generateUid(): string
     {
         return uniqid('gcs-export-', true) . '@local';
