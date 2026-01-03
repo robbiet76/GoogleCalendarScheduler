@@ -1,21 +1,6 @@
 <?php
 declare(strict_types=1);
 
-/**
- * ExportService
- *
- * Phase 30 — Per-playlist override model (FINAL + edge fix):
- * - Conflicts are evaluated ONLY within same summary (playlist/command).
- * - For the same summary and occurrence date:
- *    - Higher entry (later in schedule.json) wins.
- *    - Losers excluded via EXDATE.
- * - Same-day multiple entries with same summary are allowed ONLY if their windows
- *   are strictly separated by a gap (not overlapping and not touching).
- *
- * Edge fix:
- * - Treat "touching" windows (end == start) as a conflict for the same summary/day.
- * - Store EXDATE as exact DTSTART timestamps to avoid midnight-edge mistakes.
- */
 final class ExportService
 {
     public static function exportUnmanaged(): array
@@ -41,8 +26,7 @@ final class ExportService
 
         $unmanaged = [];
         foreach ($entries as $entry) {
-            if (!is_array($entry)) continue;
-            if (!SchedulerIdentity::isGcsManaged($entry)) {
+            if (is_array($entry) && !SchedulerIdentity::isGcsManaged($entry)) {
                 $unmanaged[] = $entry;
             }
         }
@@ -63,19 +47,16 @@ final class ExportService
             $exportEvents[] = $intent;
         }
 
-        $exported = count($exportEvents);
-
         $ics = '';
         try {
             $ics = IcsWriter::build($exportEvents);
         } catch (Throwable $e) {
             $errors[] = 'Failed to generate ICS: ' . $e->getMessage();
-            $ics = '';
         }
 
         return [
             'ok' => empty($errors),
-            'exported' => $exported,
+            'exported' => count($exportEvents),
             'skipped' => $skipped,
             'unmanaged_total' => $unmanagedTotal,
             'warnings' => $warnings,
@@ -86,16 +67,12 @@ final class ExportService
 
     private static function applyPerPlaylistOverrideExdates(array $entries, array &$warnings): array
     {
-        // occurrences[summary][date] = list of ['idx'=>int,'startAbs'=>int,'endAbs'=>int,'dtstartText'=>string]
         $occurrences = [];
-
         $totalByIdx = [];
         $excludedByIdx = [];
-        $exdtstartByIdx = []; // list of "YYYY-MM-DD HH:MM:SS" for EXDATE anchoring
+        $exdtstartByIdx = [];
 
         foreach ($entries as $idx => $entry) {
-            if (!is_array($entry)) continue;
-
             $summary = self::summaryForEntry($entry);
             if ($summary === '') continue;
 
@@ -110,20 +87,18 @@ final class ExportService
             if ($win === null) continue;
 
             $dates = self::expandDatesForEntry($entry, $sd, $ed);
-            if (empty($dates)) continue;
+            if (!$dates) continue;
 
             $totalByIdx[$idx] = count($dates);
             $excludedByIdx[$idx] = 0;
             $exdtstartByIdx[$idx] = [];
 
             foreach ($dates as $ymd) {
-                [$startAbs, $endAbs] = self::occurrenceAbsRange($ymd, $win);
-
+                [$s, $e] = self::occurrenceAbsRange($ymd, $win);
                 $occurrences[$summary][$ymd][] = [
                     'idx' => $idx,
-                    'startAbs' => $startAbs,
-                    'endAbs' => $endAbs,
-                    // store exact DTSTART text for EXDATE: this occurrence starts at ymd + startTime
+                    's' => $s,
+                    'e' => $e,
                     'dtstartText' => $ymd . ' ' . $startTime,
                 ];
             }
@@ -133,26 +108,27 @@ final class ExportService
             foreach ($byDate as $ymd => $list) {
                 if (count($list) <= 1) continue;
 
-                // Higher entry (later in schedule.json) wins
-                usort($list, static function (array $a, array $b): int {
-                    return ($b['idx'] <=> $a['idx']);
-                });
+                usort($list, fn($a, $b) => $b['idx'] <=> $a['idx']);
 
                 $accepted = [];
 
                 foreach ($list as $occ) {
-                    $idx = (int)$occ['idx'];
-                    $s = (int)$occ['startAbs'];
-                    $e = (int)$occ['endAbs'];
+                    $conflictIdx = self::findConflictIndex($accepted, $occ['s'], $occ['e']);
 
-                    // EDGE FIX: treat touching windows as conflict (<=), not just strict overlap (<)
-                    $conflict = self::overlapsOrTouchesAny($accepted, $s, $e);
+                    if ($conflictIdx !== null) {
+                        // SAME DTSTART WINDOW → higher priority wins, do not exclude
+                        if (
+                            $accepted[$conflictIdx][0] === $occ['s'] &&
+                            $accepted[$conflictIdx][1] === $occ['e']
+                        ) {
+                            continue;
+                        }
 
-                    if ($conflict) {
-                        $exdtstartByIdx[$idx][$occ['dtstartText']] = true;
-                        $excludedByIdx[$idx] = ($excludedByIdx[$idx] ?? 0) + 1;
+                        // Lower priority loses
+                        $exdtstartByIdx[$occ['idx']][$occ['dtstartText']] = true;
+                        $excludedByIdx[$occ['idx']]++;
                     } else {
-                        $accepted[] = [$s, $e];
+                        $accepted[] = [$occ['s'], $occ['e']];
                     }
                 }
             }
@@ -160,141 +136,103 @@ final class ExportService
 
         $out = [];
         foreach ($entries as $idx => $entry) {
-            if (!is_array($entry)) continue;
-
             if (!isset($totalByIdx[$idx])) {
                 $out[] = $entry;
                 continue;
             }
 
-            $total = (int)$totalByIdx[$idx];
-            $excluded = (int)($excludedByIdx[$idx] ?? 0);
-
-            if ($total > 0 && $excluded >= $total) {
-                $warnings[] = "Export suppress: entry #" . ($idx + 1) . " fully overridden for its summary; not exported";
+            if ($excludedByIdx[$idx] >= $totalByIdx[$idx]) {
+                $warnings[] = "Export suppress: entry #" . ($idx + 1) . " fully overridden";
                 continue;
             }
 
-            $exSet = $exdtstartByIdx[$idx] ?? [];
-            if (!empty($exSet)) {
-                $entry2 = $entry;
-                // Export-only: exact DTSTART timestamps for EXDATE anchoring
-                $entry2['__gcs_export_exdates_dtstart'] = array_values(array_keys($exSet));
-
-                $warnings[] =
-                    "Export EXDATE: entry #" . ($idx + 1) .
-                    " excluded " . count($entry2['__gcs_export_exdates_dtstart']) .
-                    " occurrence(s) (per-playlist override, touch=conflict)";
-
-                $out[] = $entry2;
-            } else {
-                $out[] = $entry;
+            if (!empty($exdtstartByIdx[$idx])) {
+                $entry['__gcs_export_exdates_dtstart'] =
+                    array_values(array_keys($exdtstartByIdx[$idx]));
             }
+
+            $out[] = $entry;
         }
 
         return $out;
     }
 
-    /* ========= helpers ========= */
+    /* ---------------- helpers ---------------- */
 
-    private static function summaryForEntry(array $entry): string
+    private static function summaryForEntry(array $e): string
     {
-        if (!empty($entry['playlist']) && is_string($entry['playlist'])) return trim($entry['playlist']);
-        if (!empty($entry['command']) && is_string($entry['command']))   return trim($entry['command']);
-        return '';
+        return trim((string)($e['playlist'] ?? $e['command'] ?? ''));
     }
 
     private static function isValidYmd(string $ymd): bool
     {
-        return (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd) && strpos($ymd, '0000-') !== 0;
+        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd) && strpos($ymd, '0000-') !== 0;
     }
 
-    private static function expandDatesForEntry(array $entry, string $startDate, string $endDate): array
+    private static function expandDatesForEntry(array $e, string $sd, string $ed): array
     {
-        $dayEnum = (int)($entry['day'] ?? 7);
-
-        $start = DateTime::createFromFormat('Y-m-d', $startDate);
-        $end   = DateTime::createFromFormat('Y-m-d', $endDate);
-        if (!($start instanceof DateTime) || !($end instanceof DateTime)) return [];
-
+        $day = (int)($e['day'] ?? 7);
+        $d = new DateTime($sd);
+        $end = new DateTime($ed);
         $out = [];
-        $cursor = clone $start;
-        while ($cursor <= $end) {
-            if (self::matchesDayEnum($cursor, $dayEnum)) {
-                $out[] = $cursor->format('Y-m-d');
+
+        while ($d <= $end) {
+            if (self::matchesDayEnum($d, $day)) {
+                $out[] = $d->format('Y-m-d');
             }
-            $cursor->modify('+1 day');
+            $d->modify('+1 day');
         }
         return $out;
     }
 
-    private static function matchesDayEnum(DateTime $dt, int $enum): bool
+    private static function matchesDayEnum(DateTime $d, int $e): bool
     {
-        $w = (int)$dt->format('w'); // 0=Sun..6=Sat
-        if ($enum === 7) return true;
-
-        return match ($enum) {
-            0,1,2,3,4,5,6 => ($w === $enum),
-            8  => ($w >= 1 && $w <= 5),
-            9  => ($w === 0 || $w === 6),
-            10 => ($w === 1 || $w === 3 || $w === 5),
-            11 => ($w === 2 || $w === 4),
-            12 => ($w === 0 || ($w >= 1 && $w <= 4)),
-            13 => ($w === 5 || $w === 6),
+        $w = (int)$d->format('w');
+        if ($e === 7) return true;
+        return match ($e) {
+            0,1,2,3,4,5,6 => $w === $e,
+            8 => $w >= 1 && $w <= 5,
+            9 => $w === 0 || $w === 6,
+            10 => in_array($w, [1,3,5], true),
+            11 => in_array($w, [2,4], true),
+            12 => $w <= 4,
+            13 => $w >= 5,
             default => true,
         };
     }
 
-    private static function windowSeconds(string $startTime, string $endTime): ?array
+    private static function windowSeconds(string $s, string $e): ?array
     {
-        $s = self::hmsToSeconds($startTime);
-        if ($s === null) return null;
+        $ss = self::hmsToSeconds($s);
+        if ($ss === null) return null;
 
-        if ($endTime === '24:00:00') {
-            return [$s, 0, true];
-        }
+        if ($e === '24:00:00') return [$ss, 86400];
 
-        $e = self::hmsToSeconds($endTime);
-        if ($e === null) return null;
+        $es = self::hmsToSeconds($e);
+        if ($es === null) return null;
 
-        $cross = ($e <= $s);
-        return [$s, $e, $cross];
+        return [$ss, $es <= $ss ? $es + 86400 : $es];
     }
 
     private static function hmsToSeconds(string $hms): ?int
     {
         if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $hms)) return null;
-        [$hh, $mm, $ss] = array_map('intval', explode(':', $hms));
-        if ($hh < 0 || $hh > 23) return null;
-        if ($mm < 0 || $mm > 59) return null;
-        if ($ss < 0 || $ss > 59) return null;
-        return $hh * 3600 + $mm * 60 + $ss;
+        [$h,$m,$s] = array_map('intval', explode(':', $hms));
+        return $h * 3600 + $m * 60 + $s;
     }
 
-    private static function occurrenceAbsRange(string $ymd, array $win): array
+    private static function occurrenceAbsRange(string $_, array $w): array
     {
-        [$s, $e, $cross] = $win;
-        if (!$cross) return [$s, $e];
-        return [$s, 86400 + $e];
+        return [$w[0], $w[1]];
     }
 
-    /**
-     * Conflict check within same summary/day:
-     * - Overlap OR touching counts as conflict.
-     *
-     * @param array<int,array{0:int,1:int}> $accepted
-     */
-    private static function overlapsOrTouchesAny(array $accepted, int $s, int $e): bool
+    private static function findConflictIndex(array $acc, int $s, int $e): ?int
     {
-        foreach ($accepted as $iv) {
-            $a = (int)$iv[0];
-            $b = (int)$iv[1];
-            // overlap-or-touch if max(start) <= min(end)
-            if (max($a, $s) <= min($b, $e)) {
-                // If both are empty/invalid, ignore; otherwise treat as conflict.
-                if ($b > $a && $e > $s) return true;
+        foreach ($acc as $i => [$a,$b]) {
+            if (max($a,$s) <= min($b,$e)) {
+                return $i;
             }
         }
-        return false;
+        return null;
     }
 }
