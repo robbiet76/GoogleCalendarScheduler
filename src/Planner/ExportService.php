@@ -65,6 +65,15 @@ final class ExportService
         ];
     }
 
+    /**
+     * Apply per-playlist (summary) override logic.
+     *
+     * Rules:
+     * - Conflicts are evaluated ONLY within the same summary and same date
+     * - Higher entry (later in schedule.json) wins
+     * - Identical DTSTART windows → lower priority is explicitly EXDATE’d
+     * - Non-overlapping windows are both allowed
+     */
     private static function applyPerPlaylistOverrideExdates(array $entries, array &$warnings): array
     {
         $occurrences = [];
@@ -72,6 +81,7 @@ final class ExportService
         $excludedByIdx = [];
         $exdtstartByIdx = [];
 
+        // Build occurrences
         foreach ($entries as $idx => $entry) {
             $summary = self::summaryForEntry($entry);
             if ($summary === '') continue;
@@ -87,7 +97,7 @@ final class ExportService
             if ($win === null) continue;
 
             $dates = self::expandDatesForEntry($entry, $sd, $ed);
-            if (!$dates) continue;
+            if (empty($dates)) continue;
 
             $totalByIdx[$idx] = count($dates);
             $excludedByIdx[$idx] = 0;
@@ -104,10 +114,12 @@ final class ExportService
             }
         }
 
+        // Resolve conflicts per summary + per date
         foreach ($occurrences as $summary => $byDate) {
             foreach ($byDate as $ymd => $list) {
                 if (count($list) <= 1) continue;
 
+                // Higher index = higher priority
                 usort($list, fn($a, $b) => $b['idx'] <=> $a['idx']);
 
                 $accepted = [];
@@ -116,15 +128,17 @@ final class ExportService
                     $conflictIdx = self::findConflictIndex($accepted, $occ['s'], $occ['e']);
 
                     if ($conflictIdx !== null) {
-                        // SAME DTSTART WINDOW → higher priority wins, do not exclude
+                        // Identical DTSTART window → exclude lower priority explicitly
                         if (
                             $accepted[$conflictIdx][0] === $occ['s'] &&
                             $accepted[$conflictIdx][1] === $occ['e']
                         ) {
+                            $exdtstartByIdx[$occ['idx']][$occ['dtstartText']] = true;
+                            $excludedByIdx[$occ['idx']]++;
                             continue;
                         }
 
-                        // Lower priority loses
+                        // General overlap → lower priority loses
                         $exdtstartByIdx[$occ['idx']][$occ['dtstartText']] = true;
                         $excludedByIdx[$occ['idx']]++;
                     } else {
@@ -134,6 +148,7 @@ final class ExportService
             }
         }
 
+        // Apply EXDATEs / suppress fully overridden entries
         $out = [];
         foreach ($entries as $idx => $entry) {
             if (!isset($totalByIdx[$idx])) {
@@ -166,7 +181,10 @@ final class ExportService
 
     private static function isValidYmd(string $ymd): bool
     {
-        return preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd) && strpos($ymd, '0000-') !== 0;
+        return (bool)(
+            preg_match('/^\d{4}-\d{2}-\d{2}$/', $ymd) &&
+            strpos($ymd, '0000-') !== 0
+        );
     }
 
     private static function expandDatesForEntry(array $e, string $sd, string $ed): array
@@ -187,16 +205,18 @@ final class ExportService
 
     private static function matchesDayEnum(DateTime $d, int $e): bool
     {
-        $w = (int)$d->format('w');
+        $w = (int)$d->format('w'); // 0=Sun … 6=Sat
+
         if ($e === 7) return true;
+
         return match ($e) {
             0,1,2,3,4,5,6 => $w === $e,
-            8 => $w >= 1 && $w <= 5,
-            9 => $w === 0 || $w === 6,
+            8  => $w >= 1 && $w <= 5,          // MO–FR
+            9  => $w === 0 || $w === 6,        // SU,SA
             10 => in_array($w, [1,3,5], true),
             11 => in_array($w, [2,4], true),
-            12 => $w <= 4,
-            13 => $w >= 5,
+            12 => $w <= 4,                     // SU–TH  ✅ Jan 7 works
+            13 => $w >= 5,                     // FR,SA
             default => true,
         };
     }
@@ -206,18 +226,20 @@ final class ExportService
         $ss = self::hmsToSeconds($s);
         if ($ss === null) return null;
 
-        if ($e === '24:00:00') return [$ss, 86400];
+        if ($e === '24:00:00') {
+            return [$ss, 86400];
+        }
 
         $es = self::hmsToSeconds($e);
         if ($es === null) return null;
 
-        return [$ss, $es <= $ss ? $es + 86400 : $es];
+        return [$ss, ($es <= $ss) ? $es + 86400 : $es];
     }
 
     private static function hmsToSeconds(string $hms): ?int
     {
         if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $hms)) return null;
-        [$h,$m,$s] = array_map('intval', explode(':', $hms));
+        [$h, $m, $s] = array_map('intval', explode(':', $hms));
         return $h * 3600 + $m * 60 + $s;
     }
 
@@ -228,8 +250,8 @@ final class ExportService
 
     private static function findConflictIndex(array $acc, int $s, int $e): ?int
     {
-        foreach ($acc as $i => [$a,$b]) {
-            if (max($a,$s) <= min($b,$e)) {
+        foreach ($acc as $i => [$a, $b]) {
+            if (max($a, $s) <= min($b, $e)) {
                 return $i;
             }
         }
