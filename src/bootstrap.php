@@ -57,7 +57,6 @@ require_once __DIR__ . '/Core/IcsParser.php';
 require_once __DIR__ . '/Core/YamlMetadata.php';
 
 require_once __DIR__ . '/Core/TargetResolver.php';
-require_once __DIR__ . '/Core/IntentConsolidator.php';
 
 require_once __DIR__ . '/Core/DiffPreviewer.php';
 require_once __DIR__ . '/Core/ScheduleEntryExportAdapter.php';

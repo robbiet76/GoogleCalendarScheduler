@@ -173,6 +173,7 @@ final class SchedulerSync
                 continue;
             }
 
+            // Phase 29+: identity key is UID-only (SchedulerIdentity is the authority)
             $key = SchedulerIdentity::extractKey($entry);
             if ($key !== null) {
                 $present[$key] = true;
@@ -246,6 +247,9 @@ final class SchedulerSync
         if ($uid === '') {
             $uid = self::coalesceString($tpl, ['uid'], '');
         }
+        if ($uid === '') {
+            return 'Missing uid for intent (required for managed scheduler entries)';
+        }
 
         $startRaw = self::coalesceString($tpl, ['start'], '');
         $endRaw   = self::coalesceString($tpl, ['end'], '');
@@ -291,8 +295,8 @@ final class SchedulerSync
         // Phase 20 FIX: FPP "day" MUST be an enum selector (0..15), not a weekday bitmask.
         $fppDayEnum = self::shortDaysToFppDayEnum($shortDays, $startDt);
 
-        // Canonical identity tag stored in args[]
-        $tag = self::buildGcsV1Tag($uid, $startDate, $endDate, $shortDays);
+        // Phase 29+: canonical managed tag (UID-only identity; no range/days metadata)
+        $tag = SchedulerIdentity::buildArgsTag($uid);
 
         // STOP TYPE (Phase 21, aligned to FPP ScheduleEntry.cpp)
         $stopType = self::stopTypeToFppStopType($tpl['stopType'] ?? null);
@@ -305,7 +309,10 @@ final class SchedulerSync
             $args = array_values($tpl['args']);
         }
 
-        if ($tag !== '' && !self::argsContainsGcsV1Tag($args)) {
+        // Phase 29+: remove any existing GCS-managed tags (legacy or new) before adding the canonical one
+        $args = self::stripAllGcsTagsFromArgs($args);
+
+        if ($tag !== '') {
             $args[] = $tag;
         }
 
@@ -454,23 +461,38 @@ final class SchedulerSync
         };
     }
 
-    private static function buildGcsV1Tag(string $uid, string $startDate, string $endDate, string $days): string
-    {
-        if ($uid === '') return '';
-        $range = $startDate . '..' . $endDate;
-        return '|GCS:v1|uid=' . $uid . '|range=' . $range . '|days=' . $days;
-    }
-
     /**
+     * Remove any GCS-owned tags from args[].
+     *
+     * Phase 29+ policy:
+     * - We do NOT preserve any legacy tag variants in scheduler state.
+     * - We always emit exactly one canonical managed tag built by SchedulerIdentity.
+     *
      * @param array<int,mixed> $args
+     * @return array<int,mixed>
      */
-    private static function argsContainsGcsV1Tag(array $args): bool
+    private static function stripAllGcsTagsFromArgs(array $args): array
     {
+        $out = [];
+
         foreach ($args as $a) {
-            if (!is_string($a)) continue;
-            if (strpos($a, '|GCS:v1|') !== false) return true;
+            if (!is_string($a)) {
+                $out[] = $a;
+                continue;
+            }
+
+            // Remove any legacy internal tags or new display-prefixed tags
+            if (strpos($a, SchedulerIdentity::INTERNAL_TAG) !== false) {
+                continue;
+            }
+            if (strpos($a, SchedulerIdentity::DISPLAY_TAG) !== false) {
+                continue;
+            }
+
+            $out[] = $a;
         }
-        return false;
+
+        return array_values($out);
     }
 
     private static function parseYmdHms(string $s): ?DateTime

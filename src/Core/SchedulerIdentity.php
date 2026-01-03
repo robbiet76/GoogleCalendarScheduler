@@ -6,40 +6,69 @@ declare(strict_types=1);
  *
  * Canonical identity and ownership helper for scheduler entries.
  *
- * Ownership rules:
- * - A scheduler entry is considered GCS-managed if it contains a
- *   valid GCS v1 identity tag in args[]
+ * Ownership rules (Phase 29+):
+ * - A scheduler entry is considered GCS-managed if it contains
+ *   a valid GCS v1 tag in args[]
  *
  * Identity rules:
- * - Identity is the FULL GCS tag string
- *   (uid + range + days)
+ * - Identity is UID ONLY
+ * - Planner semantics (ranges, days, ordering) MUST NOT leak
+ *   into scheduler identity or apply logic
  *
- * Rationale:
- * - UID-only identity is insufficient once recurring calendar
- *   events expand into multiple scheduler entries
- * - Apply and delete operations must reason about exact raw
- *   scheduler entries, not logical event groupings
+ * Tag format (two-part, Phase 29+):
+ *   |M|GCS:v1|<uid>
  *
- * This class defines the single source of truth for determining
- * scheduler ownership and identity.
+ * Where:
+ * - |M|        = human-visible "Managed" marker (future FPP UI use)
+ * - |GCS:v1|   = internal ownership + versioning
+ * - <uid>      = canonical calendar series UID
+ *
+ * This class is the single source of truth for:
+ * - scheduler ownership
+ * - identity extraction
+ * - tag construction
  */
 final class SchedulerIdentity
 {
-    public const TAG_MARKER = '|GCS:v1|';
+    /**
+     * Human-visible managed marker
+     */
+    public const DISPLAY_TAG = '|M|';
 
     /**
-     * Extract the canonical GCS identity key from a scheduler entry.
-     *
-     * IMPORTANT:
-     * - The returned value is the FULL GCS tag string
-     * - Returning UID-only values will break delete and update semantics
+     * Internal ownership/version marker
+     */
+    public const INTERNAL_TAG = '|GCS:v1|';
+
+    /**
+     * Full canonical prefix for all managed scheduler entries
+     */
+    public const FULL_PREFIX = self::DISPLAY_TAG . self::INTERNAL_TAG;
+
+    /**
+     * Extract the canonical GCS identity key (UID) from a scheduler entry.
      *
      * @param array<string,mixed> $entry
-     * @return string|null Canonical identity tag or null if not present
+     * @return string|null UID if managed, otherwise null
      */
     public static function extractKey(array $entry): ?string
     {
-        return self::extractTag($entry);
+        if (!isset($entry['args']) || !is_array($entry['args'])) {
+            return null;
+        }
+
+        foreach ($entry['args'] as $arg) {
+            if (!is_string($arg)) {
+                continue;
+            }
+
+            if (str_starts_with($arg, self::FULL_PREFIX)) {
+                $uid = substr($arg, strlen(self::FULL_PREFIX));
+                return $uid !== '' ? $uid : null;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -61,28 +90,13 @@ final class SchedulerIdentity
     }
 
     /**
-     * Extract the raw GCS identity tag from args[].
+     * Build args[] tag for a managed scheduler entry.
      *
-     * @param array<string,mixed> $entry
-     * @return string|null Raw GCS tag or null if not found
+     * @param string $uid Canonical calendar UID
+     * @return string Tag suitable for args[]
      */
-    private static function extractTag(array $entry): ?string
+    public static function buildArgsTag(string $uid): string
     {
-        if (!isset($entry['args']) || !is_array($entry['args'])) {
-            return null;
-        }
-
-        foreach ($entry['args'] as $arg) {
-            if (!is_string($arg)) {
-                continue;
-            }
-
-            // Canonical tags must start with the marker
-            if (strpos($arg, self::TAG_MARKER) === 0) {
-                return $arg;
-            }
-        }
-
-        return null;
+        return self::FULL_PREFIX . $uid;
     }
 }

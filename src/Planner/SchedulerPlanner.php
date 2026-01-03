@@ -50,14 +50,14 @@ final class SchedulerPlanner
         /* -----------------------------------------------------------------
          * 0. Fixed guard date (calendar-aligned, based on FPP system time)
          *
-         * Guard date = Dec 31 of (currentYear + 2)
+         * Guard date = Dec 31 of (currentYear + 5)
          *
          * Rules (Planner-owned):
          * - Entry is valid only if startDate < guardDate
          * - endDate is capped to guardDate if it exceeds it
          * ----------------------------------------------------------------- */
         $currentYear = (int)date('Y');
-        $guardYear   = $currentYear + 2;
+        $guardYear   = $currentYear + 5;
         $guardDate   = sprintf('%04d-12-31', $guardYear);
 
         /* -----------------------------------------------------------------
