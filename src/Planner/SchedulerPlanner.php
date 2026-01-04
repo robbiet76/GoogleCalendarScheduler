@@ -282,23 +282,37 @@ final class SchedulerPlanner
             }
 
             // -------------------------------------------------------------
-            // DATE-RANGE CONTAINMENT PRIORITY (NEW)
-            // Narrower range ALWAYS wins (override semantics)
+            // DATE-RANGE CONTAINMENT PRIORITY (scoped)
+            //
+            // Only apply containment priority when BOTH entries target the
+            // same scheduler target (same type+target). Otherwise, contained
+            // date ranges across unrelated schedules produce nonsense ordering.
             // -------------------------------------------------------------
-            if (
-                $aStartDate >= $bStartDate &&
-                $aEndDate   <= $bEndDate &&
-                ($aStartDate !== $bStartDate || $aEndDate !== $bEndDate)
-            ) {
-                return -1; // A is contained → higher priority
-            }
+            $aType   = (string)($at['type'] ?? '');
+            $bType   = (string)($bt['type'] ?? '');
+            $aTarget = (string)($at['target'] ?? '');
+            $bTarget = (string)($bt['target'] ?? '');
 
-            if (
-                $bStartDate >= $aStartDate &&
-                $bEndDate   <= $aEndDate &&
-                ($bStartDate !== $aStartDate || $bEndDate !== $aEndDate)
-            ) {
-                return 1; // B is contained → higher priority
+            $sameTarget = ($aType !== '' && $aTarget !== '' && $aType === $bType && $aTarget === $bTarget);
+
+            if ($sameTarget) {
+                // A contained in B → A higher priority
+                if (
+                    $aStartDate >= $bStartDate &&
+                    $aEndDate   <= $bEndDate &&
+                    ($aStartDate !== $bStartDate || $aEndDate !== $bEndDate)
+                ) {
+                    return -1;
+                }
+
+                // B contained in A → B higher priority
+                if (
+                    $bStartDate >= $aStartDate &&
+                    $bEndDate   <= $aEndDate &&
+                    ($bStartDate !== $aStartDate || $bEndDate !== $aEndDate)
+                ) {
+                    return 1;
+                }
             }
 
             // -------------------------------------------------------------
