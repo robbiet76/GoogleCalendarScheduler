@@ -97,71 +97,67 @@ final class SchedulerPlanner
         }
 
         /* -----------------------------------------------------------------
-         * 3. ORDER BUNDLES — PAIRWISE DOMINANCE MODEL
+         * 3. ORDER BUNDLES — CHRONOLOGY + OVERLAP RESOLUTION (MECHANICAL)
+         *
+         * Model:
+         * 1) Start in chronological order (start date, then start time).
+         * 2) Repeatedly perform a top-down scan:
+         *    - If two adjacent bundles overlap (type+target + real overlap),
+         *      order them by start time DESC (later start first).
+         * 3) Stop when a full pass makes no swaps.
+         * 4) Bundles always move as a unit; internal ordering remains intact.
          * ----------------------------------------------------------------- */
 
         // 3a) Baseline chronological order (stable fallback)
         usort($bundles, static function (array $a, array $b): int {
-            $ar = $a['base']['range'];
-            $br = $b['base']['range'];
+            $ar = $a['base']['range'] ?? [];
+            $br = $b['base']['range'] ?? [];
 
-            if ($ar['start'] !== $br['start']) {
-                return strcmp($ar['start'], $br['start']);
+            $as = (string)($ar['start'] ?? '');
+            $bs = (string)($br['start'] ?? '');
+
+            if ($as !== $bs) {
+                return strcmp($as, $bs); // startDate ASC
             }
 
-            return strcmp(
-                substr($a['base']['template']['start'], 11),
-                substr($b['base']['template']['start'], 11)
-            );
+            $aStart = (string)($a['base']['template']['start'] ?? '');
+            $bStart = (string)($b['base']['template']['start'] ?? '');
+
+            // Compare HH:MM:SS lexicographically (safe)
+            return strcmp(substr($aStart, 11, 8), substr($bStart, 11, 8)); // startTime ASC
         });
 
-        // 3b) Build dominance graph
-        $edges = [];
-        $inDeg = [];
-        $count = count($bundles);
+        // 3b) Repeated overlap-resolution scan (adjacent swaps only)
+        $n = count($bundles);
+        $maxPasses = max(1, $n * $n); // hard cap safety
+        $pass = 0;
 
-        for ($i = 0; $i < $count; $i++) {
-            $edges[$i] = [];
-            $inDeg[$i] = 0;
-        }
+        while ($pass < $maxPasses) {
+            $pass++;
+            $swapped = false;
 
-        for ($i = 0; $i < $count; $i++) {
-            for ($j = 0; $j < $count; $j++) {
-                if ($i === $j) continue;
+            for ($i = 0; $i < $n - 1; $i++) {
+                $A = $bundles[$i];
+                $B = $bundles[$i + 1];
 
-                if (self::bundleDominates($bundles[$i], $bundles[$j])) {
-                    $edges[$i][] = $j;
-                    $inDeg[$j]++;
+                if (!self::bundlesRuntimeOverlap($A, $B)) {
+                    continue;
+                }
+
+                $aStartSec = self::bundleDailyStartSeconds($A);
+                $bStartSec = self::bundleDailyStartSeconds($B);
+
+                // If overlapping, later daily start time must be higher priority (above).
+                if ($aStartSec < $bStartSec) {
+                    $bundles[$i]     = $B;
+                    $bundles[$i + 1] = $A;
+                    $swapped = true;
                 }
             }
-        }
 
-        // 3c) Stable topological sort
-        $queue = [];
-        foreach ($inDeg as $i => $deg) {
-            if ($deg === 0) {
-                $queue[] = $i;
+            if (!$swapped) {
+                break;
             }
-        }
-        sort($queue, SORT_NUMERIC);
-
-        $ordered = [];
-        while ($queue) {
-            $n = array_shift($queue);
-            $ordered[] = $bundles[$n];
-
-            foreach ($edges[$n] as $m) {
-                $inDeg[$m]--;
-                if ($inDeg[$m] === 0) {
-                    $queue[] = $m;
-                    sort($queue, SORT_NUMERIC);
-                }
-            }
-        }
-
-        // Safety fallback: preserve chronological order if cycle detected
-        if (count($ordered) === $count) {
-            $bundles = $ordered;
         }
 
         /* -----------------------------------------------------------------
@@ -217,61 +213,41 @@ final class SchedulerPlanner
     }
 
     /* ===============================================================
-     * DOMINANCE RULE
-     * =============================================================== */
-    private static function bundleDominates(array $A, array $B): bool
-    {
-        $a = $A['base'];
-        $b = $B['base'];
-
-        if ($a['template']['type'] !== $b['template']['type']) return false;
-        if ($a['template']['target'] !== $b['template']['target']) return false;
-        if (!self::basesOverlap($a, $b)) return false;
-
-        $ar = $a['range'];
-        $br = $b['range'];
-
-        // Date + day containment
-        if (
-            $ar['start'] >= $br['start'] &&
-            $ar['end']   <= $br['end'] &&
-            ($ar['start'] !== $br['start'] || $ar['end'] !== $br['end']) &&
-            self::daysContainShort($ar['days'], $br['days'])
-        ) {
-            return true;
-        }
-
-        // Same date range → narrower daily window wins
-        if ($ar['start'] === $br['start'] && $ar['end'] === $br['end']) {
-            $aDur = self::windowDurationSeconds(
-                self::timeToSeconds(substr($a['template']['start'], 11)),
-                self::timeToSeconds(substr($a['template']['end'], 11))
-            );
-            $bDur = self::windowDurationSeconds(
-                self::timeToSeconds(substr($b['template']['start'], 11)),
-                self::timeToSeconds(substr($b['template']['end'], 11))
-            );
-            return $aDur < $bDur;
-        }
-
-        return false;
-    }
-
-    /* ===============================================================
      * Helpers
      * =============================================================== */
 
-    private static function daysContainShort(string $inner, string $outer): bool
+    /**
+     * Type+target is the uniqueness scope for precedence.
+     * Only bundles within the same (type,target) group can "compete".
+     */
+    private static function bundlesRuntimeOverlap(array $bundleA, array $bundleB): bool
     {
-        if ($inner === '' || $outer === '') return false;
+        $a = $bundleA['base'] ?? null;
+        $b = $bundleB['base'] ?? null;
+        if (!is_array($a) || !is_array($b)) return false;
 
-        for ($i = 0; $i + 1 < strlen($inner); $i += 2) {
-            $d = substr($inner, $i, 2);
-            if (strpos($outer, $d) === false) {
-                return false;
-            }
-        }
-        return true;
+        $at = $a['template'] ?? null;
+        $bt = $b['template'] ?? null;
+        if (!is_array($at) || !is_array($bt)) return false;
+
+        if ((string)($at['type'] ?? '') !== (string)($bt['type'] ?? '')) return false;
+        if ((string)($at['target'] ?? '') !== (string)($bt['target'] ?? '')) return false;
+
+        return self::basesOverlap($a, $b);
+    }
+
+    private static function bundleDailyStartSeconds(array $bundle): int
+    {
+        $base = $bundle['base'] ?? null;
+        if (!is_array($base)) return 0;
+
+        $tpl = $base['template'] ?? null;
+        if (!is_array($tpl)) return 0;
+
+        $ts = (string)($tpl['start'] ?? '');
+        if ($ts === '' || strlen($ts) < 19) return 0;
+
+        return self::timeToSeconds(substr($ts, 11, 8));
     }
 
     private static function applyGuardRulesToEntry(array $entry, string $guardDate): ?array
