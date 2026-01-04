@@ -259,22 +259,19 @@ final class SchedulerPlanner
             }
 
             // -------------------------------------------------------------
-            // PRIMARY: Non-overlapping DATE RANGES → pure chronological by date
-            // (YYYY-MM-DD lexicographic compares correctly)
+            // PRIMARY: Non-overlapping DATE RANGES → chronological
             // -------------------------------------------------------------
             if ($aEndDate < $bStartDate) {
-                return -1; // A strictly before B
+                return -1;
             }
             if ($bEndDate < $aStartDate) {
-                return 1;  // B strictly before A
+                return 1;
             }
 
             // -------------------------------------------------------------
-            // DATE RANGES OVERLAP → apply full overlap model (days + times)
-            // If they don't actually overlap on active days/times, keep chronological.
+            // Overlapping date ranges but no actual active overlap
             // -------------------------------------------------------------
             if (!self::basesOverlap($aBase, $bBase)) {
-                // Chronological within overlapping date spans (stable UI)
                 if ($aStartDate !== $bStartDate) {
                     return strcmp($aStartDate, $bStartDate);
                 }
@@ -285,9 +282,27 @@ final class SchedulerPlanner
             }
 
             // -------------------------------------------------------------
-            // CONTAINMENT RULE (background schedules):
-            // If one daily window fully CONTAINS the other,
-            // the containing window must be ordered LOWER.
+            // DATE-RANGE CONTAINMENT PRIORITY (NEW)
+            // Narrower range ALWAYS wins (override semantics)
+            // -------------------------------------------------------------
+            if (
+                $aStartDate >= $bStartDate &&
+                $aEndDate   <= $bEndDate &&
+                ($aStartDate !== $bStartDate || $aEndDate !== $bEndDate)
+            ) {
+                return -1; // A is contained → higher priority
+            }
+
+            if (
+                $bStartDate >= $aStartDate &&
+                $bEndDate   <= $aEndDate &&
+                ($bStartDate !== $aStartDate || $bEndDate !== $aEndDate)
+            ) {
+                return 1; // B is contained → higher priority
+            }
+
+            // -------------------------------------------------------------
+            // TIME WINDOW CONTAINMENT (background schedules)
             // -------------------------------------------------------------
             $aStartSec = self::timeToSeconds(substr((string)($at['start'] ?? ''), 11));
             $aEndSec   = self::timeToSeconds(substr((string)($at['end'] ?? ''), 11));
@@ -297,50 +312,38 @@ final class SchedulerPlanner
             $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
             $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
 
-            // Normalize wrap windows for containment check
             $aEndNorm = ($aEndSec <= $aStartSec) ? $aEndSec + 86400 : $aEndSec;
             $bEndNorm = ($bEndSec <= $bStartSec) ? $bEndSec + 86400 : $bEndSec;
 
-            // A fully contains B → A goes AFTER B
             if ($aStartSec <= $bStartSec && $aEndNorm >= $bEndNorm && $aDur > $bDur) {
                 return 1;
             }
 
-            // B fully contains A → B goes AFTER A
             if ($bStartSec <= $aStartSec && $bEndNorm >= $aEndNorm && $bDur > $aDur) {
                 return -1;
             }
 
-            // Tie-breaker: shorter daily window first (more specific)
-            $aEndSec = self::timeToSeconds(substr((string)($at['end'] ?? ''), 11));
-            $bEndSec = self::timeToSeconds(substr((string)($bt['end'] ?? ''), 11));
-
-            $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
-            $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
-
+            // Tie-breaker: shorter window first
             if ($aDur !== $bDur) {
-                return $aDur <=> $bDur; // ASC
+                return $aDur <=> $bDur;
             }
 
-            // Next: earlier date-range start first (readability)
-            if ($aStartDate !== $bStartDate) {
+                if ($aStartDate !== $bStartDate) {
                 return strcmp($aStartDate, $bStartDate);
             }
 
-            // Final stable tie-breakers
             $aUid = (string)($aBase['uid'] ?? '');
             $bUid = (string)($bBase['uid'] ?? '');
             if ($aUid !== '' && $bUid !== '' && $aUid !== $bUid) {
                 return strcmp($aUid, $bUid);
             }
 
-            // Fall back to template timestamp
             if ($aTplStart !== '' && $bTplStart !== '' && $aTplStart !== $bTplStart) {
                 return strcmp($aTplStart, $bTplStart);
             }
 
             return 0;
-        });
+        }); 
 
         $desiredIntents = [];
         foreach ($bundles as $bundle) {
