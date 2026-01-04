@@ -197,7 +197,7 @@ final class SchedulerPlanner
             ]);
         }
 
-        // 3b) Iterative top-down scans
+        // 3b) Iterative top-down scans (non-adjacent bubbling)
         $passes = 0;
         $swapsTotal = 0;
         $swapPairs = [];
@@ -206,56 +206,73 @@ final class SchedulerPlanner
             $passes++;
             $swapsThisPass = 0;
 
-            for ($i = 0; $i < count($bundles) - 1; $i++) {
+            $n = count($bundles);
+
+            for ($i = 0; $i < $n - 1; $i++) {
                 $A = $bundles[$i];
-                $B = $bundles[$i + 1];
-
                 $aBase = $A['base'] ?? null;
-                $bBase = $B['base'] ?? null;
-                if (!is_array($aBase) || !is_array($bBase)) {
+                if (!is_array($aBase)) {
                     continue;
                 }
 
-                // Only compare within same (type,target) identity group
-                $atype = (string)($aBase['template']['type'] ?? '');
-                $btype = (string)($bBase['template']['type'] ?? '');
-                $atgt  = $aBase['template']['target'] ?? null;
-                $btgt  = $bBase['template']['target'] ?? null;
+                $aStartSec = self::timeToSeconds(substr((string)($aBase['template']['start'] ?? ''), 11));
 
-                if ($atype === '' || $atype !== $btype || $atgt !== $btgt) {
-                    continue;
-                }
-
-                $overlap = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
-                if (!$overlap['overlaps']) {
-                    continue;
-                }
-
-                // Overlap exists → enforce start-time DESC (later start above)
-                $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
-                $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
-
-                // If A starts earlier than B, swap so B rises above A
-                if ($aStartSec < $bStartSec) {
-                    if ($debug) {
-                        $swapPairs[] = [
-                            'pass' => $passes,
-                            'idx'  => $i,
-                            'A'    => self::bundleDebugRow($A),
-                            'B'    => self::bundleDebugRow($B),
-                            'overlap_reason' => $overlap,
-                        ];
+                // Scan any lower bundle B and bubble it above A when required
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $B = $bundles[$j];
+                    $bBase = $B['base'] ?? null;
+                    if (!is_array($bBase)) {
+                        continue;
                     }
 
-                    $bundles[$i]     = $B;
-                    $bundles[$i + 1] = $A;
+                    // OPTIONAL identity-group restriction:
+                    // If you truly want "only reorder within same (type,target)", keep this.
+                    // If you want global precedence (recommended for FPP), comment it out.
+                    // $atype = (string)($aBase['template']['type'] ?? '');
+                    $btype = (string)($bBase['template']['type'] ?? '');
+                    $atgt  = $aBase['template']['target'] ?? null;
+                    $btgt  = $bBase['template']['target'] ?? null;
 
-                    $swapsThisPass++;
-                    $swapsTotal++;
+                    // if ($atype === '' || $atype !== $btype || $atgt !== $btgt) {
+                    //     continue;
+                    // }
 
-                    // After swapping, step back one position to re-check new adjacency
-                    if ($i > 0) {
-                        $i--;
+                    $overlap = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
+                    if (!$overlap['overlaps']) {
+                        continue;
+                    }
+
+                    $bStartSec = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
+
+                    // Overlap exists → enforce start-time DESC (later start must be above earlier start)
+                    if ($aStartSec < $bStartSec) {
+                        if ($debug) {
+                            $swapPairs[] = [
+                                'pass' => $passes,
+                                'move' => ['from' => $j, 'to' => $i],
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                                'overlap_reason' => $overlap,
+                            ];
+                        }
+
+                        // Move B from position j to position i (bubble above)
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+
+                        // Refresh references after mutation
+                        $A = $bundles[$i];
+                        $aBase = $A['base'] ?? null;
+                        $aStartSec = is_array($aBase)
+                            ? self::timeToSeconds(substr((string)($aBase['template']['start'] ?? ''), 11))
+                            : 0;
+
+                        // Restart scanning below the current i after a successful bubble
+                        $n = count($bundles);
+                        $j = $i; // next loop iteration becomes i+1
                     }
                 }
             }
