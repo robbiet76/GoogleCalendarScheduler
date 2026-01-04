@@ -213,151 +213,107 @@ final class SchedulerPlanner
         }
 
         /* -----------------------------------------------------------------
-         * 3. Flatten bundles into desiredEntries (compatibility with existing Diff/Apply)
-         *
-         * Invariant:
-         * - Overrides directly precede their base (bundle adjacency)
-         *
-         * PHASE 28 (FPP-native, mechanical ordering):
-         * - PRIMARY: if two bundles do NOT overlap in DATE RANGE, order chronologically by date range
-         * - ONLY IF date ranges overlap: apply FPP priority rule (later DAILY start time first)
-         *
-         * This ensures:
-         * - Non-overlapping calendar entries appear in intuitive chronological order
-         * - Overlapping entries are ordered to match FPP top-down precedence
-         * ----------------------------------------------------------------- */
-        usort($bundles, static function (array $a, array $b): int {
-            $aBase = $a['base'] ?? null;
-            $bBase = $b['base'] ?? null;
+        * 3. Flatten bundles into desiredEntries (compatibility with existing Diff/Apply)
+        *
+        * Tiered ordering model (Planner-owned, deterministic):
+        *
+        * Priority tiers:
+        *  400 = single-day override
+        *  300 = contained date-range override (same target)
+        *  200 = normal base schedule
+        *  100 = background / long-range schedule
+        *
+        * Sort keys (in order):
+        *  - tier DESC
+        *  - range width ASC (narrower first)
+        *  - startDate ASC
+        *  - daily start time DESC
+        * ----------------------------------------------------------------- */
 
-            if (!is_array($aBase) || !is_array($bBase)) {
-                return 0;
+        // Precompute ordering metadata for each bundle
+        $bundleMeta = [];
+
+        foreach ($bundles as $idx => $bundle) {
+            $base = $bundle['base'] ?? null;
+            if (!is_array($base)) {
+                continue;
             }
 
-            $ar = $aBase['range'] ?? null;
-            $br = $bBase['range'] ?? null;
-            $at = $aBase['template'] ?? null;
-            $bt = $bBase['template'] ?? null;
+            $range    = $base['range'] ?? [];
+            $tpl      = $base['template'] ?? [];
 
-            if (!is_array($ar) || !is_array($br) || !is_array($at) || !is_array($bt)) {
-                return 0;
+            $startDate = (string)($range['start'] ?? '');
+            $endDate   = (string)($range['end'] ?? '');
+
+            // Compute range width (days)
+            $rangeWidth = 999999;
+            if ($startDate !== '' && $endDate !== '') {
+                try {
+                    $sd = new DateTime($startDate);
+                    $ed = new DateTime($endDate);
+                    $rangeWidth = (int)$sd->diff($ed)->days;
+                } catch (\Throwable) {}
             }
 
-            $aStartDate = (string)($ar['start'] ?? '');
-            $aEndDate   = (string)($ar['end'] ?? '');
-            $bStartDate = (string)($br['start'] ?? '');
-            $bEndDate   = (string)($br['end'] ?? '');
-
-            // Defensive: if missing dates, fall back to template timestamp ordering
-            $aTplStart = (string)($at['start'] ?? '');
-            $bTplStart = (string)($bt['start'] ?? '');
-            if ($aStartDate === '' || $aEndDate === '' || $bStartDate === '' || $bEndDate === '') {
-                if ($aTplStart === '' || $bTplStart === '') {
-                    return 0;
-                }
-                return strcmp($aTplStart, $bTplStart);
+            // Daily start seconds
+            $dailyStartSec = 0;
+            if (!empty($tpl['start'])) {
+                $dailyStartSec = self::timeToSeconds(substr((string)$tpl['start'], 11));
             }
 
-            // -------------------------------------------------------------
-            // PRIMARY: Non-overlapping DATE RANGES → chronological
-            // -------------------------------------------------------------
-            if ($aEndDate < $bStartDate) {
-                return -1;
-            }
-            if ($bEndDate < $aStartDate) {
-                return 1;
+            // Determine tier
+            $tier = 200; // default: base schedule
+
+            // Single-day override
+            if ($startDate !== '' && $endDate !== '' && $startDate === $endDate) {
+                $tier = 400;
             }
 
-            // -------------------------------------------------------------
-            // Overlapping date ranges but no actual active overlap
-            // -------------------------------------------------------------
-            if (!self::basesOverlap($aBase, $bBase)) {
-                if ($aStartDate !== $bStartDate) {
-                    return strcmp($aStartDate, $bStartDate);
-                }
-                if ($aTplStart !== '' && $bTplStart !== '') {
-                    return strcmp($aTplStart, $bTplStart);
-                }
-                return strcmp($aEndDate, $bEndDate);
+            // Background schedule heuristic: very long range
+            if ($rangeWidth > 120) {
+                $tier = 100;
             }
 
-            // -------------------------------------------------------------
-            // DATE-RANGE CONTAINMENT PRIORITY (scoped)
-            //
-            // Only apply containment priority when BOTH entries target the
-            // same scheduler target (same type+target). Otherwise, contained
-            // date ranges across unrelated schedules produce nonsense ordering.
-            // -------------------------------------------------------------
-            $aType   = (string)($at['type'] ?? '');
-            $bType   = (string)($bt['type'] ?? '');
-            $aTarget = (string)($at['target'] ?? '');
-            $bTarget = (string)($bt['target'] ?? '');
+            $bundleMeta[$idx] = [
+                'tier'        => $tier,
+                'rangeWidth'  => $rangeWidth,
+                'startDate'   => $startDate,
+                'startSec'    => $dailyStartSec,
+            ];
+        }
 
-            $sameTarget = ($aType !== '' && $aTarget !== '' && $aType === $bType && $aTarget === $bTarget);
+        // Stable sort using precomputed keys
+        uksort($bundles, static function (int $a, int $b) use ($bundleMeta): int {
+            $ma = $bundleMeta[$a] ?? null;
+            $mb = $bundleMeta[$b] ?? null;
 
-            if ($sameTarget) {
-                // A contained in B → A higher priority
-                if (
-                    $aStartDate >= $bStartDate &&
-                    $aEndDate   <= $bEndDate &&
-                    ($aStartDate !== $bStartDate || $aEndDate !== $bEndDate)
-                ) {
-                    return -1;
-                }
-
-                // B contained in A → B higher priority
-                if (
-                    $bStartDate >= $aStartDate &&
-                    $bEndDate   <= $aEndDate &&
-                    ($bStartDate !== $aStartDate || $bEndDate !== $aEndDate)
-                ) {
-                    return 1;
-                }
+            if (!$ma || !$mb) {
+                return $a <=> $b;
             }
 
-            // -------------------------------------------------------------
-            // TIME WINDOW CONTAINMENT (background schedules)
-            // -------------------------------------------------------------
-            $aStartSec = self::timeToSeconds(substr((string)($at['start'] ?? ''), 11));
-            $aEndSec   = self::timeToSeconds(substr((string)($at['end'] ?? ''), 11));
-            $bStartSec = self::timeToSeconds(substr((string)($bt['start'] ?? ''), 11));
-            $bEndSec   = self::timeToSeconds(substr((string)($bt['end'] ?? ''), 11));
-
-            $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
-            $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
-
-            $aEndNorm = ($aEndSec <= $aStartSec) ? $aEndSec + 86400 : $aEndSec;
-            $bEndNorm = ($bEndSec <= $bStartSec) ? $bEndSec + 86400 : $bEndSec;
-
-            if ($aStartSec <= $bStartSec && $aEndNorm >= $bEndNorm && $aDur > $bDur) {
-                return 1;
+            // Tier DESC
+            if ($ma['tier'] !== $mb['tier']) {
+                return $mb['tier'] <=> $ma['tier'];
             }
 
-            if ($bStartSec <= $aStartSec && $bEndNorm >= $aEndNorm && $bDur > $aDur) {
-                return -1;
+            // Range width ASC (narrower first)
+            if ($ma['rangeWidth'] !== $mb['rangeWidth']) {
+                return $ma['rangeWidth'] <=> $mb['rangeWidth'];
             }
 
-            // Tie-breaker: shorter window first
-            if ($aDur !== $bDur) {
-                return $aDur <=> $bDur;
+            // Start date ASC
+            if ($ma['startDate'] !== $mb['startDate']) {
+                return strcmp($ma['startDate'], $mb['startDate']);
             }
 
-                if ($aStartDate !== $bStartDate) {
-                return strcmp($aStartDate, $bStartDate);
+            // Daily start time DESC (later first)
+            if ($ma['startSec'] !== $mb['startSec']) {
+                return $mb['startSec'] <=> $ma['startSec'];
             }
 
-            $aUid = (string)($aBase['uid'] ?? '');
-            $bUid = (string)($bBase['uid'] ?? '');
-            if ($aUid !== '' && $bUid !== '' && $aUid !== $bUid) {
-                return strcmp($aUid, $bUid);
-            }
-
-            if ($aTplStart !== '' && $bTplStart !== '' && $aTplStart !== $bTplStart) {
-                return strcmp($aTplStart, $bTplStart);
-            }
-
-            return 0;
-        }); 
+            // Final stable fallback
+            return $a <=> $b;
+        });
 
         $desiredIntents = [];
         foreach ($bundles as $bundle) {
