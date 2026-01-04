@@ -10,26 +10,55 @@ declare(strict_types=1);
  * - Ingest calendar data and resolve scheduling analysis
  * - Translate analysis into desired FPP scheduler entries
  * - Emit ScheduleBundles (base + overrides) as semantic unit
- * - Order bundles deterministically according to FPP precedence rules
+ * - Order bundles deterministically according to simplified FPP precedence model
  * - Flatten bundles into desiredEntries
  *
  * GUARANTEES:
  * - NEVER writes to the FPP scheduler
  * - NEVER mutates schedule.json
  * - Deterministic output
+ *
+ * DEBUGGING:
+ * - When enabled, writes detailed traces to /tmp:
+ *   /tmp/gcs_planner_order_debug.log          (JSONL)
+ *   /tmp/gcs_planner_order_initial.txt        (human list)
+ *   /tmp/gcs_planner_order_after_passes.txt   (human list)
+ *
+ * Enable debug via:
+ * - config['runtime']['debug_ordering'] = true
+ *   (or export GCS_DEBUG_ORDERING=1)
  */
 final class SchedulerPlanner
 {
     private const MAX_MANAGED_ENTRIES = 100;
+    private const MAX_ORDER_PASSES    = 50;
 
     public static function plan(array $config): array
     {
+        $debug = self::isDebugOrderingEnabled($config);
+        if ($debug) {
+            self::dbgReset();
+            self::dbg($config, 'enter', [
+                'ts' => date('c'),
+                'tz' => date_default_timezone_get(),
+                'php' => PHP_VERSION,
+            ]);
+        }
+
         /* -----------------------------------------------------------------
          * 0. Guard date
          * ----------------------------------------------------------------- */
         $currentYear = (int)date('Y');
         $guardYear   = $currentYear + 5;
         $guardDate   = sprintf('%04d-12-31', $guardYear);
+
+        if ($debug) {
+            self::dbg($config, 'guard', [
+                'currentYear' => $currentYear,
+                'guardYear'   => $guardYear,
+                'guardDate'   => $guardDate,
+            ]);
+        }
 
         /* -----------------------------------------------------------------
          * 1. Calendar ingestion
@@ -40,6 +69,14 @@ final class SchedulerPlanner
         $series = (isset($runnerResult['series']) && is_array($runnerResult['series']))
             ? $runnerResult['series']
             : [];
+
+        if ($debug) {
+            self::dbg($config, 'runner', [
+                'ok' => (bool)($runnerResult['ok'] ?? false),
+                'series_count' => count($series),
+                'errors' => $runnerResult['errors'] ?? [],
+            ]);
+        }
 
         /* -----------------------------------------------------------------
          * 2. Build bundles
@@ -55,16 +92,40 @@ final class SchedulerPlanner
             $summary  = (string)($s['summary'] ?? '');
             $resolved = (isset($s['resolved']) && is_array($s['resolved'])) ? $s['resolved'] : null;
             if (!$resolved || empty($resolved['type']) || !array_key_exists('target', $resolved)) {
+                if ($debug) {
+                    self::dbg($config, 'skip_series_unresolved', [
+                        'uid' => $uid,
+                        'summary' => $summary,
+                        'resolved' => $resolved,
+                    ]);
+                }
                 continue;
             }
 
             $baseEv = (isset($s['base']) && is_array($s['base'])) ? $s['base'] : null;
-            if (!$baseEv || empty($baseEv['start']) || empty($baseEv['end'])) continue;
+            if (!$baseEv || empty($baseEv['start']) || empty($baseEv['end'])) {
+                if ($debug) {
+                    self::dbg($config, 'skip_series_no_base', [
+                        'uid' => $uid,
+                        'summary' => $summary,
+                    ]);
+                }
+                continue;
+            }
 
             try {
                 $baseStartDT = new DateTime((string)$baseEv['start']);
                 $baseEndDT   = new DateTime((string)$baseEv['end']);
-            } catch (\Throwable) {
+            } catch (\Throwable $e) {
+                if ($debug) {
+                    self::dbg($config, 'skip_series_bad_base_dates', [
+                        'uid' => $uid,
+                        'summary' => $summary,
+                        'err' => $e->getMessage(),
+                        'start' => $baseEv['start'] ?? null,
+                        'end' => $baseEv['end'] ?? null,
+                    ]);
+                }
                 continue;
             }
 
@@ -73,7 +134,7 @@ final class SchedulerPlanner
             $daysShort       = self::deriveDaysShortFromBase($baseEv, $baseStartDT);
 
             $bundles[] = [
-                'overrides' => [],
+                'overrides' => [], // kept for future; bundle must remain cohesive
                 'base' => [
                     'uid' => $uid,
                     'template' => [
@@ -96,76 +157,150 @@ final class SchedulerPlanner
             ];
         }
 
+        if ($debug) {
+            self::dbg($config, 'bundles_built', [
+                'bundle_count' => count($bundles),
+                'first10' => array_slice(array_map([self::class, 'bundleDebugRow'], $bundles), 0, 10),
+            ]);
+        }
+
         /* -----------------------------------------------------------------
-         * 3. ORDER BUNDLES — CHRONOLOGY + OVERLAP RESOLUTION (MECHANICAL)
+         * 3. ORDER BUNDLES — SIMPLIFIED MODEL
          *
-         * Model:
-         * 1) Start in chronological order (start date, then start time).
-         * 2) Repeatedly perform a top-down scan:
-         *    - If two adjacent bundles overlap (type+target + real overlap),
-         *      order them by start time DESC (later start first).
-         * 3) Stop when a full pass makes no swaps.
-         * 4) Bundles always move as a unit; internal ordering remains intact.
+         * 2) Start in chronological order (startDate, then daily start time)
+         * 3) Repeated top-down passes:
+         *    - Consider adjacent bundles A (higher) and B (lower)
+         *    - If they overlap (same type/target and runtime overlap within their date ranges),
+         *      order them by daily start time DESC (later start above earlier start).
+         *    - Repeat until a pass makes no swaps.
          * ----------------------------------------------------------------- */
 
-        // 3a) Baseline chronological order (stable fallback)
+        // 3a) Baseline chronological order
         usort($bundles, static function (array $a, array $b): int {
-            $ar = $a['base']['range'] ?? [];
-            $br = $b['base']['range'] ?? [];
+            $ar = $a['base']['range'];
+            $br = $b['base']['range'];
 
-            $as = (string)($ar['start'] ?? '');
-            $bs = (string)($br['start'] ?? '');
-
-            if ($as !== $bs) {
-                return strcmp($as, $bs); // startDate ASC
+            if ($ar['start'] !== $br['start']) {
+                return strcmp((string)$ar['start'], (string)$br['start']);
             }
 
-            $aStart = (string)($a['base']['template']['start'] ?? '');
-            $bStart = (string)($b['base']['template']['start'] ?? '');
+            $aStart = substr((string)$a['base']['template']['start'], 11);
+            $bStart = substr((string)$b['base']['template']['start'], 11);
 
-            // Compare HH:MM:SS lexicographically (safe)
-            return strcmp(substr($aStart, 11, 8), substr($bStart, 11, 8)); // startTime ASC
+            return strcmp($aStart, $bStart); // earlier first
         });
 
-        // 3b) Repeated overlap-resolution scan (adjacent swaps only)
-        $n = count($bundles);
-        $maxPasses = max(1, $n * $n); // hard cap safety
-        $pass = 0;
+        if ($debug) {
+            self::dbgWriteHuman('/tmp/gcs_planner_order_initial.txt', $bundles);
+            self::dbg($config, 'order_baseline_done', [
+                'bundle_count' => count($bundles),
+            ]);
+        }
 
-        while ($pass < $maxPasses) {
-            $pass++;
-            $swapped = false;
+        // 3b) Iterative top-down scans
+        $passes = 0;
+        $swapsTotal = 0;
+        $swapPairs = [];
 
-            for ($i = 0; $i < $n - 1; $i++) {
+        while ($passes < self::MAX_ORDER_PASSES) {
+            $passes++;
+            $swapsThisPass = 0;
+
+            for ($i = 0; $i < count($bundles) - 1; $i++) {
                 $A = $bundles[$i];
                 $B = $bundles[$i + 1];
 
-                if (!self::bundlesRuntimeOverlap($A, $B)) {
+                $aBase = $A['base'] ?? null;
+                $bBase = $B['base'] ?? null;
+                if (!is_array($aBase) || !is_array($bBase)) {
                     continue;
                 }
 
-                $aStartSec = self::bundleDailyStartSeconds($A);
-                $bStartSec = self::bundleDailyStartSeconds($B);
+                // Only compare within same (type,target) identity group
+                $atype = (string)($aBase['template']['type'] ?? '');
+                $btype = (string)($bBase['template']['type'] ?? '');
+                $atgt  = $aBase['template']['target'] ?? null;
+                $btgt  = $bBase['template']['target'] ?? null;
 
-                // If overlapping, later daily start time must be higher priority (above).
+                if ($atype === '' || $atype !== $btype || $atgt !== $btgt) {
+                    continue;
+                }
+
+                $overlap = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
+                if (!$overlap['overlaps']) {
+                    continue;
+                }
+
+                // Overlap exists → enforce start-time DESC (later start above)
+                $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
+                $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
+
+                // If A starts earlier than B, swap so B rises above A
                 if ($aStartSec < $bStartSec) {
+                    if ($debug) {
+                        $swapPairs[] = [
+                            'pass' => $passes,
+                            'idx'  => $i,
+                            'A'    => self::bundleDebugRow($A),
+                            'B'    => self::bundleDebugRow($B),
+                            'overlap_reason' => $overlap,
+                        ];
+                    }
+
                     $bundles[$i]     = $B;
                     $bundles[$i + 1] = $A;
-                    $swapped = true;
+
+                    $swapsThisPass++;
+                    $swapsTotal++;
+
+                    // After swapping, step back one position to re-check new adjacency
+                    if ($i > 0) {
+                        $i--;
+                    }
                 }
             }
 
-            if (!$swapped) {
+            if ($debug) {
+                self::dbg($config, 'order_pass_done', [
+                    'pass' => $passes,
+                    'swapsThisPass' => $swapsThisPass,
+                    'swapsTotal' => $swapsTotal,
+                ]);
+            }
+
+            if ($swapsThisPass === 0) {
                 break;
             }
         }
 
+        if ($debug) {
+            self::dbg($config, 'order_done', [
+                'passes' => $passes,
+                'swapsTotal' => $swapsTotal,
+                'note' => ($passes >= self::MAX_ORDER_PASSES)
+                    ? 'hit_max_passes_possible_unresolved_overlaps'
+                    : 'stabilized',
+            ]);
+
+            // Avoid massive log spam; keep last ~200 swaps
+            if (!empty($swapPairs)) {
+                $tail = array_slice($swapPairs, max(0, count($swapPairs) - 200));
+                self::dbg($config, 'swap_pairs_tail', [
+                    'count' => count($swapPairs),
+                    'tail'  => $tail,
+                ]);
+            }
+
+            self::dbgWriteHuman('/tmp/gcs_planner_order_after_passes.txt', $bundles);
+        }
+
         /* -----------------------------------------------------------------
-         * 4. Flatten bundles
+         * 4. Flatten bundles (bundle cohesion preserved)
          * ----------------------------------------------------------------- */
         $desiredEntries = [];
 
         foreach ($bundles as $bundle) {
+            // Overrides would be emitted here (above base) when enabled in your bundle model.
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
             if (!$entry) continue;
 
@@ -201,6 +336,14 @@ final class SchedulerPlanner
         $state = new SchedulerState($existingEntries);
         $diff  = (new SchedulerDiff($desiredEntries, $state))->compute();
 
+        if ($debug) {
+            self::dbg($config, 'diff', [
+                'creates' => count($diff->creates()),
+                'updates' => count($diff->updates()),
+                'deletes' => count($diff->deletes()),
+            ]);
+        }
+
         return [
             'ok'             => true,
             'creates'        => $diff->creates(),
@@ -213,42 +356,76 @@ final class SchedulerPlanner
     }
 
     /* ===============================================================
-     * Helpers
+     * Debug helpers
      * =============================================================== */
 
-    /**
-     * Type+target is the uniqueness scope for precedence.
-     * Only bundles within the same (type,target) group can "compete".
-     */
-    private static function bundlesRuntimeOverlap(array $bundleA, array $bundleB): bool
+    private static function isDebugOrderingEnabled(array $cfg): bool
     {
-        $a = $bundleA['base'] ?? null;
-        $b = $bundleB['base'] ?? null;
-        if (!is_array($a) || !is_array($b)) return false;
-
-        $at = $a['template'] ?? null;
-        $bt = $b['template'] ?? null;
-        if (!is_array($at) || !is_array($bt)) return false;
-
-        if ((string)($at['type'] ?? '') !== (string)($bt['type'] ?? '')) return false;
-        if ((string)($at['target'] ?? '') !== (string)($bt['target'] ?? '')) return false;
-
-        return self::basesOverlap($a, $b);
+        if (!empty($cfg['runtime']['debug_ordering'])) {
+            return true;
+        }
+        $env = getenv('GCS_DEBUG_ORDERING');
+        return ($env !== false && $env !== '' && $env !== '0');
     }
 
-    private static function bundleDailyStartSeconds(array $bundle): int
+    private static function dbgReset(): void
     {
-        $base = $bundle['base'] ?? null;
-        if (!is_array($base)) return 0;
-
-        $tpl = $base['template'] ?? null;
-        if (!is_array($tpl)) return 0;
-
-        $ts = (string)($tpl['start'] ?? '');
-        if ($ts === '' || strlen($ts) < 19) return 0;
-
-        return self::timeToSeconds(substr($ts, 11, 8));
+        @unlink('/tmp/gcs_planner_order_debug.log');
+        @unlink('/tmp/gcs_planner_order_initial.txt');
+        @unlink('/tmp/gcs_planner_order_after_passes.txt');
     }
+
+    private static function dbg(array $cfg, string $tag, array $data): void
+    {
+        if (!self::isDebugOrderingEnabled($cfg)) {
+            return;
+        }
+        $line = json_encode([
+            'ts'  => date('c'),
+            'tag' => $tag,
+            'data'=> $data,
+        ], JSON_UNESCAPED_SLASHES) . PHP_EOL;
+
+        file_put_contents('/tmp/gcs_planner_order_debug.log', $line, FILE_APPEND);
+    }
+
+    private static function dbgWriteHuman(string $path, array $bundles): void
+    {
+        $lines = [];
+        foreach ($bundles as $i => $b) {
+            $lines[] = sprintf(
+                "%03d %s | %s→%s | %s-%s | days=%s | %s/%s",
+                $i,
+                (string)($b['base']['template']['summary'] ?? ''),
+                (string)($b['base']['range']['start'] ?? ''),
+                (string)($b['base']['range']['end'] ?? ''),
+                substr((string)($b['base']['template']['start'] ?? ''), 11, 8),
+                substr((string)($b['base']['template']['end'] ?? ''), 11, 8),
+                (string)($b['base']['range']['days'] ?? ''),
+                (string)($b['base']['template']['type'] ?? ''),
+                is_scalar($b['base']['template']['target'] ?? null) ? (string)$b['base']['template']['target'] : gettype($b['base']['template']['target'] ?? null)
+            );
+        }
+        file_put_contents($path, implode("\n", $lines) . "\n");
+    }
+
+    private static function bundleDebugRow(array $bundle): array
+    {
+        $b = $bundle['base'] ?? [];
+        return [
+            'uid' => (string)($b['uid'] ?? ''),
+            'summary' => (string)($b['template']['summary'] ?? ''),
+            'type' => (string)($b['template']['type'] ?? ''),
+            'target' => $b['template']['target'] ?? null,
+            'range' => $b['range'] ?? null,
+            'startTime' => substr((string)($b['template']['start'] ?? ''), 11, 8),
+            'endTime' => substr((string)($b['template']['end'] ?? ''), 11, 8),
+        ];
+    }
+
+    /* ===============================================================
+     * Core helpers
+     * =============================================================== */
 
     private static function applyGuardRulesToEntry(array $entry, string $guardDate): ?array
     {
@@ -278,6 +455,9 @@ final class SchedulerPlanner
         return self::dowToShortDay((int)$dtStart->format('w'));
     }
 
+    /**
+     * RRULE UNTIL fix (anchored to DTSTART time-of-day semantics)
+     */
     private static function pickSeriesEndDateFromRrule(array $baseEv, string $guardDate): ?string
     {
         $rrule = $baseEv['rrule'] ?? null;
@@ -332,22 +512,68 @@ final class SchedulerPlanner
         return preg_match('/^\d{4}-\d{2}-\d{2}$/', $s) === 1;
     }
 
-    private static function basesOverlap(array $a, array $b): bool
-    {
-        if ($a['range']['end'] <= $b['range']['start']) return false;
-        if ($b['range']['end'] <= $a['range']['start']) return false;
-        if (!self::daysOverlapShort($a['range']['days'], $b['range']['days'])) return false;
+    /* ===============================================================
+     * Overlap helpers (with verbose debug)
+     *
+     * Overlap definition:
+     * - date ranges intersect (touching edges are NOT overlap)
+     * - day masks intersect (any common active day)
+     * - daily time windows intersect (wrap supported)
+     * =============================================================== */
 
-        return self::timeWindowsOverlapSeconds(
-            self::timeToSeconds(substr($a['template']['start'], 11)),
-            self::timeToSeconds(substr($a['template']['end'], 11)),
-            self::timeToSeconds(substr($b['template']['start'], 11)),
-            self::timeToSeconds(substr($b['template']['end'], 11))
-        );
+    private static function basesOverlapVerbose(array $a, array $b, ?array $debugCfg): array
+    {
+        $ar = $a['range'] ?? [];
+        $br = $b['range'] ?? [];
+
+        $aStartD = (string)($ar['start'] ?? '');
+        $aEndD   = (string)($ar['end'] ?? '');
+        $bStartD = (string)($br['start'] ?? '');
+        $bEndD   = (string)($br['end'] ?? '');
+
+        if ($aStartD === '' || $aEndD === '' || $bStartD === '' || $bEndD === '') {
+            return ['overlaps' => false, 'reason' => 'missing_date_range'];
+        }
+
+        // date intersection (touching is NOT overlap)
+        if ($aEndD <= $bStartD || $bEndD <= $aStartD) {
+            return ['overlaps' => false, 'reason' => 'date_no_intersection', 'A' => [$aStartD,$aEndD], 'B' => [$bStartD,$bEndD]];
+        }
+
+        $aDays = (string)($ar['days'] ?? '');
+        $bDays = (string)($br['days'] ?? '');
+        if (!self::daysOverlapShort($aDays, $bDays)) {
+            return ['overlaps' => false, 'reason' => 'days_no_intersection', 'A_days' => $aDays, 'B_days' => $bDays];
+        }
+
+        $aStart = self::timeToSeconds(substr((string)($a['template']['start'] ?? ''), 11));
+        $aEnd   = self::timeToSeconds(substr((string)($a['template']['end'] ?? ''), 11));
+        $bStart = self::timeToSeconds(substr((string)($b['template']['start'] ?? ''), 11));
+        $bEnd   = self::timeToSeconds(substr((string)($b['template']['end'] ?? ''), 11));
+
+        if (!self::timeWindowsOverlapSeconds($aStart, $aEnd, $bStart, $bEnd)) {
+            return [
+                'overlaps' => false,
+                'reason' => 'time_no_intersection',
+                'A_time' => [substr((string)($a['template']['start'] ?? ''),11,8), substr((string)($a['template']['end'] ?? ''),11,8)],
+                'B_time' => [substr((string)($b['template']['start'] ?? ''),11,8), substr((string)($b['template']['end'] ?? ''),11,8)],
+            ];
+        }
+
+        // Overlaps
+        if ($debugCfg !== null && self::isDebugOrderingEnabled($debugCfg)) {
+            self::dbg($debugCfg, 'overlap_hit', [
+                'A' => self::bundleDebugRow(['base' => $a]),
+                'B' => self::bundleDebugRow(['base' => $b]),
+            ]);
+        }
+
+        return ['overlaps' => true, 'reason' => 'ok'];
     }
 
     private static function daysOverlapShort(string $a, string $b): bool
     {
+        if ($a === '' || $b === '') return false;
         for ($i = 0; $i + 1 < strlen($a); $i += 2) {
             if (strpos($b, substr($a, $i, 2)) !== false) return true;
         }
@@ -356,14 +582,10 @@ final class SchedulerPlanner
 
     private static function timeToSeconds(string $t): int
     {
+        $t = trim($t);
+        if ($t === '') return 0;
         if (!preg_match('/^(\d{2}):(\d{2})(?::(\d{2}))?$/', $t, $m)) return 0;
-        return ((int)$m[1])*3600 + ((int)$m[2])*60 + (int)($m[3] ?? 0);
-    }
-
-    private static function windowDurationSeconds(int $s, int $e): int
-    {
-        if ($e <= $s) $e += 86400;
-        return max(0, $e - $s);
+        return ((int)$m[1]) * 3600 + ((int)$m[2]) * 60 + (int)($m[3] ?? 0);
     }
 
     private static function timeWindowsOverlapSeconds(int $as, int $ae, int $bs, int $be): bool
