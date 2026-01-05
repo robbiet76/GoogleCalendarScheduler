@@ -680,60 +680,61 @@ final class SchedulerPlanner
     }
 
     /**
-     * Determine whether A must be evaluated ABOVE B (dominates).
-     *
-     * Dominance rules (in order of specificity):
-     *  1) Time-window containment (narrower window dominates broader)
-     *  2) Date-range containment (strict)
-     *  3) Days containment (same date range only)
-     *
-     * Chronological order is the fallback.
+     * True if placing A above B would prevent B from starting
+     * at B's own intended start date + start time.
      */
-    private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
+    private static function blocksStartAtIntendedMoment(array $aBase, array $bBase): bool
     {
-        $aStartD = (string)($aBase['range']['start'] ?? '');
-        $bStartD = (string)($bBase['range']['start'] ?? '');
-
-        /* -------------------------------------------------------------
-        * 1) LATER START DATE OVERRIDE (PRIMARY RULE)
-        *
-        * If two entries overlap (date+day+time already confirmed),
-        * the later-starting entry is the intended override.
-        * ------------------------------------------------------------- */
-        if ($aStartD !== '' && $bStartD !== '' && $aStartD !== $bStartD) {
-            if ($aStartD > $bStartD) {
-                if ($debug) {
-                    self::dbg($cfg, 'dominance_later_start_date', [
-                        'A' => self::bundleDebugRow(['base' => $aBase]),
-                        'B' => self::bundleDebugRow(['base' => $bBase]),
-                    ]);
-                }
-                return true;
-            }
+        // B's intended start date
+        $bStartDate = (string)($bBase['range']['start'] ?? '');
+        if ($bStartDate === '') {
             return false;
         }
 
-        /* -------------------------------------------------------------
-        * 2) SAME START DATE → NARROWER TIME WINDOW WINS
-        *
-        * Applies only when start dates are equal.
-        * Preserves "specific beats general" within the same layer.
-        * ------------------------------------------------------------- */
-        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
+        // A must be active on B's start date
+        $aStartD = (string)($aBase['range']['start'] ?? '');
+        $aEndD   = (string)($aBase['range']['end'] ?? '');
+
+        if ($aStartD === '' || $aEndD === '' || $bStartDate < $aStartD || $bStartDate >= $aEndD) {
+            return false;
+        }
+
+        // Day mask must include B's start day
+        $bDow = (int)(new DateTime($bStartDate))->format('w');
+        $bDowShort = self::dowToShortDay($bDow);
+
+        $aDays = (string)($aBase['range']['days'] ?? '');
+        if ($aDays === '' || strpos($aDays, $bDowShort) === false) {
+            return false;
+        }
+
+        // Check if B's start time occurs during A's active window
+        $aStartT = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
+        $aEndT   = self::timeToSeconds(substr((string)$aBase['template']['end'], 11));
+        $bStartT = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
+
+        // Handle overnight wrap
+        if ($aEndT <= $aStartT) {
+            $aEndT += 86400;
+        }
+
+        return ($bStartT >= $aStartT && $bStartT < $aEndT);
+    }
+
+    private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
+    {
+        // If A would block B from starting at B's intended start moment,
+        // then B must be ordered above A.
+        if (self::blocksStartAtIntendedMoment($aBase, $bBase)) {
             if ($debug) {
-                self::dbg($cfg, 'dominance_time_containment_same_start', [
-                    'A' => self::bundleDebugRow(['base' => $aBase]),
-                    'B' => self::bundleDebugRow(['base' => $bBase]),
+                self::dbg($cfg, 'dominance_blocks_start_moment', [
+                    'blocker' => self::bundleDebugRow(['base' => $aBase]),
+                    'blocked' => self::bundleDebugRow(['base' => $bBase]),
                 ]);
             }
             return true;
         }
 
-        /* -------------------------------------------------------------
-        * 3) NO DOMINANCE
-        *
-        * Chronological order remains as-is.
-        * ------------------------------------------------------------- */
         return false;
     }
 }
