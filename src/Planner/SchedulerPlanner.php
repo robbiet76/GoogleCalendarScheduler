@@ -225,22 +225,58 @@ final class SchedulerPlanner
                         continue;
                     }
 
-                    // OPTIONAL identity-group restriction:
-                    // If you truly want "only reorder within same (type,target)", keep this.
-                    // If you want global precedence (recommended for FPP), comment it out.
-                    // $atype = (string)($aBase['template']['type'] ?? '');
                     $btype = (string)($bBase['template']['type'] ?? '');
                     $atgt  = $aBase['template']['target'] ?? null;
                     $btgt  = $bBase['template']['target'] ?? null;
-
-                    // if ($atype === '' || $atype !== $btype || $atgt !== $btgt) {
-                    //     continue;
-                    // }
 
                     $overlap = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
                     if (!$overlap['overlaps']) {
                         continue;
                     }
+
+                    // -------------------------------------------------
+                    // DATE-RANGE CONTAINMENT (most specific wins)
+                    // If one bundle exists entirely within the other's
+                    // date range, it must be ordered ABOVE it.
+                    // -------------------------------------------------
+
+                    $aStartD = (string)$aBase['range']['start'];
+                    $aEndD   = (string)$aBase['range']['end'];
+                    $bStartD = (string)$bBase['range']['start'];
+                    $bEndD   = (string)$bBase['range']['end'];
+
+                    // A contains B → A is more general → move DOWN
+                    if (
+                        $aStartD <= $bStartD &&
+                        $aEndD   >= $bEndD &&
+                        ($aStartD !== $bStartD || $aEndD !== $bEndD)
+                    ) {
+                        // swap A and B
+                        if ($debug) {
+                            self::dbg($config, 'swap_date_containment', [
+                                'A' => self::bundleDebugRow($A),
+                                'B' => self::bundleDebugRow($B),
+                            ]);
+                        }
+
+                        $bundles[$i]     = $B;
+                        $bundles[$i + 1] = $A;
+                        $swapsThisPass++;
+                        $swapsTotal++;
+
+                        if ($i > 0) { $i--; }
+                        continue;
+                    }
+
+                    // B contains A → B is more general → keep order
+                    if (
+                        $bStartD <= $aStartD &&
+                        $bEndD   >= $aEndD &&
+                        ($aStartD !== $bStartD || $aEndD !== $bEndD)
+                    ) {
+                        continue;
+                    }
+
 
                     $bStartSec = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
 
