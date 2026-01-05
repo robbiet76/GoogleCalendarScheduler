@@ -188,17 +188,106 @@ final class SchedulerPlanner
          *  - When a bundle moves, it moves as a unit (overrides + base together).
          * ----------------------------------------------------------------- */
 
+        // 3a) Baseline chronological order
         usort($bundles, static function (array $a, array $b): int {
-            $sa = SchedulerPlanner::specificityScore($a['base']);
-            $sb = SchedulerPlanner::specificityScore($b['base']);
+            $ar = $a['base']['range'] ?? [];
+            $br = $b['base']['range'] ?? [];
 
-            return $sa <=> $sb; // lexicographic compare
+            $as = (string)($ar['start'] ?? '');
+            $bs = (string)($br['start'] ?? '');
+
+            if ($as !== $bs) {
+                return strcmp($as, $bs);
+            }
+
+            $aStart = substr((string)($a['base']['template']['start'] ?? ''), 11, 8);
+            $bStart = substr((string)($b['base']['template']['start'] ?? ''), 11, 8);
+
+            return strcmp($aStart, $bStart); // earlier first
         });
 
         if ($debug) {
+            self::dbgWriteHuman('/tmp/gcs_planner_order_initial.txt', $bundles);
+            self::dbg($config, 'order_baseline_done', ['bundle_count' => count($bundles)]);
+        }
+
+        // 3b) Iterative dominance resolution (global, non-adjacent)
+        $passes     = 0;
+        $swapsTotal = 0;
+
+        while ($passes < self::MAX_ORDER_PASSES) {
+            $passes++;
+            $swapsThisPass = 0;
+            $n = count($bundles);
+
+            for ($i = 0; $i < $n - 1; $i++) {
+                $A = $bundles[$i];
+                $aBase = $A['base'] ?? null;
+                if (!is_array($aBase)) {
+                    continue;
+                }
+
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $B = $bundles[$j];
+                    $bBase = $B['base'] ?? null;
+                    if (!is_array($bBase)) {
+                        continue;
+                    }
+
+                    // Only comparable if they overlap at all
+                    $ov = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
+                    if (empty($ov['overlaps'])) {
+                        continue;
+                    }
+
+                    // If B dominates A, bubble B above A
+                    $bd = self::dominates($bBase, $aBase, $config, $debug);
+                    $ad = self::dominates($aBase, $bBase, $config, $debug);
+
+                    // Swap ONLY if dominance is one-way
+                    if ($bd && !$ad) {
+                        if ($debug) {
+                            self::dbg($config, 'swap_dominance', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                            ]);
+                        }
+
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+                        $n = count($bundles);
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
+                    // else if A dominates B → explicitly do nothing
+                }
+            }
+
+            if ($debug) {
+                self::dbg($config, 'order_pass_done', [
+                    'pass'          => $passes,
+                    'swapsThisPass' => $swapsThisPass,
+                    'swapsTotal'    => $swapsTotal,
+                ]);
+            }
+
+            if ($swapsThisPass === 0) {
+                break;
+            }
+        }
+
+        if ($debug) {
             self::dbg($config, 'order_done', [
-                'method' => 'global_specificity_sort',
-                'note'   => 'deterministic_non_iterative',
+                'passes'     => $passes,
+                'swapsTotal' => $swapsTotal,
+                'note'       => ($passes >= self::MAX_ORDER_PASSES)
+                    ? 'hit_max_passes_possible_unresolved_overlaps'
+                    : 'stabilized',
             ]);
 
             self::dbgWriteHuman('/tmp/gcs_planner_order_after_passes.txt', $bundles);
@@ -666,31 +755,5 @@ final class SchedulerPlanner
         }
 
         return false;
-    }
-    
-    private static function specificityScore(array $base): array
-    {
-        $range = $base['range'];
-        $tpl   = $base['template'];
-
-        $startD = new DateTime($range['start']);
-        $endD   = new DateTime($range['end']);
-        $dateSpanDays = max(1, (int)$startD->diff($endD)->days);
-
-        $days = (string)($range['days'] ?? '');
-        $dayCount = strlen($days) / 2; // SuMoTu...
-
-        $ts = self::timeToSeconds(substr($tpl['start'], 11));
-        $te = self::timeToSeconds(substr($tpl['end'], 11));
-        if ($te <= $ts) $te += 86400;
-        $timeSpan = $te - $ts;
-
-        return [
-            $dateSpanDays,   // primary
-            $dayCount,       // secondary
-            $timeSpan,       // tertiary
-            $range['start'], // chronological fallback
-            substr($tpl['start'], 11, 8),
-        ];
     }
 }
