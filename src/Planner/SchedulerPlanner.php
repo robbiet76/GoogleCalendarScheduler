@@ -694,23 +694,61 @@ final class SchedulerPlanner
     }
 
     /**
-     * Determine whether bundle A must be evaluated ABOVE bundle B
-     * for correct FPP execution semantics.
+     * Determine whether A must be evaluated ABOVE B (dominates).
      *
      * Dominance rules (in order):
-     *  1) If daily time windows overlap and A's window is narrower → A dominates
-     *  2) If time widths equal, but A's date range is narrower → A dominates
-     *  3) Otherwise: no dominance
-     *
-     * This models FPP's top-down, per-day, per-minute execution.
+     *  1) Date-range containment: if A is strictly contained in B, A dominates
+     *  2) Days containment (same date range): subset days dominate superset days
+     *  3) Time-window specificity: narrower daily window dominates broader
      */
     private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
     {
-        // --- Time window width ---
-        $aStart = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
-        $aEnd   = self::timeToSeconds(substr((string)$aBase['template']['end'], 11));
-        $bStart = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
-        $bEnd   = self::timeToSeconds(substr((string)$bBase['template']['end'], 11));
+        $aStartD = (string)($aBase['range']['start'] ?? '');
+        $aEndD   = (string)($aBase['range']['end'] ?? '');
+        $bStartD = (string)($bBase['range']['start'] ?? '');
+        $bEndD   = (string)($bBase['range']['end'] ?? '');
+
+        // 1) DATE CONTAINMENT (strict)
+        if ($aStartD !== '' && $aEndD !== '' && $bStartD !== '' && $bEndD !== '') {
+            $aInB =
+                ($bStartD <= $aStartD) &&
+                ($bEndD   >= $aEndD) &&
+                ($bStartD !== $aStartD || $bEndD !== $aEndD);
+
+            if ($aInB) {
+                if ($debug) {
+                    self::dbg($cfg, 'dominance_date_containment', [
+                        'A' => self::bundleDebugRow(['base' => $aBase]),
+                        'B' => self::bundleDebugRow(['base' => $bBase]),
+                    ]);
+                }
+                return true;
+            }
+        }
+
+        // 2) DAYS CONTAINMENT (only meaningful if date ranges equal)
+        $aDays = (string)($aBase['range']['days'] ?? '');
+        $bDays = (string)($bBase['range']['days'] ?? '');
+
+        if ($aStartD !== '' && $aEndD !== '' && $aStartD === $bStartD && $aEndD === $bEndD) {
+            if ($aDays !== '' && $bDays !== '' && self::daysContainShort($aDays, $bDays) && $aDays !== $bDays) {
+                if ($debug) {
+                    self::dbg($cfg, 'dominance_days_subset', [
+                        'A' => self::bundleDebugRow(['base' => $aBase]),
+                        'B' => self::bundleDebugRow(['base' => $bBase]),
+                        'A_days' => $aDays,
+                        'B_days' => $bDays,
+                    ]);
+                }
+                return true;
+            }
+        }
+
+        // 3) TIME-WINDOW WIDTH (narrower dominates broader)
+        $aStart = self::timeToSeconds(substr((string)($aBase['template']['start'] ?? ''), 11));
+        $aEnd   = self::timeToSeconds(substr((string)($aBase['template']['end'] ?? ''), 11));
+        $bStart = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
+        $bEnd   = self::timeToSeconds(substr((string)($bBase['template']['end'] ?? ''), 11));
 
         if ($aEnd <= $aStart) $aEnd += 86400;
         if ($bEnd <= $bStart) $bEnd += 86400;
@@ -728,33 +766,6 @@ final class SchedulerPlanner
                 ]);
             }
             return true;
-        }
-
-        if ($aWidth > $bWidth) {
-            return false;
-        }
-
-        // --- Date range width ---
-        $aStartD = (string)($aBase['range']['start'] ?? '');
-        $aEndD   = (string)($aBase['range']['end'] ?? '');
-        $bStartD = (string)($bBase['range']['start'] ?? '');
-        $bEndD   = (string)($bBase['range']['end'] ?? '');
-
-        if ($aStartD !== '' && $aEndD !== '' && $bStartD !== '' && $bEndD !== '') {
-            $aDays = strtotime($aEndD) - strtotime($aStartD);
-            $bDays = strtotime($bEndD) - strtotime($bStartD);
-
-            if ($aDays < $bDays) {
-                if ($debug) {
-                    self::dbg($cfg, 'dominance_date_narrower', [
-                        'A' => self::bundleDebugRow(['base' => $aBase]),
-                        'B' => self::bundleDebugRow(['base' => $bBase]),
-                        'A_days' => $aDays,
-                        'B_days' => $bDays,
-                    ]);
-                }
-                return true;
-            }
         }
 
         return false;
