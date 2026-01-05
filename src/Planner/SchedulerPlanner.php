@@ -232,13 +232,6 @@ final class SchedulerPlanner
                     continue;
                 }
 
-                $atype = (string)($aBase['template']['type'] ?? '');
-                $atgt  = $aBase['template']['target'] ?? null;
-                if ($atype === '') {
-                    continue;
-                }
-
-                // Scan any lower bundle B and bubble it above A when required
                 for ($j = $i + 1; $j < $n; $j++) {
                     $B = $bundles[$j];
                     $bBase = $B['base'] ?? null;
@@ -246,19 +239,19 @@ final class SchedulerPlanner
                         continue;
                     }
 
-                    // Must overlap
+                    // Must overlap at all to compare ordering
                     $ov = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
                     if (empty($ov['overlaps'])) {
                         continue;
                     }
 
-                    // -------------------------------------------------
-                    // 1) TIME-WINDOW CONTAINMENT (suppressor dominance)
-                    // Broader daily window MUST be BELOW specific window
-                    // -------------------------------------------------
+                    /* =========================================================
+                    * 1) TIME-WINDOW CONTAINMENT (SUPPRESSOR DOMINANCE)
+                    * Broader daily window MUST be BELOW narrower window
+                    * ========================================================= */
 
                     if (self::timeWindowContains($aBase['template'], $bBase['template'])) {
-                        // A suppresses B → B must be above A
+                        // A suppresses B → move B above A
                         if ($debug) {
                             self::dbg($config, 'swap_time_containment', [
                                 'from' => $j,
@@ -279,64 +272,54 @@ final class SchedulerPlanner
                     }
 
                     if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
-                        // B suppresses A → A already above, keep order
+                        // B suppresses A → correct order already
                         continue;
                     }
 
-                    // -------------------------------------------------
-                    // 2) DATE-RANGE CONTAINMENT (most specific wins)
-                    // -------------------------------------------------
+                    /* =========================================================
+                    * 2) DATE-RANGE SPECIFICITY (SHORTER RANGE WINS)
+                    * ========================================================= */
 
                     $aStartD = (string)($aBase['range']['start'] ?? '');
                     $aEndD   = (string)($aBase['range']['end'] ?? '');
                     $bStartD = (string)($bBase['range']['start'] ?? '');
                     $bEndD   = (string)($bBase['range']['end'] ?? '');
 
-                    $aContainsB =
-                        ($aStartD <= $bStartD) &&
-                        ($aEndD   >= $bEndD) &&
-                        ($aStartD !== $bStartD || $aEndD !== $bEndD);
+                    if ($aStartD && $aEndD && $bStartD && $bEndD) {
+                        $aSpan = strtotime($aEndD) - strtotime($aStartD);
+                        $bSpan = strtotime($bEndD) - strtotime($bStartD);
 
-                    $bContainsA =
-                        ($bStartD <= $aStartD) &&
-                        ($bEndD   >= $aEndD) &&
-                        ($aStartD !== $bStartD || $aEndD !== $bEndD);
+                        // B is more specific → move B above A
+                        if ($bSpan < $aSpan) {
+                            if ($debug) {
+                                self::dbg($config, 'swap_date_specificity', [
+                                    'from' => $j,
+                                    'to'   => $i,
+                                    'A'    => self::bundleDebugRow($A),
+                                    'B'    => self::bundleDebugRow($B),
+                                ]);
+                            }
 
-                    if ($aContainsB) {
-                        if ($debug) {
-                            $swapPairs[] = [
-                                'pass' => $passes,
-                                'rule' => 'containment_specific_above_general',
-                                'move' => ['from' => $j, 'to' => $i],
-                                'A'    => self::bundleDebugRow($A),
-                                'B'    => self::bundleDebugRow($B),
-                                'overlap_reason' => $ov,
-                            ];
-                            self::dbg($config, 'swap_containment', [
-                                'from' => $j,
-                                'to'   => $i,
-                                'A'    => self::bundleDebugRow($A),
-                                'B'    => self::bundleDebugRow($B),
-                            ]);
+                            $moved = array_splice($bundles, $j, 1);
+                            array_splice($bundles, $i, 0, $moved);
+
+                            $swapsThisPass++;
+                            $swapsTotal++;
+                            $n = count($bundles);
+                            $i = max(-1, $i - 1);
+                            continue 2;
                         }
 
-                        $moved = array_splice($bundles, $j, 1);
-                        array_splice($bundles, $i, 0, $moved);
-
-                        $swapsThisPass++;
-                        $swapsTotal++;
-                        $n = count($bundles);
-                        $i = max(-1, $i - 1);
-                        continue 2;
+                        // A is more specific → keep order
+                        if ($aSpan < $bSpan) {
+                            continue;
+                        }
                     }
 
-                    if ($bContainsA) {
-                        continue;
-                    }
-
-                    // -------------------------------------------------
-                    // 3) FALLBACK: start-time precedence (later start wins)
-                    // -------------------------------------------------
+                    /* =========================================================
+                    * 3) FALLBACK: START-TIME PRECEDENCE
+                    * Later daily start MUST be ABOVE earlier
+                    * ========================================================= */
 
                     $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
                     $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
