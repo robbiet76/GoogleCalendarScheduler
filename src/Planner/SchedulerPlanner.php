@@ -756,6 +756,10 @@ final class SchedulerPlanner
             }
             return true;
         }
+        // Later-start-date override wins — do NOT allow starvation logic to counter it
+        if ($bStartT === $aStartT && $bStartD > $aStartD) {
+            return false;
+        }
 
         /* -------------------------------------------------------------
         * 3) Seasonal override cohesion across phases
