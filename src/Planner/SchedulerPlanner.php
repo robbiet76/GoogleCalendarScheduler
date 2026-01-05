@@ -682,12 +682,12 @@ final class SchedulerPlanner
     /**
      * Determine whether A must be evaluated ABOVE B (dominates).
      *
-     * Dominance rules (in order):
-     *  1) Time-window containment (narrower window dominates)
-     *     - Only when days overlap
-     *  2) Date-range containment (narrower range dominates)
-     *  3) Days containment (subset days dominate superset days)
-     *  4) Otherwise: no dominance (chronological fallback)
+     * Dominance rules (in order of specificity):
+     *  1) Time-window containment (narrower window dominates broader)
+     *  2) Date-range containment (strict)
+     *  3) Days containment (same date range only)
+     *
+     * Chronological order is the fallback.
      */
     private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
     {
@@ -696,18 +696,10 @@ final class SchedulerPlanner
         $bStartD = (string)($bBase['range']['start'] ?? '');
         $bEndD   = (string)($bBase['range']['end'] ?? '');
 
-        $aDays = (string)($aBase['range']['days'] ?? '');
-        $bDays = (string)($bBase['range']['days'] ?? '');
-
-        /* ------------------------------------------------------------
-        * 1) TIME-WINDOW CONTAINMENT (highest priority)
-        * ------------------------------------------------------------ */
-        if (
-            $aDays !== '' &&
-            $bDays !== '' &&
-            self::daysOverlapShort($aDays, $bDays) &&
-            self::timeWindowContains($bBase['template'], $aBase['template'])
-        ) {
+        /* -------------------------------------------------------------
+        * 1) TIME-WINDOW CONTAINMENT (MOST SPECIFIC)
+        * ------------------------------------------------------------- */
+        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_time_containment', [
                     'A' => self::bundleDebugRow(['base' => $aBase]),
@@ -717,9 +709,9 @@ final class SchedulerPlanner
             return true;
         }
 
-        /* ------------------------------------------------------------
-        * 2) DATE-RANGE CONTAINMENT (strict)
-        * ------------------------------------------------------------ */
+        /* -------------------------------------------------------------
+        * 2) DATE-RANGE CONTAINMENT (STRICT)
+        * ------------------------------------------------------------- */
         if ($aStartD !== '' && $aEndD !== '' && $bStartD !== '' && $bEndD !== '') {
             $aInB =
                 ($bStartD <= $aStartD) &&
@@ -737,26 +729,29 @@ final class SchedulerPlanner
             }
         }
 
-        /* ------------------------------------------------------------
-        * 3) DAYS CONTAINMENT (same date range only)
-        * ------------------------------------------------------------ */
-        if (
-            $aStartD !== '' &&
-            $aEndD !== '' &&
-            $aStartD === $bStartD &&
-            $aEndD   === $bEndD &&
-            $aDays !== '' &&
-            $bDays !== '' &&
-            self::daysContainShort($aDays, $bDays) &&
-            $aDays !== $bDays
-        ) {
-            if ($debug) {
-                self::dbg($cfg, 'dominance_days_subset', [
-                    'A' => self::bundleDebugRow(['base' => $aBase]),
-                    'B' => self::bundleDebugRow(['base' => $bBase]),
-                ]);
+        /* -------------------------------------------------------------
+        * 3) DAYS CONTAINMENT (ONLY IF DATE RANGES MATCH)
+        * ------------------------------------------------------------- */
+        if ($aStartD !== '' && $aEndD !== '' && $aStartD === $bStartD && $aEndD === $bEndD) {
+            $aDays = (string)($aBase['range']['days'] ?? '');
+            $bDays = (string)($bBase['range']['days'] ?? '');
+
+            if (
+                $aDays !== '' &&
+                $bDays !== '' &&
+                self::daysContainShort($aDays, $bDays) &&
+                $aDays !== $bDays
+            ) {
+                if ($debug) {
+                    self::dbg($cfg, 'dominance_days_subset', [
+                        'A' => self::bundleDebugRow(['base' => $aBase]),
+                        'B' => self::bundleDebugRow(['base' => $bBase]),
+                        'A_days' => $aDays,
+                        'B_days' => $bDays,
+                    ]);
+                }
+                return true;
             }
-            return true;
         }
 
         return false;
