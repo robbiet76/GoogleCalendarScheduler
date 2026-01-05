@@ -181,11 +181,8 @@ final class SchedulerPlanner
          *
          * Rule summary:
          *  1) Start in chronological order by (range.start, then daily start time)
-         *  2) Iterate passes; for any overlap between two bundles that share
-         *     the same identity (type + target):
-         *       a) If one is fully contained (date-range AND days) within the other,
-         *          the contained (more specific) MUST be ABOVE the container.
-         *       b) Otherwise, later daily start time MUST be ABOVE earlier daily start time.
+         *  2) Iterate passes; for any overlapping bundles:
+         *    dominance rules determine ordering
          *
          * Bundle cohesion:
          *  - When a bundle moves, it moves as a unit (overrides + base together).
@@ -244,7 +241,11 @@ final class SchedulerPlanner
                     }
 
                     // If B dominates A, bubble B above A
-                    if (self::dominates($bBase, $aBase, $config, $debug)) {
+                    $bd = self::dominates($bBase, $aBase, $config, $debug);
+                    $ad = self::dominates($aBase, $bBase, $config, $debug);
+
+                    // Swap ONLY if dominance is one-way
+                    if ($bd && !$ad) {
                         if ($debug) {
                             self::dbg($config, 'swap_dominance', [
                                 'from' => $j,
@@ -263,6 +264,7 @@ final class SchedulerPlanner
                         $i = max(-1, $i - 1);
                         continue 2;
                     }
+                    // else if A dominates B → explicitly do nothing
                 }
             }
 
@@ -287,14 +289,6 @@ final class SchedulerPlanner
                     ? 'hit_max_passes_possible_unresolved_overlaps'
                     : 'stabilized',
             ]);
-
-            if (!empty($swapPairs)) {
-                $tail = array_slice($swapPairs, max(0, count($swapPairs) - 200));
-                self::dbg($config, 'swap_pairs_tail', [
-                    'count' => count($swapPairs),
-                    'tail'  => $tail,
-                ]);
-            }
 
             self::dbgWriteHuman('/tmp/gcs_planner_order_after_passes.txt', $bundles);
         }
@@ -665,14 +659,6 @@ final class SchedulerPlanner
         return !($ae <= $bs || $be <= $as);
     }
 
-    private static function windowDurationSeconds(int $start, int $end): int
-    {
-        if ($end <= $start) {
-            $end += 86400; // overnight wrap
-        }
-        return $end - $start;
-    }
-
     /**
      * True if A's daily time window fully CONTAINS B's window.
      * Supports overnight wrapping.
@@ -699,7 +685,7 @@ final class SchedulerPlanner
      * Dominance rules (in order):
      *  1) Date-range containment: if A is strictly contained in B, A dominates
      *  2) Days containment (same date range): subset days dominate superset days
-     *  3) Time-window specificity: narrower daily window dominates broader
+     *  3) Time-window containment: contained window dominates container   
      */
     private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
     {
@@ -744,25 +730,13 @@ final class SchedulerPlanner
             }
         }
 
-        // 3) TIME-WINDOW WIDTH (narrower dominates broader)
-        $aStart = self::timeToSeconds(substr((string)($aBase['template']['start'] ?? ''), 11));
-        $aEnd   = self::timeToSeconds(substr((string)($aBase['template']['end'] ?? ''), 11));
-        $bStart = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
-        $bEnd   = self::timeToSeconds(substr((string)($bBase['template']['end'] ?? ''), 11));
-
-        if ($aEnd <= $aStart) $aEnd += 86400;
-        if ($bEnd <= $bStart) $bEnd += 86400;
-
-        $aWidth = $aEnd - $aStart;
-        $bWidth = $bEnd - $bStart;
-
-        if ($aWidth < $bWidth) {
+        // 3) TIME-WINDOW CONTAINMENT (narrower contained window dominates)
+        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
+            // A is contained inside B → A dominates
             if ($debug) {
-                self::dbg($cfg, 'dominance_time_narrower', [
+                self::dbg($cfg, 'dominance_time_containment', [
                     'A' => self::bundleDebugRow(['base' => $aBase]),
                     'B' => self::bundleDebugRow(['base' => $bBase]),
-                    'A_width' => $aWidth,
-                    'B_width' => $bWidth,
                 ]);
             }
             return true;
