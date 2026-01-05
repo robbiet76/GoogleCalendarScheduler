@@ -245,101 +245,69 @@ final class SchedulerPlanner
                         continue;
                     }
 
-                    /* =========================================================
-                    * 1) TIME-WINDOW CONTAINMENT (SUPPRESSOR DOMINANCE)
-                    * Broader daily window MUST be BELOW narrower window
-                    * ========================================================= */
-
-                    if (self::timeWindowContains($aBase['template'], $bBase['template'])) {
-                        // A suppresses B → move B above A
-                        if ($debug) {
-                            self::dbg($config, 'swap_time_containment', [
-                                'from' => $j,
-                                'to'   => $i,
-                                'A'    => self::bundleDebugRow($A),
-                                'B'    => self::bundleDebugRow($B),
-                            ]);
-                        }
-
-                        $moved = array_splice($bundles, $j, 1);
-                        array_splice($bundles, $i, 0, $moved);
-
-                        $swapsThisPass++;
-                        $swapsTotal++;
-                        $n = count($bundles);
-                        $i = max(-1, $i - 1);
-                        continue 2;
-                    }
-
-                    if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
-                        // B suppresses A → correct order already
-                        continue;
-                    }
-
-                    /* =========================================================
-                    * 2) DATE-RANGE SPECIFICITY (SHORTER RANGE WINS)
-                    * ========================================================= */
+                    // -------------------------------------------------
+                    // 1) DATE-RANGE CONTAINMENT (most specific wins)
+                    // -------------------------------------------------
 
                     $aStartD = (string)($aBase['range']['start'] ?? '');
                     $aEndD   = (string)($aBase['range']['end'] ?? '');
                     $bStartD = (string)($bBase['range']['start'] ?? '');
                     $bEndD   = (string)($bBase['range']['end'] ?? '');
 
-                    if ($aStartD && $aEndD && $bStartD && $bEndD) {
-                        $aSpan = strtotime($aEndD) - strtotime($aStartD);
-                        $bSpan = strtotime($bEndD) - strtotime($bStartD);
+                    $aContainsB =
+                        ($aStartD <= $bStartD) &&
+                        ($aEndD   >= $bEndD) &&
+                        ($aStartD !== $bStartD || $aEndD !== $bEndD);
 
-                        // B is more specific → move B above A
-                        if ($bSpan < $aSpan) {
-                            if ($debug) {
-                                self::dbg($config, 'swap_date_specificity', [
-                                    'from' => $j,
-                                    'to'   => $i,
-                                    'A'    => self::bundleDebugRow($A),
-                                    'B'    => self::bundleDebugRow($B),
-                                ]);
-                            }
+                    $bContainsA =
+                        ($bStartD <= $aStartD) &&
+                        ($bEndD   >= $aEndD) &&
+                        ($aStartD !== $bStartD || $aEndD !== $bEndD);
 
+                    // A is more general → B must be above
+                    if ($aContainsB) {
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+                        $swapsThisPass++;
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
+
+                    // B is more general → keep order
+                    if ($bContainsA) {
+                        continue;
+                    }
+
+                    // -------------------------------------------------
+                    // 2) TIME-WINDOW CONTAINMENT (same date range only)
+                    // -------------------------------------------------
+
+                    if ($aStartD === $bStartD && $aEndD === $bEndD) {
+
+                        if (self::timeWindowContains($aBase['template'], $bBase['template'])) {
                             $moved = array_splice($bundles, $j, 1);
                             array_splice($bundles, $i, 0, $moved);
-
                             $swapsThisPass++;
-                            $swapsTotal++;
-                            $n = count($bundles);
                             $i = max(-1, $i - 1);
                             continue 2;
                         }
 
-                        // A is more specific → keep order
-                        if ($aSpan < $bSpan) {
+                        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
                             continue;
                         }
                     }
 
-                    /* =========================================================
-                    * 3) FALLBACK: START-TIME PRECEDENCE
-                    * Later daily start MUST be ABOVE earlier
-                    * ========================================================= */
+                    // -------------------------------------------------
+                    // 3) FALLBACK: start-time precedence
+                    // -------------------------------------------------
 
-                    $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
-                    $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
+                    $aStartSec = self::timeToSeconds(substr($aBase['template']['start'], 11));
+                    $bStartSec = self::timeToSeconds(substr($bBase['template']['start'], 11));
 
                     if ($aStartSec < $bStartSec) {
-                        if ($debug) {
-                            self::dbg($config, 'swap_start_time', [
-                                'from' => $j,
-                                'to'   => $i,
-                                'A'    => self::bundleDebugRow($A),
-                                'B'    => self::bundleDebugRow($B),
-                            ]);
-                        }
-
                         $moved = array_splice($bundles, $j, 1);
                         array_splice($bundles, $i, 0, $moved);
-
                         $swapsThisPass++;
-                        $swapsTotal++;
-                        $n = count($bundles);
                         $i = max(-1, $i - 1);
                         continue 2;
                     }
