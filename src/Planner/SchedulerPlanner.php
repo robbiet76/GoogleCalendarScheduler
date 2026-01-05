@@ -744,7 +744,7 @@ final class SchedulerPlanner
         $aStartT = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
         $bStartT = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
 
-        // Later daily start time must be evaluated first
+        // 1) Later daily start time wins when overlapping
         if ($aStartT > $bStartT) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_later_start_time_overlap', [
@@ -755,7 +755,23 @@ final class SchedulerPlanner
             return true;
         }
 
-        // Fallback: start-moment starvation protection
+        // 2) SAME daily start time → later calendar start date wins (seasonal override)
+        if ($aStartT === $bStartT) {
+            $aStartD = (string)($aBase['range']['start'] ?? '');
+            $bStartD = (string)($bBase['range']['start'] ?? '');
+
+            if ($aStartD !== '' && $bStartD !== '' && $aStartD > $bStartD) {
+                if ($debug) {
+                    self::dbg($cfg, 'dominance_later_date_same_phase', [
+                        'A' => self::bundleDebugRow(['base' => $aBase]),
+                        'B' => self::bundleDebugRow(['base' => $bBase]),
+                    ]);
+                }
+                return true;
+            }
+        }
+
+        // 3) Final safety: prevent start-time starvation
         if (self::blocksStartAtIntendedMoment($aBase, $bBase)) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_blocks_start_moment', [
