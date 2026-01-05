@@ -214,13 +214,13 @@ final class SchedulerPlanner
         // 3b) Global dominance relaxation (insertion-style)
         $passes     = 0;
         $swapsTotal = 0;
+        $n          = count($bundles);
 
         while ($passes < self::MAX_ORDER_PASSES) {
             $passes++;
             $changed = false;
-            $n = count($bundles);
 
-            // For each entry, try to move it upward as far as dominance allows
+            // Walk top → bottom, bubbling each entry upward as needed
             for ($j = 0; $j < $n; $j++) {
                 $B = $bundles[$j];
                 $bBase = $B['base'] ?? null;
@@ -228,7 +228,7 @@ final class SchedulerPlanner
                     continue;
                 }
 
-                // Compare against all entries above
+                // Compare against entries above B
                 for ($i = $j - 1; $i >= 0; $i--) {
                     $A = $bundles[$i];
                     $aBase = $A['base'] ?? null;
@@ -236,7 +236,7 @@ final class SchedulerPlanner
                         continue;
                     }
 
-                    // If B should be above A, move it
+                    // If B should be above A, move it upward
                     if (self::dominates($bBase, $aBase, $config, $debug)) {
                         if ($debug) {
                             self::dbg($config, 'swap_global_dominance', [
@@ -247,16 +247,17 @@ final class SchedulerPlanner
                             ]);
                         }
 
-                        // Remove B from current position
+                        // Remove B from position j
                         $moved = array_splice($bundles, $j, 1);
-                        // Insert B above A
+                        // Insert B at position i
                         array_splice($bundles, $i, 0, $moved);
 
                         $swapsTotal++;
                         $changed = true;
 
-                        // Restart scanning from top after modification
-                        break 2;
+                        // Continue bubbling the same entry upward
+                        $j = $i;
+                        break;
                     }
                 }
             }
@@ -269,9 +270,20 @@ final class SchedulerPlanner
                 ]);
             }
 
+            // Fully stable — no swaps in this entire pass
             if (!$changed) {
                 break;
             }
+        }
+
+        // Final ordering snapshot
+        if ($debug) {
+            self::dbg($config, 'order_done', [
+                'passes'     => $passes,
+                'swapsTotal' => $swapsTotal,
+                'note'       => ($passes >= self::MAX_ORDER_PASSES) ? 'hit_max_passes' : 'stabilized',
+            ]);
+            self::dbgWriteHuman('/tmp/gcs_planner_order_after_passes.txt', $bundles);
         }
 
         /* -----------------------------------------------------------------
@@ -699,15 +711,13 @@ final class SchedulerPlanner
             $aEndT += 86400;
         }
 
-        // A must already be active at B's start time
-        if (!($bStartT >= $aStartT && $bStartT < $aEndT)) {
+        // Earlier-starting daily schedules are background layers
+        if ($aStartT < $bStartT) {
             return false;
         }
 
-        // 🚨 CRITICAL GUARD:
-        // Earlier-starting daily schedules are background layers
-        // and must NOT block later-starting schedules.
-        if ($aStartT < $bStartT) {
+        // A must already be active at B's start time
+        if (!($bStartT >= $aStartT && $bStartT < $aEndT)) {
             return false;
         }
 
@@ -717,7 +727,7 @@ final class SchedulerPlanner
     private static function dominates(array $aBase, array $bBase, array $cfg, bool $debug): bool
     {
         // Only meaningful if entries overlap
-        $ov = self::basesOverlapVerbose($aBase, $bBase, null);
+        $ov = self::basesOverlapVerbose($aBase, $bBase, $debug ? $cfg : null);
         if (empty($ov['overlaps'])) {
             return false;
         }
@@ -759,27 +769,6 @@ final class SchedulerPlanner
         // Later-start-date override wins — do NOT allow starvation logic to counter it
         if ($bStartT === $aStartT && $bStartD > $aStartD) {
             return false;
-        }
-
-        /* -------------------------------------------------------------
-        * 3) Seasonal override cohesion across phases
-        *    Same date range → later start date dominates
-        * ------------------------------------------------------------- */
-        if (
-            $aStartD !== '' && $bStartD !== '' &&
-            $aEndD !== '' && $bEndD !== '' &&
-            $aStartD === $aBase['range']['start'] &&
-            $aStartD === $bStartD &&
-            $aEndD === $bEndD &&
-            $aStartD > $bStartD
-        ) {
-            if ($debug) {
-                self::dbg($cfg, 'dominance_seasonal_override_cohesion', [
-                    'A' => self::bundleDebugRow(['base' => $aBase]),
-                    'B' => self::bundleDebugRow(['base' => $bBase]),
-                ]);
-            }
-            return true;
         }
 
         /* -------------------------------------------------------------
