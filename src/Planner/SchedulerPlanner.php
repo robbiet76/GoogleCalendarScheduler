@@ -731,7 +731,21 @@ final class SchedulerPlanner
         }
 
         // 3) TIME-WINDOW CONTAINMENT (narrower contained window dominates)
-        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
+        // Only applies when date range AND day mask are identical.
+        // Prevents time logic from interfering with date containment.
+        $aDays = (string)($aBase['range']['days'] ?? '');
+        $bDays = (string)($bBase['range']['days'] ?? '');
+
+        $sameDateRange =
+            ($aStartD !== '' && $aEndD !== '' &&
+            $aStartD === $bStartD &&
+            $aEndD   === $bEndD);
+
+        $sameDays = ($aDays !== '' && $aDays === $bDays);
+
+        if ($sameDateRange && $sameDays &&
+            self::timeWindowContains($bBase['template'], $aBase['template'])) {
+
             // A is contained inside B → A dominates
             if ($debug) {
                 self::dbg($cfg, 'dominance_time_containment', [
