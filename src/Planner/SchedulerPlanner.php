@@ -215,8 +215,8 @@ final class SchedulerPlanner
         }
 
         // 3b) Iterative passes with non-adjacent bubbling
-        $passes      = 0;
-        $swapsTotal  = 0;
+        $passes     = 0;
+        $swapsTotal = 0;
 
         while ($passes < self::MAX_ORDER_PASSES) {
             $passes++;
@@ -245,8 +245,39 @@ final class SchedulerPlanner
                     }
 
                     /* =================================================
-                    * 1) DATE-RANGE CONTAINMENT (seasonal specificity)
-                    * More specific date range MUST be above broader
+                    * 1) TIME-WINDOW CONTAINMENT (dominance)
+                    * Contained (narrower/specific) MUST be ABOVE container
+                    * ================================================= */
+
+                    if (self::timeWindowContains($aBase['template'], $bBase['template'])) {
+                        // A contains B → B must be above A
+                        if ($debug) {
+                            self::dbg($config, 'swap_time_containment', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                            ]);
+                        }
+
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+                        $n = count($bundles);
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
+
+                    if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
+                        // B contains A → order already correct
+                        continue;
+                    }
+
+                    /* =================================================
+                    * 2) DATE-RANGE CONTAINMENT (seasonal specificity)
+                    * More date-specific MUST be ABOVE broader
                     * ================================================= */
 
                     $aStartD = (string)($aBase['range']['start'] ?? '');
@@ -265,9 +296,19 @@ final class SchedulerPlanner
                         ($aStartD !== $bStartD || $aEndD !== $bEndD);
 
                     if ($aContainsB) {
-                        // B is more date-specific → move above A
+                        // A contains B → B is more date-specific → move above A
+                        if ($debug) {
+                            self::dbg($config, 'swap_date_containment', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                            ]);
+                        }
+
                         $moved = array_splice($bundles, $j, 1);
                         array_splice($bundles, $i, 0, $moved);
+
                         $swapsThisPass++;
                         $swapsTotal++;
                         $n = count($bundles);
@@ -276,14 +317,13 @@ final class SchedulerPlanner
                     }
 
                     if ($bContainsA) {
-                        // Correct order already
+                        // B contains A → order already correct
                         continue;
                     }
 
                     /* =================================================
-                    * 2) TIME-WINDOW SPECIFICITY (runtime dominance)
-                    * Narrower daily window MUST be above broader
-                    * Applies when neither date fully contains the other
+                    * 3) TIME-WINDOW WIDTH (any narrower > 0 wins)
+                    * Narrower daily window MUST be ABOVE broader
                     * ================================================= */
 
                     $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
@@ -291,7 +331,6 @@ final class SchedulerPlanner
                     $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
                     $bEndSec   = self::timeToSeconds(substr((string)$bBase['template']['end'], 11));
 
-                    // Handle overnight wrapping
                     if ($aEndSec <= $aStartSec) $aEndSec += 86400;
                     if ($bEndSec <= $bStartSec) $bEndSec += 86400;
 
@@ -299,9 +338,21 @@ final class SchedulerPlanner
                     $bWidth = $bEndSec - $bStartSec;
 
                     if ($aWidth > $bWidth) {
-                        // B has narrower runtime → move above A
+                        // B is narrower → move above A
+                        if ($debug) {
+                            self::dbg($config, 'swap_time_width', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                                'A_width' => $aWidth,
+                                'B_width' => $bWidth,
+                            ]);
+                        }
+
                         $moved = array_splice($bundles, $j, 1);
                         array_splice($bundles, $i, 0, $moved);
+
                         $swapsThisPass++;
                         $swapsTotal++;
                         $n = count($bundles);
@@ -309,7 +360,34 @@ final class SchedulerPlanner
                         continue 2;
                     }
 
-                    // If widths equal, keep existing order (stable)
+                    if ($bWidth > $aWidth) {
+                        // B is broader → order already correct
+                        continue;
+                    }
+
+                    /* =================================================
+                    * 4) FALLBACK: later start time above earlier
+                    * ================================================= */
+
+                    if ($aStartSec < $bStartSec) {
+                        if ($debug) {
+                            self::dbg($config, 'swap_start_time', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                            ]);
+                        }
+
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+                        $n = count($bundles);
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
                 }
             }
 
