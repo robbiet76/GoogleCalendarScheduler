@@ -246,7 +246,52 @@ final class SchedulerPlanner
                     }
 
                     // -------------------------------------------------
-                    // 1) DATE-RANGE CONTAINMENT (most specific wins)
+                    // 1) TIME-WINDOW SPECIFICITY (dominance)
+                    // Narrower daily window MUST be ABOVE broader window
+                    // -------------------------------------------------
+
+                    $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
+                    $aEndSec   = self::timeToSeconds(substr((string)$aBase['template']['end'], 11));
+                    $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
+                    $bEndSec   = self::timeToSeconds(substr((string)$bBase['template']['end'], 11));
+
+                    // Handle overnight wrapping
+                    if ($aEndSec <= $aStartSec) $aEndSec += 86400;
+                    if ($bEndSec <= $bStartSec) $bEndSec += 86400;
+
+                    $aWidth = $aEndSec - $aStartSec;
+                    $bWidth = $bEndSec - $bStartSec;
+
+                    // Narrower window wins
+                    if ($aWidth > $bWidth) {
+                        if ($debug) {
+                            self::dbg($config, 'swap_time_specificity', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                                'A_width' => $aWidth,
+                                'B_width' => $bWidth,
+                            ]);
+                        }
+
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+                        $n = count($bundles);
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
+
+                    if ($bWidth > $aWidth) {
+                        // B is broader — broader schedules must stay below narrower ones
+                        continue;
+                    }
+
+                    // -------------------------------------------------
+                    // 2) DATE-RANGE CONTAINMENT (most specific wins)
                     // -------------------------------------------------
 
                     $aStartD = (string)($aBase['range']['start'] ?? '');
@@ -277,47 +322,6 @@ final class SchedulerPlanner
 
                     if ($bContainsA) {
                         continue;
-                    }
-
-                    // -------------------------------------------------
-                    // 2) TIME-WINDOW SPECIFICITY (shorter wins)
-                    // -------------------------------------------------
-
-                    $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
-                    $aEndSec   = self::timeToSeconds(substr((string)$aBase['template']['end'], 11));
-                    $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
-                    $bEndSec   = self::timeToSeconds(substr((string)$bBase['template']['end'], 11));
-
-                    $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
-                    $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
-
-                    if ($aDur > $bDur) {
-                        $moved = array_splice($bundles, $j, 1);
-                        array_splice($bundles, $i, 0, $moved);
-                        $swapsThisPass++;
-                        $swapsTotal++;
-                        $n = count($bundles);
-                        $i = max(-1, $i - 1);
-                        continue 2;
-                    }
-
-                    if ($bDur > $aDur) {
-                        continue;
-                    }
-
-                    // -------------------------------------------------
-                    // 3) FALLBACK: start-time precedence
-                    // -------------------------------------------------
-
-                    $aStartSec = self::timeToSeconds(substr($aBase['template']['start'], 11));
-                    $bStartSec = self::timeToSeconds(substr($bBase['template']['start'], 11));
-
-                    if ($aStartSec < $bStartSec) {
-                        $moved = array_splice($bundles, $j, 1);
-                        array_splice($bundles, $i, 0, $moved);
-                        $swapsThisPass++;
-                        $i = max(-1, $i - 1);
-                        continue 2;
                     }
                 }
             }
