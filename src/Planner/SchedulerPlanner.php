@@ -279,22 +279,45 @@ final class SchedulerPlanner
                     }
 
                     // -------------------------------------------------
-                    // 2) TIME-WINDOW CONTAINMENT (same date range only)
+                    // 1) TIME-WINDOW SPECIFICITY (more specific wins)
+                    // Shorter daily duration MUST be ABOVE broader
                     // -------------------------------------------------
 
-                    if ($aStartD === $bStartD && $aEndD === $bEndD) {
+                    $aStartSec = self::timeToSeconds(substr((string)$aBase['template']['start'], 11));
+                    $aEndSec   = self::timeToSeconds(substr((string)$aBase['template']['end'], 11));
+                    $bStartSec = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
+                    $bEndSec   = self::timeToSeconds(substr((string)$bBase['template']['end'], 11));
 
-                        if (self::timeWindowContains($aBase['template'], $bBase['template'])) {
-                            $moved = array_splice($bundles, $j, 1);
-                            array_splice($bundles, $i, 0, $moved);
-                            $swapsThisPass++;
-                            $i = max(-1, $i - 1);
-                            continue 2;
+                    $aDur = self::windowDurationSeconds($aStartSec, $aEndSec);
+                    $bDur = self::windowDurationSeconds($bStartSec, $bEndSec);
+
+                    // More specific (shorter) must be ABOVE
+                    if ($aDur > $bDur) {
+                        // A is broader → move B above A
+                        if ($debug) {
+                            self::dbg($config, 'swap_time_specificity', [
+                                'from' => $j,
+                                'to'   => $i,
+                                'A'    => self::bundleDebugRow($A),
+                                'B'    => self::bundleDebugRow($B),
+                                'aDur' => $aDur,
+                                'bDur' => $bDur,
+                            ]);
                         }
 
-                        if (self::timeWindowContains($bBase['template'], $aBase['template'])) {
-                            continue;
-                        }
+                        $moved = array_splice($bundles, $j, 1);
+                        array_splice($bundles, $i, 0, $moved);
+
+                        $swapsThisPass++;
+                        $swapsTotal++;
+                        $n = count($bundles);
+                        $i = max(-1, $i - 1);
+                        continue 2;
+                    }
+
+                    if ($bDur > $aDur) {
+                        // B is broader → order is already correct
+                        continue;
                     }
 
                     // -------------------------------------------------
@@ -711,6 +734,14 @@ final class SchedulerPlanner
             $be += 86400; // wrap
         }
         return !($ae <= $bs || $be <= $as);
+    }
+
+    private static function windowDurationSeconds(int $start, int $end): int
+    {
+        if ($end <= $start) {
+            $end += 86400; // overnight wrap
+        }
+        return $end - $start;
     }
 
     /**
