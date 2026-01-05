@@ -168,24 +168,31 @@ final class SchedulerPlanner
          * 3. ORDER BUNDLES — SIMPLIFIED MODEL
          *
          * 2) Start in chronological order (startDate, then daily start time)
-         * 3) Repeated top-down passes:
-         *    - Consider adjacent bundles A (higher) and B (lower)
-         *    - If they overlap (same type/target and runtime overlap within their date ranges),
-         *      order them by daily start time DESC (later start above earlier start).
-         *    - Repeat until a pass makes no swaps.
+         * 3) Repeated passes:
+         *    - Scan top-down; for each position i, scan any lower bundle j>i
+         *    - If A and B overlap (time overlap somewhere in their date ranges),
+         *      enforce precedence without special-case tiers:
+         *        a) DATE-RANGE CONTAINMENT: narrower date-range goes ABOVE container
+         *        b) Otherwise: later DAILY start time goes ABOVE earlier
+         *    - Repeat until a pass makes no moves or MAX passes reached
+         *
+         * NOTE:
+         * - We intentionally do NOT restrict comparisons by type/target:
+         *   FPP schedule precedence is global across all entries.
+         * - Bundles move as a unit (overrides/base cohesion preserved).
          * ----------------------------------------------------------------- */
 
-        // 3a) Baseline chronological order
+        // 3a) Baseline chronological order (stable fallback)
         usort($bundles, static function (array $a, array $b): int {
             $ar = $a['base']['range'];
             $br = $b['base']['range'];
 
-            if ($ar['start'] !== $br['start']) {
-                return strcmp((string)$ar['start'], (string)$br['start']);
+            if (($ar['start'] ?? '') !== ($br['start'] ?? '')) {
+                return strcmp((string)($ar['start'] ?? ''), (string)($br['start'] ?? ''));
             }
 
-            $aStart = substr((string)$a['base']['template']['start'], 11);
-            $bStart = substr((string)$b['base']['template']['start'], 11);
+            $aStart = substr((string)($a['base']['template']['start'] ?? ''), 11, 8);
+            $bStart = substr((string)($b['base']['template']['start'] ?? ''), 11, 8);
 
             return strcmp($aStart, $bStart); // earlier first
         });
@@ -197,14 +204,14 @@ final class SchedulerPlanner
             ]);
         }
 
-        // 3b) Iterative top-down scans (non-adjacent bubbling)
-        $passes = 0;
-        $swapsTotal = 0;
-        $swapPairs = [];
+        // 3b) Iterative passes (non-adjacent bubbling)
+        $passes      = 0;
+        $movesTotal  = 0;
+        $swapPairs   = [];
 
         while ($passes < self::MAX_ORDER_PASSES) {
             $passes++;
-            $swapsThisPass = 0;
+            $movesThisPass = 0;
 
             $n = count($bundles);
 
@@ -225,103 +232,86 @@ final class SchedulerPlanner
                         continue;
                     }
 
-                    $btype = (string)($bBase['template']['type'] ?? '');
-                    $atgt  = $aBase['template']['target'] ?? null;
-                    $btgt  = $bBase['template']['target'] ?? null;
-
+                    // Only act when they actually overlap in runtime somewhere in their date ranges
                     $overlap = self::basesOverlapVerbose($aBase, $bBase, $debug ? $config : null);
-                    if (!$overlap['overlaps']) {
+                    if (empty($overlap['overlaps'])) {
                         continue;
+                    }
+
+                    $aStartD = (string)($aBase['range']['start'] ?? '');
+                    $aEndD   = (string)($aBase['range']['end'] ?? '');
+                    $bStartD = (string)($bBase['range']['start'] ?? '');
+                    $bEndD   = (string)($bBase['range']['end'] ?? '');
+
+                    // Defensive: if any missing, skip containment logic
+                    $canContain = ($aStartD !== '' && $aEndD !== '' && $bStartD !== '' && $bEndD !== '');
+
+                    $movedReason = null;
+
+                    // -------------------------------------------------
+                    // (1) DATE-RANGE CONTAINMENT (most specific wins)
+                    // If A contains B, then B must be ABOVE A.
+                    // -------------------------------------------------
+                    if ($canContain) {
+                        $aContainsB =
+                            ($aStartD <= $bStartD) &&
+                            ($aEndD   >= $bEndD) &&
+                            ($aStartD !== $bStartD || $aEndD !== $bEndD);
+
+                        if ($aContainsB) {
+                            $movedReason = 'date_containment';
+                        }
                     }
 
                     // -------------------------------------------------
-                    // DATE-RANGE CONTAINMENT (most specific wins)
-                    // If one bundle exists entirely within the other's
-                    // date range, it must be ordered ABOVE it.
+                    // (2) Otherwise: DAILY START precedence
+                    // Later daily start must be ABOVE earlier daily start.
                     // -------------------------------------------------
-
-                    $aStartD = (string)$aBase['range']['start'];
-                    $aEndD   = (string)$aBase['range']['end'];
-                    $bStartD = (string)$bBase['range']['start'];
-                    $bEndD   = (string)$bBase['range']['end'];
-
-                    // A contains B → A is more general → move DOWN
-                    if (
-                        $aStartD <= $bStartD &&
-                        $aEndD   >= $bEndD &&
-                        ($aStartD !== $bStartD || $aEndD !== $bEndD)
-                    ) {
-                        // swap A and B
-                        if ($debug) {
-                            self::dbg($config, 'swap_date_containment', [
-                                'A' => self::bundleDebugRow($A),
-                                'B' => self::bundleDebugRow($B),
-                            ]);
+                    if ($movedReason === null) {
+                        $bStartSec = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
+                        if ($aStartSec < $bStartSec) {
+                            $movedReason = 'start_time_desc';
                         }
+                    }
 
-                        $bundles[$i]     = $B;
-                        $bundles[$i + 1] = $A;
-                        $swapsThisPass++;
-                        $swapsTotal++;
-
-                        if ($i > 0) { $i--; }
+                    if ($movedReason === null) {
                         continue;
                     }
 
-                    // B contains A → B is more general → keep order
-                    if (
-                        $bStartD <= $aStartD &&
-                        $bEndD   >= $aEndD &&
-                        ($aStartD !== $bStartD || $aEndD !== $bEndD)
-                    ) {
-                        continue;
+                    if ($debug) {
+                        $swapPairs[] = [
+                            'pass' => $passes,
+                            'reason' => $movedReason,
+                            'move' => ['from' => $j, 'to' => $i],
+                            'A' => self::bundleDebugRow($A),
+                            'B' => self::bundleDebugRow($B),
+                            'overlap_reason' => $overlap,
+                        ];
                     }
 
+                    // Move B from position j to position i (bubble above A)
+                    $moved = array_splice($bundles, $j, 1);
+                    array_splice($bundles, $i, 0, $moved);
 
-                    $bStartSec = self::timeToSeconds(substr((string)($bBase['template']['start'] ?? ''), 11));
+                    $movesThisPass++;
+                    $movesTotal++;
 
-                    // Overlap exists → enforce start-time DESC (later start must be above earlier start)
-                    if ($aStartSec < $bStartSec) {
-                        if ($debug) {
-                            $swapPairs[] = [
-                                'pass' => $passes,
-                                'move' => ['from' => $j, 'to' => $i],
-                                'A'    => self::bundleDebugRow($A),
-                                'B'    => self::bundleDebugRow($B),
-                                'overlap_reason' => $overlap,
-                            ];
-                        }
-
-                        // Move B from position j to position i (bubble above)
-                        $moved = array_splice($bundles, $j, 1);
-                        array_splice($bundles, $i, 0, $moved);
-
-                        $swapsThisPass++;
-                        $swapsTotal++;
-
-                        // Refresh references after mutation
-                        $A = $bundles[$i];
-                        $aBase = $A['base'] ?? null;
-                        $aStartSec = is_array($aBase)
-                            ? self::timeToSeconds(substr((string)($aBase['template']['start'] ?? ''), 11))
-                            : 0;
-
-                        // Restart scanning below the current i after a successful bubble
-                        $n = count($bundles);
-                        $j = $i; // next loop iteration becomes i+1
-                    }
+                    // After mutation, restart scan just above i to avoid skipping constraints
+                    $n = count($bundles);
+                    $i = max(-1, $i - 1); // outer loop will ++ to 0+ safely
+                    break; // restart scanning with updated ordering
                 }
             }
 
             if ($debug) {
                 self::dbg($config, 'order_pass_done', [
                     'pass' => $passes,
-                    'swapsThisPass' => $swapsThisPass,
-                    'swapsTotal' => $swapsTotal,
+                    'movesThisPass' => $movesThisPass,
+                    'movesTotal' => $movesTotal,
                 ]);
             }
 
-            if ($swapsThisPass === 0) {
+            if ($movesThisPass === 0) {
                 break;
             }
         }
@@ -329,13 +319,12 @@ final class SchedulerPlanner
         if ($debug) {
             self::dbg($config, 'order_done', [
                 'passes' => $passes,
-                'swapsTotal' => $swapsTotal,
+                'movesTotal' => $movesTotal,
                 'note' => ($passes >= self::MAX_ORDER_PASSES)
                     ? 'hit_max_passes_possible_unresolved_overlaps'
                     : 'stabilized',
             ]);
 
-            // Avoid massive log spam; keep last ~200 swaps
             if (!empty($swapPairs)) {
                 $tail = array_slice($swapPairs, max(0, count($swapPairs) - 200));
                 self::dbg($config, 'swap_pairs_tail', [
