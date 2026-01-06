@@ -503,29 +503,48 @@ function syncApplyButtonWithDryRun() {
 // Initial state on page load
 syncApplyButtonWithDryRun();
 
-// React immediately to user toggling dry-run
+// React immediately + persist Dry Run without reloading the page
 if (dryRunCheckbox) {
     dryRunCheckbox.addEventListener('change', function () {
+        // 1) Update UI immediately
         syncApplyButtonWithDryRun();
 
-        // Only react if preview UI is visible
+        // If preview UI is visible, update status message in sync with Apply enable/disable
         var previewVisible =
             previewActions &&
             !previewActions.classList.contains('gcs-hidden');
 
-        if (!previewVisible) {
-            return;
+        if (previewVisible) {
+            if (this.checked) {
+                gcsSetStatus(
+                    'warning',
+                    'Dry run enabled — changes will not be written to the schedule.'
+                );
+            } else {
+                // Go back to the canonical pending/sync message (with counts)
+                runPlanStatus();
+            }
         }
 
-        if (this.checked) {
-            gcsSetStatus(
-                'warning',
-                'Dry run enabled — changes will not be written to the schedule.'
-            );
-        } else {
-            // Restore canonical status (with real counts)
-            runPlanStatus();
-        }
+        // 2) Persist to config (no page reload)
+        // We reuse the existing POST "action=save" path.
+        var fd = new FormData();
+        fd.append('action', 'save');
+
+        // Preserve current ICS URL so we don’t accidentally wipe it
+        fd.append('ics_url', (icsInput && icsInput.value) ? icsInput.value : '');
+
+        // IMPORTANT: send 1/0 so PHP !empty() works (note: '0' is empty in PHP)
+        fd.append('dry_run', this.checked ? '1' : '0');
+
+        fetch(window.location.href, {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin'
+        }).catch(function () {
+            // Non-fatal: UI already updated; persistence just failed.
+            // Optional: surface a warning if you want, but keep it quiet for v1 polish.
+        });
     });
 }
 
