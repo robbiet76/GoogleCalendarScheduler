@@ -63,7 +63,7 @@ final class ScheduleEntryExportAdapter
             $yaml['enabled'] = false;
         }
 
-        // NEW: exact DTSTART timestamps for EXDATE (preferred)
+        // Exact DTSTART timestamps for EXDATE
         $exdates = [];
         $rawExact = $entry['__gcs_export_exdates_dtstart'] ?? null;
         if (is_array($rawExact) && !empty($rawExact)) {
@@ -75,7 +75,7 @@ final class ScheduleEntryExportAdapter
                 }
             }
         } else {
-            // Fallback legacy (if present)
+            // Legacy fallback
             $rawEx = $entry['__gcs_export_exdates'] ?? null;
             if (is_array($rawEx) && !empty($rawEx)) {
                 foreach ($rawEx as $ymd) {
@@ -110,23 +110,32 @@ final class ScheduleEntryExportAdapter
         return ($dt instanceof DateTime) ? $dt : null;
     }
 
+    /**
+     * Build RRULE using LOCAL UNTIL (no Z).
+     *
+     * DTSTART / DTEND are emitted as local wall-clock times with TZID.
+     * Emitting UNTIL in UTC would truncate late-night occurrences
+     * (e.g. 23:00 local > 18:59Z in US timezones).
+     */
     private static function buildRrule(array $entry, string $endDate): ?string
     {
         $dayEnum = (int)($entry['day'] ?? -1);
 
+        // Single-day entry → no RRULE
         if (($entry['startDate'] ?? null) === ($entry['endDate'] ?? null)) {
             return null;
         }
 
-        $untilUtc = str_replace('-', '', $endDate) . 'T235959Z';
+        // LOCAL wall-clock UNTIL
+        $untilLocal = str_replace('-', '', $endDate) . 'T235959';
 
         if ($dayEnum === 7) {
-            return 'FREQ=DAILY;UNTIL=' . $untilUtc;
+            return 'FREQ=DAILY;UNTIL=' . $untilLocal;
         }
 
         $byDay = self::fppDayEnumToByDay($dayEnum);
         if ($byDay !== '') {
-            return 'FREQ=WEEKLY;BYDAY=' . $byDay . ';UNTIL=' . $untilUtc;
+            return 'FREQ=WEEKLY;BYDAY=' . $byDay . ';UNTIL=' . $untilLocal;
         }
 
         return null;

@@ -188,22 +188,41 @@ final class SchedulerPlanner
          *  - When a bundle moves, it moves as a unit (overrides + base together).
          * ----------------------------------------------------------------- */
 
-        // 3a) Baseline chronological order
+        // 3a) Baseline chronological order (date / time / type / target)
         usort($bundles, static function (array $a, array $b): int {
             $ar = $a['base']['range'] ?? [];
             $br = $b['base']['range'] ?? [];
 
+            // 1) Series start date
             $as = (string)($ar['start'] ?? '');
             $bs = (string)($br['start'] ?? '');
-
             if ($as !== $bs) {
                 return strcmp($as, $bs);
             }
 
+            // 2) Daily start time
             $aStart = substr((string)($a['base']['template']['start'] ?? ''), 11, 8);
             $bStart = substr((string)($b['base']['template']['start'] ?? ''), 11, 8);
+            if ($aStart !== $bStart) {
+                return strcmp($aStart, $bStart); // earlier first
+            }
 
-            return strcmp($aStart, $bStart); // earlier first
+            // 3) Type (playlist / command)
+            $aType = (string)($a['base']['template']['type'] ?? '');
+            $bType = (string)($b['base']['template']['type'] ?? '');
+            if ($aType !== $bType) {
+                return strcmp($aType, $bType);
+            }
+
+            // 4) Target (playlist name, command, etc.)
+            $aTarget = is_scalar($a['base']['template']['target'] ?? null)
+                ? (string)$a['base']['template']['target']
+                : '';
+            $bTarget = is_scalar($b['base']['template']['target'] ?? null)
+                ? (string)$b['base']['template']['target']
+                : '';
+
+            return strcmp($aTarget, $bTarget);
         });
 
         if ($debug) {

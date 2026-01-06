@@ -141,7 +141,7 @@ if (isset($_GET['endpoint'])) {
         // --------------------------------------------------------------
         if ($_GET['endpoint'] === 'apply') {
 
-            // Enforce persisted runtime dry-run (Developer mode)
+            // Enforce persisted runtime dry-run
             $runtimeDryRun = !empty($cfg['runtime']['dry_run']);
 
             // Also honor explicit dry-run request flags (defensive)
@@ -309,13 +309,11 @@ $canSave    = ($isEmpty || $isIcsValid);
     <span class="gcs-status-text">
         <?php
         if ($isEmpty) {
-            echo 'Enter a Google Calendar ICS URL to begin.';
+            echo 'Enter a Google Calendar ICS URL to get started.';
         } elseif (!$isIcsValid) {
             echo 'Please enter a valid Google Calendar ICS (.ics) URL.';
-        } elseif ($dryRun) {
-            echo 'Developer mode: changes will NOT be written to the scheduler.';
         } else {
-            echo 'Ready — check calendar for changes.';
+            echo 'Ready — monitoring calendar for changes.';
         }
         ?>
     </span>
@@ -358,7 +356,7 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div class="gcs-dev-toggle">
         <label>
             <input type="checkbox" id="gcs-dry-run" name="dry_run" <?php if ($dryRun) echo 'checked'; ?>>
-            Developer mode: dry run
+            Dry Run
         </label>
     </div>
 </form>
@@ -372,7 +370,7 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
 
     <div id="gcs-preview-actions" class="gcs-hidden" style="margin-top:12px;">
-        <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
+        <button type="button" class="buttons" id="gcs-close-preview-btn">Cancel</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
     <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
@@ -475,6 +473,7 @@ var diffSummary = document.getElementById('gcs-diff-summary');
 var previewActions = document.getElementById('gcs-preview-actions');
 var applyBtn = document.getElementById('gcs-apply-btn');
 var closePreviewBtn = document.getElementById('gcs-close-preview-btn');
+var dryRunCheckbox = document.getElementById('gcs-dry-run');
 var saveBtn = document.getElementById('gcs-save-btn');
 var icsInput = document.getElementById('gcs-ics-input');
 
@@ -487,7 +486,67 @@ icsInput.addEventListener('input', function () {
     saveBtn.disabled = !(val === '' || looksLikeIcs(val));
 });
 
-/* Phase 19 status precedence logic */
+function syncApplyButtonWithDryRun() {
+    if (!applyBtn) return;
+
+    if (dryRunCheckbox && dryRunCheckbox.checked) {
+        applyBtn.disabled = true;
+        applyBtn.style.opacity = '0.5';
+        applyBtn.style.cursor = 'not-allowed';
+    } else {
+        applyBtn.disabled = false;
+        applyBtn.style.opacity = '';
+        applyBtn.style.cursor = '';
+    }
+}
+
+// Initial state on page load
+syncApplyButtonWithDryRun();
+
+// React immediately + persist Dry Run without reloading the page
+if (dryRunCheckbox) {
+    dryRunCheckbox.addEventListener('change', function () {
+        // 1) Update UI immediately
+        syncApplyButtonWithDryRun();
+
+        // If preview UI is visible, update status message in sync with Apply enable/disable
+        var previewVisible =
+            previewActions &&
+            !previewActions.classList.contains('gcs-hidden');
+
+        if (previewVisible) {
+            if (this.checked) {
+                gcsSetStatus(
+                    'warning',
+                    'Dry run enabled — changes will not be written to the schedule.'
+                );
+            } else {
+                // Go back to the canonical pending/sync message (with counts)
+                runPlanStatus();
+            }
+        }
+
+        // 2) Persist to config (no page reload)
+        // We reuse the existing POST "action=save" path.
+        var fd = new FormData();
+        fd.append('action', 'save');
+
+        // Preserve current ICS URL so we don’t accidentally wipe it
+        fd.append('ics_url', (icsInput && icsInput.value) ? icsInput.value : '');
+
+        // IMPORTANT: send 1/0 so PHP !empty() works (note: '0' is empty in PHP)
+        fd.append('dry_run', this.checked ? '1' : '0');
+
+        fetch(window.location.href, {
+            method: 'POST',
+            body: fd,
+            credentials: 'same-origin'
+        }).catch(function () {
+            // Non-fatal: UI already updated; persistence just failed.
+            // Optional: surface a warning if you want, but keep it quiet for v1 polish.
+        });
+    });
+}
 
 function gcsSetStatus(level, message) {
     var bar = document.getElementById('gcs-status-bar');
@@ -575,6 +634,20 @@ function runPlanStatus() {
 
 runPlanStatus();
 
+// --------------------------------------------------
+// Refresh status when returning focus to the page
+// --------------------------------------------------
+
+document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) {
+        runPlanStatus();
+    }
+});
+
+window.addEventListener('focus', function () {
+    runPlanStatus();
+});
+
 // ------------------------------------------------------------------
 // Unmanaged scheduler section
 // ------------------------------------------------------------------
@@ -643,7 +716,20 @@ previewBtn.addEventListener('click', function () {
             `;
 
             previewActions.classList.remove('gcs-hidden');
-            applyBtn.disabled = false;
+
+            // Dry Run handling — only relevant AFTER preview
+            var dryRunCb = document.getElementById('gcs-dry-run');
+            var isDryRun = !!(dryRunCb && dryRunCb.checked);
+
+            if (isDryRun) {
+                applyBtn.disabled = true;
+                gcsSetStatus(
+                    'warning',
+                    'Dry run enabled — changes will not be written to the schedule.'
+                );
+            } else {
+                applyBtn.disabled = false;
+            }
         });
 });
 
@@ -678,12 +764,19 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
-            // Show post-apply actions (persistent)
+            // Apply completed successfully — transition UI state
+
+            // Hide apply controls
+            applyBtn.classList.add('gcs-hidden');
+            closePreviewBtn.classList.add('gcs-hidden');
+
+            // Show post-apply actions (Open Schedule)
             var postApply = document.getElementById('gcs-post-apply-actions');
             if (postApply) {
                 postApply.classList.remove('gcs-hidden');
             }
 
+            // Refresh status after write
             runPlanStatus();
         });
 });
@@ -702,7 +795,7 @@ if (exportBtn) {
         setTimeout(function () {
             gcsSetUnmanagedStatus(
                 'success',
-                'Export complete. Import the downloaded file into Google Calendar.'
+                'Export ready. Your unmanaged schedules have been downloaded.'
             );
         }, 800);
     });
