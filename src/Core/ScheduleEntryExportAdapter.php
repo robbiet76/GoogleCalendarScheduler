@@ -19,9 +19,20 @@ final class ScheduleEntryExportAdapter
         }
 
         if ($summary === '') {
-            $warnings[] = 'Skipped entry with no playlist or command name';
+            $warnings[] = 'Export skip: entry has no playlist or command name';
             return null;
         }
+
+        // Debug header for this entry
+        $warnings[] = self::dbg($summary, 'BEGIN', [
+            'raw.startDate' => $entry['startDate'] ?? null,
+            'raw.endDate'   => $entry['endDate'] ?? null,
+            'raw.startTime' => $entry['startTime'] ?? null,
+            'raw.endTime'   => $entry['endTime'] ?? null,
+            'day'           => $entry['day'] ?? null,
+            'repeat'        => $entry['repeat'] ?? null,
+            'stopType'      => $entry['stopType'] ?? null,
+        ]);
 
         // ---- START / END DATE RESOLUTION ----
 
@@ -30,11 +41,12 @@ final class ScheduleEntryExportAdapter
             $warnings,
             'startDate',
             $entry,
-            null
+            null,
+            $summary
         );
 
         if ($startDate === null) {
-            $warnings[] = "Skipped '{$summary}': unable to resolve start date";
+            $warnings[] = self::dbg($summary, 'SKIP', ['reason' => 'unable to resolve startDate']);
             return null;
         }
 
@@ -43,11 +55,12 @@ final class ScheduleEntryExportAdapter
             $warnings,
             'endDate',
             $entry,
-            $startDate
+            $startDate,
+            $summary
         );
 
         if ($endDate === null) {
-            $warnings[] = "Skipped '{$summary}': unable to resolve end date";
+            $warnings[] = self::dbg($summary, 'SKIP', ['reason' => 'unable to resolve endDate', 'startDate' => $startDate]);
             return null;
         }
 
@@ -60,21 +73,10 @@ final class ScheduleEntryExportAdapter
         $startTime = (string)($entry['startTime'] ?? '00:00:00');
         $endTime   = (string)($entry['endTime'] ?? '00:00:00');
 
-        // ---- YAML (start with base yaml, then merge/augment) ----
-        $yaml = [
-            'stopType' => self::stopTypeToString((int)($entry['stopType'] ?? 0)),
-            'repeat'   => self::repeatToYaml($entry['repeat'] ?? 0),
-        ];
-
-        // Preserve normalized YAML from FppSemantics if present
-        if (isset($entry['__gcs_yaml']) && is_array($entry['__gcs_yaml'])) {
-            $yaml = array_merge($yaml, $entry['__gcs_yaml']);
-        }
-
         // DTSTART
         $dtStart = self::parseDateTime($startDate, $startTime);
 
-        // If time is still symbolic (Dusk/Dawn/SunRise/SunSet), try resolving here as a safety net.
+        // Safety net: resolve symbolic times if they still exist here.
         if (!$dtStart && self::looksSymbolicTime($startTime)) {
             $resolved = FppSemantics::resolveSymbolicTime(
                 $startDate,
@@ -82,24 +84,19 @@ final class ScheduleEntryExportAdapter
                 (int)($entry['startTimeOffset'] ?? 0),
                 $warnings
             );
-
             if (is_array($resolved) && isset($resolved['displayTime'])) {
-                $startTimeResolved = (string)$resolved['displayTime'];
-                $dtStart = self::parseDateTime($startDate, $startTimeResolved);
-
-                if ($dtStart) {
-                    // Capture intent so import can restore symbolic time later
-                    $yaml['start'] = $resolved['yaml'] ?? [
-                        'symbolic' => $startTime,
-                        'offsetMinutes' => (int)($entry['startTimeOffset'] ?? 0),
-                        'resolvedBy' => 'adapter_safety_net',
-                    ];
-                }
+                $startTime = (string)$resolved['displayTime'];
+                $dtStart = self::parseDateTime($startDate, $startTime);
+                $warnings[] = self::dbg($summary, 'INFO', ['startTime.resolved' => $startTime]);
             }
         }
 
         if (!$dtStart) {
-            $warnings[] = "Skipped '{$summary}': invalid DTSTART";
+            $warnings[] = self::dbg($summary, 'SKIP', [
+                'reason' => 'invalid DTSTART after resolution attempts',
+                'startDate' => $startDate,
+                'startTime' => $startTime,
+            ]);
             return null;
         }
 
@@ -116,24 +113,20 @@ final class ScheduleEntryExportAdapter
                     (int)($entry['endTimeOffset'] ?? 0),
                     $warnings
                 );
-
                 if (is_array($resolved) && isset($resolved['displayTime'])) {
-                    $endTimeResolved = (string)$resolved['displayTime'];
-                    $dtEnd = self::parseDateTime($startDate, $endTimeResolved);
-
-                    if ($dtEnd) {
-                        $yaml['end'] = $resolved['yaml'] ?? [
-                            'symbolic' => $endTime,
-                            'offsetMinutes' => (int)($entry['endTimeOffset'] ?? 0),
-                            'resolvedBy' => 'adapter_safety_net',
-                        ];
-                    }
+                    $endTime = (string)$resolved['displayTime'];
+                    $dtEnd = self::parseDateTime($startDate, $endTime);
+                    $warnings[] = self::dbg($summary, 'INFO', ['endTime.resolved' => $endTime]);
                 }
             }
         }
 
         if (!$dtEnd) {
-            $warnings[] = "Skipped '{$summary}': invalid DTEND";
+            $warnings[] = self::dbg($summary, 'SKIP', [
+                'reason' => 'invalid DTEND after resolution attempts',
+                'startDate' => $startDate,
+                'endTime'   => $endTime,
+            ]);
             return null;
         }
 
@@ -145,19 +138,30 @@ final class ScheduleEntryExportAdapter
         // ---- RRULE ----
         $rrule = self::buildClampedRrule($entry, $startDate, $endDate, $warnings, $summary);
 
-        // ---- EXDATES ----
-        $exdates = self::extractExdates($entry, $warnings, $summary);
+        // ---- YAML ----
+        $yaml = [
+            'stopType' => self::stopTypeToString((int)($entry['stopType'] ?? 0)),
+            'repeat'   => self::repeatToYaml($entry['repeat'] ?? 0),
+        ];
 
-        // Helpful debug context for export/import loops
-        $yaml['resolvedStartDate'] = $startDate;
-        $yaml['resolvedEndDate']   = $endDate;
+        if (isset($entry['__gcs_yaml']) && is_array($entry['__gcs_yaml'])) {
+            $yaml = array_merge($yaml, $entry['__gcs_yaml']);
+        }
+
+        $warnings[] = self::dbg($summary, 'EXPORT', [
+            'resolved.startDate' => $startDate,
+            'resolved.endDate'   => $endDate,
+            'final.DTSTART'      => $dtStart->format('Y-m-d H:i:s'),
+            'final.DTEND'        => $dtEnd->format('Y-m-d H:i:s'),
+            'RRULE'              => $rrule,
+        ]);
 
         return [
             'summary' => $summary,
             'dtstart' => $dtStart,
             'dtend'   => $dtEnd,
             'rrule'   => $rrule,
-            'exdates' => $exdates,
+            'exdates' => [],
             'yaml'    => $yaml,
         ];
     }
@@ -169,7 +173,8 @@ final class ScheduleEntryExportAdapter
         array &$warnings,
         string $field,
         array $entry,
-        ?string $fallback = null
+        ?string $fallback,
+        string $summary
     ): ?string {
         $raw = trim($raw);
 
@@ -178,7 +183,9 @@ final class ScheduleEntryExportAdapter
             if (strpos($raw, '0000-') === 0) {
                 // For "0000-.." use current year (export display only).
                 $year = (int)date('Y');
-                return sprintf('%04d-%s', $year, substr($raw, 5));
+                $resolved = sprintf('%04d-%s', $year, substr($raw, 5));
+                $warnings[] = self::dbg($summary, 'INFO', ["{$field}.0000" => "{$raw} -> {$resolved}"]);
+                return $resolved;
             }
             return $raw;
         }
@@ -194,15 +201,24 @@ final class ScheduleEntryExportAdapter
 
             $d = FppSemantics::dateForHoliday($raw, $year);
             if ($d !== null) {
+                $warnings[] = self::dbg($summary, 'INFO', ["{$field}.holiday" => "{$raw}({$year}) -> {$d}"]);
                 return $d;
             }
 
-            $warnings[] = "Export: {$field} '{$raw}' is not a known holiday in current locale.";
+            $warnings[] = self::dbg($summary, 'WARN', [
+                'reason' => "{$field} holiday not resolved in current locale",
+                "{$field}.raw" => $raw,
+                'hintYear' => $year,
+            ]);
         }
 
         // Fallback to startDate (resolved) if we must
         if ($fallback !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $fallback)) {
-            $warnings[] = "Export: {$field} '{$raw}' unresolved; clamped to {$fallback}";
+            $warnings[] = self::dbg($summary, 'WARN', [
+                'reason' => "{$field} unresolved; clamped to fallback",
+                "{$field}.raw" => $raw,
+                'fallback' => $fallback,
+            ]);
             return $fallback;
         }
 
@@ -219,7 +235,6 @@ final class ScheduleEntryExportAdapter
             return $endDate;
         }
 
-        // If end < start, bump end year by +1 preserving MM-DD (repeat until not before, max 2 bumps).
         if ($endDate < $startDate) {
             $y = (int)substr($endDate, 0, 4);
             $mmdd = substr($endDate, 5);
@@ -228,7 +243,11 @@ final class ScheduleEntryExportAdapter
                 $y++;
                 $candidate = sprintf('%04d-%s', $y, $mmdd);
                 if ($candidate >= $startDate) {
-                    $warnings[] = "Export: '{$summary}' endDate adjusted across year boundary ({$endDate} → {$candidate}).";
+                    $warnings[] = self::dbg($summary, 'WARN', [
+                        'reason' => 'endDate adjusted across year boundary',
+                        'endDate.before' => $endDate,
+                        'endDate.after'  => $candidate,
+                    ]);
                     return $candidate;
                 }
                 $endDate = $candidate;
@@ -263,29 +282,26 @@ final class ScheduleEntryExportAdapter
             $maxEnd = (clone $start)->modify('+' . self::MAX_EXPORT_SPAN_DAYS . ' days');
 
             if ($end > $maxEnd) {
-                $warnings[] =
-                    "Export: '{$summary}' endDate {$endDate} exceeds +" . self::MAX_EXPORT_SPAN_DAYS .
-                    " days; clamped to " . $maxEnd->format('Y-m-d') . " for Google compatibility.";
+                $warnings[] = self::dbg($summary, 'WARN', [
+                    'reason' => 'RRULE endDate exceeds clamp window',
+                    'endDate.before' => $endDate,
+                    'endDate.after'  => $maxEnd->format('Y-m-d'),
+                    'maxDays' => self::MAX_EXPORT_SPAN_DAYS,
+                ]);
                 $endDate = $maxEnd->format('Y-m-d');
             }
 
-            // If after clamp we ended up before start, force to start day
             if ($endDate < $startDate) {
-                $warnings[] =
-                    "Export: '{$summary}' endDate {$endDate} < startDate {$startDate}; clamped to startDate.";
+                $warnings[] = self::dbg($summary, 'WARN', [
+                    'reason' => 'RRULE endDate < startDate after clamp; forcing to startDate',
+                    'startDate' => $startDate,
+                    'endDate' => $endDate,
+                ]);
                 $endDate = $startDate;
             }
         }
 
-        // Safety: if resolved endDate still < startDate (string compare), force endDate = startDate
-        if ($endDate < $startDate) {
-            $warnings[] =
-                "Export: '{$summary}' RRULE endDate {$endDate} < startDate {$startDate}; forced to startDate.";
-            $endDate = $startDate;
-        }
-
-        // UNTIL: use floating UNTIL to avoid TZID+Z mismatches in some importers.
-        // (DTSTART is TZID local; UNTIL is date-time in the same "local" frame here.)
+        // UNTIL: floating local UNTIL
         $untilLocal = str_replace('-', '', $endDate) . 'T235959';
 
         $dayEnum = (int)($entry['day'] ?? -1);
@@ -299,52 +315,18 @@ final class ScheduleEntryExportAdapter
             return 'FREQ=WEEKLY;BYDAY=' . $byDay . ';UNTIL=' . $untilLocal;
         }
 
-        // Unknown day enum: fall back to DAILY
-        $warnings[] = "Export: '{$summary}' unknown day enum ({$dayEnum}); using DAILY rule.";
+        $warnings[] = self::dbg($summary, 'WARN', [
+            'reason' => 'unknown day enum; using DAILY',
+            'dayEnum' => $dayEnum,
+        ]);
+
         return 'FREQ=DAILY;UNTIL=' . $untilLocal;
-    }
-
-    /**
-     * Extract EXDATEs emitted by ExportService precedence pass.
-     * Source field: __gcs_export_exdates_dtstart: array<int,string> "YYYY-MM-DD HH:MM:SS"
-     *
-     * @return array<int,DateTime>
-     */
-    private static function extractExdates(array $entry, array &$warnings, string $summary): array
-    {
-        $raw = $entry['__gcs_export_exdates_dtstart'] ?? null;
-        if (!is_array($raw) || empty($raw)) {
-            return [];
-        }
-
-        $out = [];
-        foreach ($raw as $v) {
-            if (!is_string($v)) {
-                continue;
-            }
-            $v = trim($v);
-            if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $v)) {
-                $warnings[] = "Export: '{$summary}' EXDATE ignored (invalid format): {$v}";
-                continue;
-            }
-
-            $dt = DateTime::createFromFormat('Y-m-d H:i:s', $v);
-            if (!$dt) {
-                $warnings[] = "Export: '{$summary}' EXDATE ignored (unparseable): {$v}";
-                continue;
-            }
-
-            $out[] = $dt;
-        }
-
-        return $out;
     }
 
     /* ===================================================================== */
 
     private static function parseDateTime(string $date, string $time): ?DateTime
     {
-        // Expect H:i:s
         if (!preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
             return null;
         }
@@ -395,5 +377,18 @@ final class ScheduleEntryExportAdapter
             if ($v >= 100) return (int)($v / 100);
         }
         return 'none';
+    }
+
+    private static function dbg(string $summary, string $tag, array $kv = []): string
+    {
+        // Single-line, grep-friendly debug string in warnings
+        $parts = [];
+        foreach ($kv as $k => $v) {
+            if (is_array($v)) $v = json_encode($v);
+            if (is_bool($v)) $v = $v ? 'true' : 'false';
+            if ($v === null) $v = 'null';
+            $parts[] = $k . '=' . $v;
+        }
+        return '[export:' . $tag . '] ' . $summary . (empty($parts) ? '' : ' | ' . implode(' ', $parts));
     }
 }
