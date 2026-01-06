@@ -141,7 +141,7 @@ if (isset($_GET['endpoint'])) {
         // --------------------------------------------------------------
         if ($_GET['endpoint'] === 'apply') {
 
-            // Enforce persisted runtime dry-run (Developer mode)
+            // Enforce persisted runtime dry-run
             $runtimeDryRun = !empty($cfg['runtime']['dry_run']);
 
             // Also honor explicit dry-run request flags (defensive)
@@ -309,13 +309,13 @@ $canSave    = ($isEmpty || $isIcsValid);
     <span class="gcs-status-text">
         <?php
         if ($isEmpty) {
-            echo 'Enter a Google Calendar ICS URL to begin.';
+            echo 'Enter a Google Calendar ICS URL to get started.';
         } elseif (!$isIcsValid) {
             echo 'Please enter a valid Google Calendar ICS (.ics) URL.';
         } elseif ($dryRun) {
-            echo 'Developer mode: changes will NOT be written to the scheduler.';
+            echo 'Dry run enabled — changes will not be written to the scheduler.';
         } else {
-            echo 'Ready — check calendar for changes.';
+            echo 'Ready — monitoring calendar for changes.';
         }
         ?>
     </span>
@@ -358,7 +358,7 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div class="gcs-dev-toggle">
         <label>
             <input type="checkbox" id="gcs-dry-run" name="dry_run" <?php if ($dryRun) echo 'checked'; ?>>
-            Developer mode: dry run
+            Dry Run
         </label>
     </div>
 </form>
@@ -372,7 +372,7 @@ $canSave    = ($isEmpty || $isIcsValid);
     <div id="gcs-diff-summary" class="gcs-hidden" style="margin-top:12px;"></div>
 
     <div id="gcs-preview-actions" class="gcs-hidden" style="margin-top:12px;">
-        <button type="button" class="buttons" id="gcs-close-preview-btn">Close Preview</button>
+        <button type="button" class="buttons" id="gcs-close-preview-btn">Cancel</button>
         <button type="button" class="buttons" id="gcs-apply-btn" disabled>Apply Changes</button>
     </div>
     <div id="gcs-post-apply-actions" class="gcs-hidden" style="margin-top:12px;">
@@ -692,12 +692,19 @@ applyBtn.addEventListener('click', function () {
                 return;
             }
 
-            // Show post-apply actions (persistent)
+            // Apply completed successfully — transition UI state
+
+            // Hide apply controls
+            applyBtn.classList.add('gcs-hidden');
+            closePreviewBtn.classList.add('gcs-hidden');
+
+            // Show post-apply actions (Open Schedule)
             var postApply = document.getElementById('gcs-post-apply-actions');
             if (postApply) {
                 postApply.classList.remove('gcs-hidden');
             }
 
+            // Refresh status after write
             runPlanStatus();
         });
 });
@@ -716,7 +723,7 @@ if (exportBtn) {
         setTimeout(function () {
             gcsSetUnmanagedStatus(
                 'success',
-                'Export complete. Import the downloaded file into Google Calendar.'
+                'Export ready. Your unmanaged schedules have been downloaded.'
             );
         }, 800);
     });
