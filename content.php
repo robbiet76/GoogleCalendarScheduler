@@ -486,24 +486,6 @@ icsInput.addEventListener('input', function () {
     saveBtn.disabled = !(val === '' || looksLikeIcs(val));
 });
 
-if (dryRunCheckbox) {
-    dryRunCheckbox.addEventListener('change', function () {
-        var form = this.closest('form');
-        if (!form) return;
-
-        // Ensure we submit as a SAVE action
-        var actionInput = document.createElement('input');
-        actionInput.type = 'hidden';
-        actionInput.name = 'action';
-        actionInput.value = 'save';
-
-        form.appendChild(actionInput);
-
-        // Submit immediately — dry-run is a mode toggle
-        form.submit();
-    });
-}
-
 function syncApplyButtonWithDryRun() {
     if (!applyBtn) return;
 
@@ -523,7 +505,28 @@ syncApplyButtonWithDryRun();
 
 // React immediately to user toggling dry-run
 if (dryRunCheckbox) {
-    dryRunCheckbox.addEventListener('change', syncApplyButtonWithDryRun);
+    dryRunCheckbox.addEventListener('change', function () {
+        syncApplyButtonWithDryRun();
+
+        // Only react if preview UI is visible
+        var previewVisible =
+            previewActions &&
+            !previewActions.classList.contains('gcs-hidden');
+
+        if (!previewVisible) {
+            return;
+        }
+
+        if (this.checked) {
+            gcsSetStatus(
+                'warning',
+                'Dry run enabled — changes will not be written to the schedule.'
+            );
+        } else {
+            // Restore canonical status (with real counts)
+            runPlanStatus();
+        }
+    });
 }
 
 function gcsSetStatus(level, message) {
