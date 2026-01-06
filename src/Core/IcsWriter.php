@@ -69,25 +69,6 @@ final class IcsWriter
         $lines[] = 'DTEND;TZID='   . $tzName . ':' . $dtEnd->format('Ymd\THis');
 
         if (is_string($rrule) && $rrule !== '') {
-            /**
-             * FIX: Midnight-crossing recurring events
-             *
-             * If the event crosses midnight, the final valid occurrence DTSTART
-             * is later than endDate@00:00. Google Calendar will drop the final
-             * occurrence unless UNTIL >= last DTSTART.
-             *
-             * We normalize UNTIL to the DTSTART of the last occurrence.
-             */
-            if ($dtEnd > $dtStart) {
-                $rrule = preg_replace_callback(
-                    '/UNTIL=([0-9TZ]+)/',
-                    function () use ($dtStart) {
-                        return 'UNTIL=' . $dtStart->format('Ymd\THis');
-                    },
-                    $rrule
-                );
-            }
-
             $lines[] = 'RRULE:' . $rrule;
         }
 
