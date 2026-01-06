@@ -312,8 +312,6 @@ $canSave    = ($isEmpty || $isIcsValid);
             echo 'Enter a Google Calendar ICS URL to get started.';
         } elseif (!$isIcsValid) {
             echo 'Please enter a valid Google Calendar ICS (.ics) URL.';
-        } elseif ($dryRun) {
-            echo 'Dry run enabled — changes will not be written to the scheduler.';
         } else {
             echo 'Ready — monitoring calendar for changes.';
         }
@@ -696,7 +694,20 @@ previewBtn.addEventListener('click', function () {
             `;
 
             previewActions.classList.remove('gcs-hidden');
-            applyBtn.disabled = false;
+
+            // Dry Run handling — only relevant AFTER preview
+            var dryRunCb = document.getElementById('gcs-dry-run');
+            var isDryRun = !!(dryRunCb && dryRunCb.checked);
+
+            if (isDryRun) {
+                applyBtn.disabled = true;
+                gcsSetStatus(
+                    'warning',
+                    'Dry run enabled — changes will not be written to the schedule.'
+                );
+            } else {
+                applyBtn.disabled = false;
+            }
         });
 });
 
