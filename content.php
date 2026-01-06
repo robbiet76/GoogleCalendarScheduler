@@ -488,6 +488,24 @@ icsInput.addEventListener('input', function () {
     saveBtn.disabled = !(val === '' || looksLikeIcs(val));
 });
 
+if (dryRunCheckbox) {
+    dryRunCheckbox.addEventListener('change', function () {
+        var form = this.closest('form');
+        if (!form) return;
+
+        // Ensure we submit as a SAVE action
+        var actionInput = document.createElement('input');
+        actionInput.type = 'hidden';
+        actionInput.name = 'action';
+        actionInput.value = 'save';
+
+        form.appendChild(actionInput);
+
+        // Submit immediately — dry-run is a mode toggle
+        form.submit();
+    });
+}
+
 function syncApplyButtonWithDryRun() {
     if (!applyBtn) return;
 
