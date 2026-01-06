@@ -60,15 +60,41 @@ final class ScheduleEntryExportAdapter
         $startTime = (string)($entry['startTime'] ?? '00:00:00');
         $endTime   = (string)($entry['endTime'] ?? '00:00:00');
 
+        // ---- YAML (start with base yaml, then merge/augment) ----
+        $yaml = [
+            'stopType' => self::stopTypeToString((int)($entry['stopType'] ?? 0)),
+            'repeat'   => self::repeatToYaml($entry['repeat'] ?? 0),
+        ];
+
+        // Preserve normalized YAML from FppSemantics if present
+        if (isset($entry['__gcs_yaml']) && is_array($entry['__gcs_yaml'])) {
+            $yaml = array_merge($yaml, $entry['__gcs_yaml']);
+        }
+
         // DTSTART
         $dtStart = self::parseDateTime($startDate, $startTime);
 
         // If time is still symbolic (Dusk/Dawn/SunRise/SunSet), try resolving here as a safety net.
         if (!$dtStart && self::looksSymbolicTime($startTime)) {
-            $resolved = FppSemantics::resolveSymbolicTime($startDate, $startTime, (int)($entry['startTimeOffset'] ?? 0), $warnings);
+            $resolved = FppSemantics::resolveSymbolicTime(
+                $startDate,
+                $startTime,
+                (int)($entry['startTimeOffset'] ?? 0),
+                $warnings
+            );
+
             if (is_array($resolved) && isset($resolved['displayTime'])) {
-                $startTime = (string)$resolved['displayTime'];
-                $dtStart = self::parseDateTime($startDate, $startTime);
+                $startTimeResolved = (string)$resolved['displayTime'];
+                $dtStart = self::parseDateTime($startDate, $startTimeResolved);
+
+                if ($dtStart) {
+                    // Capture intent so import can restore symbolic time later
+                    $yaml['start'] = $resolved['yaml'] ?? [
+                        'symbolic' => $startTime,
+                        'offsetMinutes' => (int)($entry['startTimeOffset'] ?? 0),
+                        'resolvedBy' => 'adapter_safety_net',
+                    ];
+                }
             }
         }
 
@@ -84,10 +110,24 @@ final class ScheduleEntryExportAdapter
             $dtEnd = self::parseDateTime($startDate, $endTime);
 
             if (!$dtEnd && self::looksSymbolicTime($endTime)) {
-                $resolved = FppSemantics::resolveSymbolicTime($startDate, $endTime, (int)($entry['endTimeOffset'] ?? 0), $warnings);
+                $resolved = FppSemantics::resolveSymbolicTime(
+                    $startDate,
+                    $endTime,
+                    (int)($entry['endTimeOffset'] ?? 0),
+                    $warnings
+                );
+
                 if (is_array($resolved) && isset($resolved['displayTime'])) {
-                    $endTime = (string)$resolved['displayTime'];
-                    $dtEnd = self::parseDateTime($startDate, $endTime);
+                    $endTimeResolved = (string)$resolved['displayTime'];
+                    $dtEnd = self::parseDateTime($startDate, $endTimeResolved);
+
+                    if ($dtEnd) {
+                        $yaml['end'] = $resolved['yaml'] ?? [
+                            'symbolic' => $endTime,
+                            'offsetMinutes' => (int)($entry['endTimeOffset'] ?? 0),
+                            'resolvedBy' => 'adapter_safety_net',
+                        ];
+                    }
                 }
             }
         }
@@ -103,27 +143,21 @@ final class ScheduleEntryExportAdapter
         }
 
         // ---- RRULE ----
-
         $rrule = self::buildClampedRrule($entry, $startDate, $endDate, $warnings, $summary);
 
-        // ---- YAML ----
-        // Keep existing yaml fields and allow augmentation later
-        $yaml = [
-            'stopType' => self::stopTypeToString((int)($entry['stopType'] ?? 0)),
-            'repeat'   => self::repeatToYaml($entry['repeat'] ?? 0),
-        ];
+        // ---- EXDATES ----
+        $exdates = self::extractExdates($entry, $warnings, $summary);
 
-        // If the entry already carries normalized YAML from FppSemantics, preserve it.
-        if (isset($entry['__gcs_yaml']) && is_array($entry['__gcs_yaml'])) {
-            $yaml = array_merge($yaml, $entry['__gcs_yaml']);
-        }
+        // Helpful debug context for export/import loops
+        $yaml['resolvedStartDate'] = $startDate;
+        $yaml['resolvedEndDate']   = $endDate;
 
         return [
             'summary' => $summary,
             'dtstart' => $dtStart,
             'dtend'   => $dtEnd,
             'rrule'   => $rrule,
-            'exdates' => [],
+            'exdates' => $exdates,
             'yaml'    => $yaml,
         ];
     }
@@ -243,6 +277,13 @@ final class ScheduleEntryExportAdapter
             }
         }
 
+        // Safety: if resolved endDate still < startDate (string compare), force endDate = startDate
+        if ($endDate < $startDate) {
+            $warnings[] =
+                "Export: '{$summary}' RRULE endDate {$endDate} < startDate {$startDate}; forced to startDate.";
+            $endDate = $startDate;
+        }
+
         // UNTIL: use floating UNTIL to avoid TZID+Z mismatches in some importers.
         // (DTSTART is TZID local; UNTIL is date-time in the same "local" frame here.)
         $untilLocal = str_replace('-', '', $endDate) . 'T235959';
@@ -261,6 +302,42 @@ final class ScheduleEntryExportAdapter
         // Unknown day enum: fall back to DAILY
         $warnings[] = "Export: '{$summary}' unknown day enum ({$dayEnum}); using DAILY rule.";
         return 'FREQ=DAILY;UNTIL=' . $untilLocal;
+    }
+
+    /**
+     * Extract EXDATEs emitted by ExportService precedence pass.
+     * Source field: __gcs_export_exdates_dtstart: array<int,string> "YYYY-MM-DD HH:MM:SS"
+     *
+     * @return array<int,DateTime>
+     */
+    private static function extractExdates(array $entry, array &$warnings, string $summary): array
+    {
+        $raw = $entry['__gcs_export_exdates_dtstart'] ?? null;
+        if (!is_array($raw) || empty($raw)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($raw as $v) {
+            if (!is_string($v)) {
+                continue;
+            }
+            $v = trim($v);
+            if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $v)) {
+                $warnings[] = "Export: '{$summary}' EXDATE ignored (invalid format): {$v}";
+                continue;
+            }
+
+            $dt = DateTime::createFromFormat('Y-m-d H:i:s', $v);
+            if (!$dt) {
+                $warnings[] = "Export: '{$summary}' EXDATE ignored (unparseable): {$v}";
+                continue;
+            }
+
+            $out[] = $dt;
+        }
+
+        return $out;
     }
 
     /* ===================================================================== */
