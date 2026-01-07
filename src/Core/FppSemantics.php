@@ -9,7 +9,7 @@ declare(strict_types=1);
  * PURPOSE:
  * - Document and centralize values derived from FPP source / UI behavior
  * - Provide meaning for scheduler enums and sentinel values
- * - Act as semantic boundary between PHP and FPP concepts
+ * - Act as a semantic boundary between PHP and FPP concepts
  *
  * NON-GOALS:
  * - No calendar policy
@@ -25,41 +25,58 @@ final class FPPSemantics
      * ===================================================================== */
 
     /**
-     * Runtime FPP environment (from fpp-env.json).
+     * Cached FPP runtime environment data.
+     *
+     * Originates from the C++ exporter (`fpp-env.json`) and is injected
+     * by higher-level services (e.g. ExportService).
+     *
+     * This class treats the environment as read-only semantic context.
      *
      * @var array<string,mixed>|null
      */
     private static ?array $environment = null;
 
     /**
-     * Inject runtime FPP environment.
+     * Inject runtime environment data.
      *
-     * Called once by ExportService.
+     * @param array<string,mixed> $env
      */
     public static function setEnvironment(array $env): void
     {
         self::$environment = $env;
     }
 
+    /**
+     * Whether runtime environment data has been provided.
+     */
     public static function hasEnvironment(): bool
     {
         return is_array(self::$environment);
     }
 
+    /**
+     * Latitude in decimal degrees, if available.
+     */
     public static function getLatitude(): ?float
     {
         return is_numeric(self::$environment['latitude'] ?? null)
-            ? (float)self::$environment['latitude']
+            ? (float) self::$environment['latitude']
             : null;
     }
 
+    /**
+     * Longitude in decimal degrees, if available.
+     */
     public static function getLongitude(): ?float
     {
         return is_numeric(self::$environment['longitude'] ?? null)
-            ? (float)self::$environment['longitude']
+            ? (float) self::$environment['longitude']
             : null;
     }
 
+    /**
+     * IANA timezone identifier, if available.
+     */
     public static function getTimezone(): ?string
     {
         return is_string(self::$environment['timezone'] ?? null)
@@ -75,7 +92,7 @@ final class FPPSemantics
      * Canonical DateTime constructor for FPP-derived values.
      *
      * This is the ONLY place DateTime::createFromFormat() should be used
-     * for schedule-related dates.
+     * for schedule-related date/time construction.
      */
     public static function combineDateTime(
         string $ymd,
@@ -106,9 +123,9 @@ final class FPPSemantics
      * Scheduler stop types
      * ===================================================================== */
 
-    public const STOP_TYPE_GRACEFUL       = 0;
-    public const STOP_TYPE_HARD           = 1;
-    public const STOP_TYPE_GRACEFUL_LOOP  = 2;
+    public const STOP_TYPE_GRACEFUL      = 0;
+    public const STOP_TYPE_HARD          = 1;
+    public const STOP_TYPE_GRACEFUL_LOOP = 2;
 
     public static function stopTypeToString(int $v): string
     {
@@ -126,10 +143,10 @@ final class FPPSemantics
     public static function repeatToYaml(int $repeat): string|int
     {
         return match (true) {
-            $repeat === 0     => 'none',
-            $repeat === 1     => 'immediate',
-            $repeat >= 100    => (int)($repeat / 100),
-            default           => 'none',
+            $repeat === 0  => 'none',
+            $repeat === 1  => 'immediate',
+            $repeat >= 100 => (int) ($repeat / 100),
+            default        => 'none',
         };
     }
 
@@ -187,7 +204,8 @@ final class FPPSemantics
 
     public static function isSymbolicTime(?string $value): bool
     {
-        return is_string($value) && in_array($value, self::SYMBOLIC_TIMES, true);
+        return is_string($value)
+            && in_array($value, self::SYMBOLIC_TIMES, true);
     }
 
     /**
@@ -239,7 +257,7 @@ final class FPPSemantics
     }
 
     /* =====================================================================
-     * Date resolution (holidays + sentinel)
+     * Date resolution (sentinel + holidays)
      * ===================================================================== */
 
     public static function resolveDate(
@@ -250,18 +268,20 @@ final class FPPSemantics
     ): ?string {
         $raw = trim($raw);
 
+        // Absolute or sentinel date
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) {
             if (self::isSentinelDate($raw)) {
-                $year = (int)date('Y');
+                $year = (int) date('Y');
                 return sprintf('%04d-%s', $year, substr($raw, 5));
             }
             return $raw;
         }
 
+        // Holiday
         if ($raw !== '') {
             $yearHint = $fallbackDate
-                ? (int)substr($fallbackDate, 0, 4)
-                : (int)date('Y');
+                ? (int) substr($fallbackDate, 0, 4)
+                : (int) date('Y');
 
             $dt = HolidayResolver::dateFromHoliday(
                 $raw,

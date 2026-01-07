@@ -72,10 +72,11 @@ final class ExportService
     {
         $warnings = [];
 
-        $fppEnv = self::loadFppEnv($warnings);
+        $fppEnv = FppEnvironment::load(self::FPP_ENV_PATH, $warnings);
 
-        // Publish environment to semantic layer
-        FPPSemantics::setEnvironment($fppEnv);
+        if ($fppEnv->timezone()) {
+            date_default_timezone_set($fppEnv->timezone());
+        }
 
         // Set default timezone once (safe here)
         if ($fppEnv['timezone']) {
