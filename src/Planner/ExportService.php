@@ -31,7 +31,7 @@ final class ExportService
         foreach ($entries as $entry) {
             if (is_array($entry) && !SchedulerIdentity::isGcsManaged($entry)) {
                 // Phase 31: normalize all FPP semantics in one place (currently no-op)
-                $unmanaged[] = FppSemantics::normalizeScheduleEntry($entry, $warnings);
+                $unmanaged[] = $entry;
             }
         }
 
