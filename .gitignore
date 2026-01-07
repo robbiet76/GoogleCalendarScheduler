@@ -12,3 +12,7 @@ plugin.googleCalendarScheduler.json
 # Snapshots / backups
 *.SNAPSHOT_*
 *.BROKEN_*
+
+# GoogleCalendarScheduler runtime artifacts
+runtime/*
+!runtime/.gitkeep
