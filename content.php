@@ -39,6 +39,8 @@ require_once __DIR__ . '/src/Core/FppSemantics.php';
 require_once __DIR__ . '/src/Core/DiffPreviewer.php';
 require_once __DIR__ . '/src/Core/ScheduleEntryExportAdapter.php';
 require_once __DIR__ . '/src/Core/IcsWriter.php';
+require_once __DIR__ . '/src/Core/HolidayResolver.php';
+require_once __DIR__ . '/src/Core/SunTimeEstimator.php';
 
 // ---------------------------------------------------------------------
 // Planner services (PURE — no writes)
