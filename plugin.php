@@ -1,10 +1,23 @@
 <?php
+declare(strict_types=1);
+
 /**
  * GoogleCalendarScheduler plugin lifecycle hook
  *
  * Purpose:
  * - Export FPP-derived environment data at plugin load / startup
+ *
+ * IMPORTANT:
+ * - This file is WEB-ONLY.
+ * - It must NEVER execute under CLI (e.g. gcs-export).
  */
+
+// ---------------------------------------------------------------------
+// HARD GUARD: prevent execution under CLI
+// ---------------------------------------------------------------------
+if (PHP_SAPI === 'cli') {
+    return;
+}
 
 $pluginName = "GoogleCalendarScheduler";
 $pluginRoot = __DIR__;
