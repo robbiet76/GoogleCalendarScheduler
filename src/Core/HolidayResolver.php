@@ -4,22 +4,24 @@ declare(strict_types=1);
 /**
  * HolidayResolver
  *
- * Resolves holidays using the FPP runtime locale exported via fpp-env.json.
+ * Resolves holiday identifiers used by FPP scheduler into concrete dates
+ * using the FPP runtime locale exported via fpp-env.json.
  *
  * Canonical rules:
  * - shortName is the ONLY canonical identifier
- * - UI "name" is treated as an alias
+ * - schedule.json stores shortName values (e.g. "NewYearsEve")
+ * - UI "name" is NOT used for resolution
  * - All rules come from FPP (no hard-coded tables)
  *
  * This class is PURE:
  * - No I/O
  * - No scheduler logic
- * - No DateTime side effects
+ * - No DateTime side effects beyond construction
  */
 final class HolidayResolver
 {
     /**
-     * Cached holiday definitions indexed by normalized key.
+     * Cached holiday definitions indexed by shortName.
      *
      * @var array<string,array<string,mixed>>|null
      */
@@ -30,29 +32,28 @@ final class HolidayResolver
      * ============================================================ */
 
     /**
-     * Resolve a holiday string (UI name or shortName) to a DateTime.
+     * Resolve a holiday shortName to a DateTime.
      *
-     * @param string $input Holiday identifier (UI label OR shortName)
-     * @param int    $year  Target year
+     * @param string $shortName Holiday identifier from schedule.json
+     * @param int    $year      Target year
      *
      * @return DateTime|null
      */
-    public static function dateFromHoliday(string $input, int $year): ?DateTime
+    public static function dateFromHoliday(string $shortName, int $year): ?DateTime
     {
         $index = self::getHolidayIndex();
         if ($index === []) {
             return null;
         }
 
-        $key = self::normalize($input);
-        if (!isset($index[$key])) {
+        if (!isset($index[$shortName])) {
             return null;
         }
 
-        $def = $index[$key];
+        $def = $index[$shortName];
 
-        // Fixed date
-        if (!empty($def['month']) && !empty($def['day'])) {
+        // Fixed-date holiday
+        if (isset($def['month'], $def['day'])) {
             return new DateTime(sprintf(
                 '%04d-%02d-%02d',
                 $year,
@@ -74,7 +75,9 @@ final class HolidayResolver
      * ============================================================ */
 
     /**
-     * Build lookup index from FPP locale.
+     * Build lookup index from FPP locale holidays.
+     *
+     * Indexed strictly by shortName.
      *
      * @return array<string,array<string,mixed>>
      */
@@ -90,12 +93,17 @@ final class HolidayResolver
             return self::$holidayIndex;
         }
 
-        $raw = (new ReflectionClass('FppEnvironment'))
-            ->getMethod('getRaw')
-            ->invoke(
-                (new ReflectionClass('FppEnvironment'))
-                    ->newInstanceWithoutConstructor()
-            );
+        // The environment is already loaded during bootstrap
+        // and exposed via Config / runtime paths.
+        $warnings = [];
+        $envPath  = __DIR__ . '/../../runtime/fpp-env.json';
+
+        if (!is_file($envPath)) {
+            return self::$holidayIndex;
+        }
+
+        $env = FppEnvironment::loadFromFile($envPath, $warnings);
+        $raw = $env->getRaw();
 
         $holidays = $raw['rawLocale']['holidays'] ?? null;
         if (!is_array($holidays)) {
@@ -107,17 +115,12 @@ final class HolidayResolver
                 continue;
             }
 
-            if (empty($h['shortName'])) {
+            if (!isset($h['shortName']) || !is_string($h['shortName'])) {
                 continue;
             }
 
-            $short = self::normalize($h['shortName']);
-            self::$holidayIndex[$short] = $h;
-
-            // UI name alias
-            if (!empty($h['name'])) {
-                self::$holidayIndex[self::normalize($h['name'])] = $h;
-            }
+            // shortName is canonical and exact-match
+            self::$holidayIndex[$h['shortName']] = $h;
         }
 
         return self::$holidayIndex;
@@ -125,10 +128,12 @@ final class HolidayResolver
 
     /**
      * Resolve calculated (non-fixed) holidays.
+     *
+     * Supported types mirror FPP locale definitions.
      */
     private static function resolveCalculatedHoliday(array $calc, int $year): ?DateTime
     {
-        // Easter-based
+        // Easter-based holiday
         if (($calc['type'] ?? '') === 'easter') {
             $base = new DateTime();
             $base->setTimestamp(easter_date($year));
@@ -138,8 +143,10 @@ final class HolidayResolver
             return $base->modify(($offset >= 0 ? '+' : '') . $offset . ' days');
         }
 
-        // Weekday-based (head / tail)
-        if (!isset($calc['month'], $calc['dow'], $calc['week'], $calc['type'])) {
+        // Weekday-based holiday (e.g. Thanksgiving)
+        if (
+            !isset($calc['month'], $calc['dow'], $calc['week'], $calc['type'])
+        ) {
             return null;
         }
 
@@ -162,13 +169,5 @@ final class HolidayResolver
 
         $d->modify('+' . (($week - 1) * 7) . ' days');
         return $d;
-    }
-
-    /**
-     * Normalize holiday keys for matching.
-     */
-    private static function normalize(string $s): string
-    {
-        return strtolower(preg_replace('/[^a-z0-9]/i', '', $s));
     }
 }
