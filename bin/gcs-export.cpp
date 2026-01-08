@@ -4,64 +4,47 @@
 #include <cstdlib>
 
 #include <jsoncpp/json/json.h>
-#include "FPPLocale.h"
+
+#include "settings.h"
 
 /*
- * gcs-export
- *
- * Purpose:
- * - Export FPP runtime environment required by GoogleCalendarScheduler
- * - MUST be side-effect free
- * - MUST NOT initialize full FPP runtime
- *
- * This binary intentionally does NOT call LoadSettings().
+ * Paths
  */
-
-static const char* SETTINGS_PATH =
-    "/home/fpp/media/settings";
-
 static const char* OUTPUT_PATH =
     "/home/fpp/media/plugins/GoogleCalendarScheduler/runtime/fpp-env.json";
 
-/**
- * Read a single value from FPP settings JSON.
+static const char* LOCALE_PATH =
+    "/home/fpp/media/config/locale.json";
+
+/*
+ * Helper: load JSON file safely
  */
-static std::string readSetting(const Json::Value& settings,
-                               const std::string& key)
+static bool loadJsonFile(const char* path, Json::Value& out, std::string& err)
 {
-    if (!settings.isObject()) return "";
-    if (!settings.isMember(key)) return "";
-    if (!settings[key].isString()) return "";
-    return settings[key].asString();
+    std::ifstream in(path);
+    if (!in) {
+        err = std::string("Unable to open ") + path;
+        return false;
+    }
+
+    Json::CharReaderBuilder builder;
+    builder["collectComments"] = false;
+
+    return Json::parseFromStream(builder, in, &out, &err);
 }
 
 int main()
 {
-    Json::Value root;
+    Json::Value root(Json::objectValue);
     root["schemaVersion"] = 1;
-    root["source"] = "gcs-export";
+    root["source"]        = "gcs-export";
 
     // ---------------------------------------------------------------------
-    // Load settings JSON directly (NO LoadSettings)
+    // Pull canonical values from FPP settings
     // ---------------------------------------------------------------------
-    Json::Value settings;
-    {
-        std::ifstream in(SETTINGS_PATH);
-        if (!in) {
-            root["ok"] = false;
-            root["error"] = "Unable to open FPP settings file.";
-            std::cerr << "ERROR: Unable to open " << SETTINGS_PATH << std::endl;
-        } else {
-            in >> settings;
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Extract canonical values
-    // ---------------------------------------------------------------------
-    std::string latStr = readSetting(settings, "Latitude");
-    std::string lonStr = readSetting(settings, "Longitude");
-    std::string tz     = readSetting(settings, "TimeZone");
+    std::string latStr = getSetting("Latitude");
+    std::string lonStr = getSetting("Longitude");
+    std::string tz     = getSetting("TimeZone");
 
     double lat = latStr.empty() ? 0.0 : atof(latStr.c_str());
     double lon = lonStr.empty() ? 0.0 : atof(lonStr.c_str());
@@ -71,10 +54,18 @@ int main()
     root["timezone"]  = tz;
 
     // ---------------------------------------------------------------------
-    // Locale data (holidays, locale name, etc.)
+    // Load locale JSON directly (no runtime dependencies)
     // ---------------------------------------------------------------------
-    Json::Value locale = LocaleHolder::GetLocale();
-    root["rawLocale"] = locale;
+    Json::Value locale(Json::objectValue);
+    std::string localeErr;
+
+    if (loadJsonFile(LOCALE_PATH, locale, localeErr)) {
+        root["rawLocale"] = locale;
+    } else {
+        root["rawLocale"]  = Json::objectValue;
+        root["localeError"] = localeErr;
+        std::cerr << "WARN: " << localeErr << std::endl;
+    }
 
     // ---------------------------------------------------------------------
     // Validation
@@ -102,7 +93,7 @@ int main()
     root["ok"] = ok;
 
     // ---------------------------------------------------------------------
-    // Write output
+    // Write output atomically
     // ---------------------------------------------------------------------
     std::ofstream out(OUTPUT_PATH);
     if (!out) {
