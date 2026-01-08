@@ -253,7 +253,7 @@ if ($endpoint !== '') {
         if ($endpoint === 'export_unmanaged_debug') {
             gcsJsonHeader();
 
-            $entries = $loadUnmanagedEntries();
+            $entries = InventoryService::getUnmanagedEntries();
             $result  = ExportService::export($entries);
 
             if (!is_array($result)) {
@@ -275,7 +275,7 @@ if ($endpoint !== '') {
         // --------------------------------------------------------------
         if ($endpoint === 'export_unmanaged_ics') {
 
-            $entries = $loadUnmanagedEntries();
+            $entries = InventoryService::getUnmanagedEntries();
             $result  = ExportService::export($entries);
 
             if (empty($result['ics'])) {
