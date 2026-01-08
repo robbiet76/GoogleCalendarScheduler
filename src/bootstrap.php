@@ -38,7 +38,7 @@ require_once __DIR__ . '/Core/GcsLog.php';
 
 /* ---------- Runtime environment + semantics ---------- */
 require_once __DIR__ . '/Core/FppEnvironment.php';
-require_once __DIR__ . '/Core/FPPSemantics.php';
+require_once __DIR__ . '/Core/FppSemantics.php';
 
 /* ---------- Identity / comparison ---------- */
 require_once __DIR__ . '/Core/SchedulerIdentity.php';
