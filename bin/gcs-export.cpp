@@ -1,7 +1,6 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <cstdlib>
 
 #include <jsoncpp/json/json.h>
 
@@ -17,29 +16,36 @@ int main() {
     root["source"] = "gcs-export";
 
     // ---------------------------------------------------------------------
-    // Load FPP settings (REQUIRED — writable context)
+    // Load FPP settings (required for TimeZone)
     // ---------------------------------------------------------------------
-    LoadSettings("/home/fpp/media", true);
+    LoadSettings("/home/fpp/media", false);
 
     // ---------------------------------------------------------------------
-    // Pull canonical values from FPP settings
+    // Timezone comes from FPP settings
     // ---------------------------------------------------------------------
-    std::string latStr = getSetting("Latitude");
-    std::string lonStr = getSetting("Longitude");
-    std::string tz     = getSetting("TimeZone");
-
-    double lat = latStr.empty() ? 0.0 : atof(latStr.c_str());
-    double lon = lonStr.empty() ? 0.0 : atof(lonStr.c_str());
-
-    root["latitude"]  = lat;
-    root["longitude"] = lon;
-    root["timezone"]  = tz;
+    std::string tz = getSetting("TimeZone");
+    root["timezone"] = tz;
 
     // ---------------------------------------------------------------------
-    // Locale data (holidays, locale name, etc.)
+    // Locale data (canonical source of latitude, longitude, holidays, locale)
     // ---------------------------------------------------------------------
     Json::Value locale = LocaleHolder::GetLocale();
     root["rawLocale"] = locale;
+
+    double lat = 0.0;
+    double lon = 0.0;
+
+    if (locale.isObject()) {
+        if (locale.isMember("latitude") && locale["latitude"].isNumeric()) {
+            lat = locale["latitude"].asDouble();
+        }
+        if (locale.isMember("longitude") && locale["longitude"].isNumeric()) {
+            lon = locale["longitude"].asDouble();
+        }
+    }
+
+    root["latitude"]  = lat;
+    root["longitude"] = lon;
 
     // ---------------------------------------------------------------------
     // Validation
@@ -49,15 +55,19 @@ int main() {
     if (lat == 0.0 || lon == 0.0) {
         ok = false;
         root["error"] =
-            "Latitude/Longitude not present (or zero) in FPP settings.";
-        std::cerr << "WARN: Latitude/Longitude not present (or zero) in FPP settings." << std::endl;
+            "Latitude/Longitude not present (or zero) in FPP locale.";
+        std::cerr
+            << "WARN: Latitude/Longitude not present (or zero) in FPP locale."
+            << std::endl;
     }
 
     if (tz.empty()) {
         ok = false;
         root["error"] =
             "Timezone not present in FPP settings.";
-        std::cerr << "WARN: Timezone not present in FPP settings." << std::endl;
+        std::cerr
+            << "WARN: Timezone not present in FPP settings."
+            << std::endl;
     }
 
     root["ok"] = ok;
