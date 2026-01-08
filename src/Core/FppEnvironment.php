@@ -23,12 +23,29 @@ final class FppEnvironment
 {
     public const SCHEMA_VERSION = 1;
 
-    private bool $ok;
-    private ?float $latitude;
-    private ?float $longitude;
-    private ?string $timezone;
-    private ?string $error;
-    private array $raw;
+    /** @var bool */
+    private bool $ok = false;
+
+    /** @var ?float */
+    private ?float $latitude = null;
+
+    /** @var ?float */
+    private ?float $longitude = null;
+
+    /** @var ?string */
+    private ?string $timezone = null;
+
+    /** @var ?string */
+    private ?string $error = null;
+
+    /**
+     * Raw decoded environment payload.
+     *
+     * Always initialized to avoid typed-property access errors.
+     *
+     * @var array<string,mixed>
+     */
+    private array $raw = [];
 
     private function __construct(
         bool $ok,
