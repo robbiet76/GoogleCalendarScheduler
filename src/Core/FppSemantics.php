@@ -250,7 +250,6 @@ final class FPPSemantics
             'yaml' => [
                 'symbolic'       => $symbolic,
                 'offsetMinutes' => $offsetMinutes,
-                'resolvedBy'     => 'FPPSemantics',
                 'displayTime'   => $display,
             ],
         ];
