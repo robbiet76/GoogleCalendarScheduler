@@ -218,50 +218,33 @@ if ($endpoint !== '') {
         }
 
         // --------------------------------------------------------------
-        // Helper: load unmanaged scheduler entries safely
-        // --------------------------------------------------------------
-        $loadUnmanagedEntries = function (): array {
-            $all = SchedulerSync::readScheduleJsonStatic(
-                SchedulerSync::SCHEDULE_JSON_PATH
-            );
-
-            if (!is_array($all)) {
-                return [];
-            }
-
-            $out = [];
-
-            foreach ($all as $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-
-                // Managed entries are owned by GCS and must be excluded
-                if (SchedulerIdentity::extractKey($entry) !== null) {
-                    continue;
-                }
-
-                $out[] = $entry;
-            }
-
-            return $out;
-        };
-
-        // --------------------------------------------------------------
         // Export unmanaged scheduler entries (DEBUG — JSON)
         // --------------------------------------------------------------
         if ($endpoint === 'export_unmanaged_debug') {
             gcsJsonHeader();
 
             $entries = InventoryService::getUnmanagedEntries();
-            $result  = ExportService::export($entries);
 
-            if (!is_array($result)) {
-                header('Content-Type: text/plain; charset=utf-8');
-                echo 'Export failed: invalid export result.';
+            if (empty($entries)) {
+                echo json_encode([
+                    'ok'      => true,
+                    'empty'   => true,
+                    'message' => 'No unmanaged scheduler entries found (InventoryService returned empty).',
+                ]);
                 exit;
             }
 
+            $result = ExportService::export($entries);
+
+            if (!is_array($result)) {
+                echo json_encode([
+                    'ok'    => false,
+                    'error' => 'Export failed: invalid export result.',
+                ]);
+                exit;
+            }
+
+            // Remove large ICS payload from debug output
             if (isset($result['ics'])) {
                 $result['ics'] = '(omitted)';
             }
@@ -276,14 +259,26 @@ if ($endpoint !== '') {
         if ($endpoint === 'export_unmanaged_ics') {
 
             $entries = InventoryService::getUnmanagedEntries();
-            $result  = ExportService::export($entries);
 
-            if (empty($result['ics'])) {
-                header('Content-Type: application/json');
+            if (empty($entries)) {
+                header('Content-Type: application/json; charset=utf-8');
+                header('Cache-Control: no-store');
                 echo json_encode([
                     'ok'      => true,
                     'empty'   => true,
-                    'message' => 'No unmanaged scheduler entries found.',
+                    'message' => 'No unmanaged scheduler entries found (InventoryService returned empty).',
+                ]);
+                exit;
+            }
+
+            $result = ExportService::export($entries);
+
+            if (empty($result['ics'])) {
+                header('Content-Type: application/json; charset=utf-8');
+                header('Cache-Control: no-store');
+                echo json_encode([
+                    'ok'    => false,
+                    'error' => 'ICS export failed (no ICS payload returned).',
                 ]);
                 exit;
             }
