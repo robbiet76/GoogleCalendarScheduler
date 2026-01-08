@@ -48,6 +48,7 @@ final class SunTimeEstimator
             return null;
         }
 
+        // Noon avoids edge cases around DST transitions
         $ts = strtotime($ymd . ' 12:00:00');
         if ($ts === false) {
             return null;
@@ -79,7 +80,7 @@ final class SunTimeEstimator
 
     /**
      * @return array{int,int,int,int}
-     *   sunrise, sunset, dawn, dusk (seconds since midnight)
+     *   sunrise, sunset, dawn, dusk (seconds since local midnight)
      */
     private static function calculateSunTimes(
         int $timestamp,
@@ -124,10 +125,13 @@ final class SunTimeEstimator
         bool $isRise,
         float $zenith
     ): int {
+        // Approximate time
         $t = $dayOfYear + (($isRise ? 6 : 18) - $lngHour) / 24;
 
+        // Sun's mean anomaly
         $M = (0.9856 * $t) - 3.289;
 
+        // Sun's true longitude
         $L = $M
            + (1.916 * sin(deg2rad($M)))
            + (0.020 * sin(deg2rad(2 * $M)))
@@ -135,6 +139,7 @@ final class SunTimeEstimator
 
         $L = fmod($L + 360, 360);
 
+        // Right ascension
         $RA = rad2deg(atan(0.91764 * tan(deg2rad($L))));
         $RA = fmod($RA + 360, 360);
 
@@ -142,9 +147,11 @@ final class SunTimeEstimator
         $RAquadrant = floor($RA / 90) * 90;
         $RA = ($RA + ($Lquadrant - $RAquadrant)) / 15;
 
+        // Declination
         $sinDec = 0.39782 * sin(deg2rad($L));
         $cosDec = cos(asin($sinDec));
 
+        // Local hour angle
         $cosH =
             (cos(deg2rad(90 + $zenith)) -
              ($sinDec * sin(deg2rad($lat))))
@@ -161,11 +168,19 @@ final class SunTimeEstimator
 
         $H /= 15;
 
+        // Local mean time
         $T = $H + $RA - (0.06571 * $t) - 6.622;
 
+        // Universal Time (UTC)
         $UT = fmod($T - $lngHour + 24, 24);
 
-        return (int)round($UT * 3600);
+        // -----------------------------------------------------------------
+        // FIX: Convert UTC → local wall-clock time
+        // -----------------------------------------------------------------
+        $tzOffsetHours = date('Z') / 3600; // respects DST
+        $localTime = fmod($UT + $tzOffsetHours + 24, 24);
+
+        return (int)round($localTime * 3600);
     }
 
     /* =====================================================================
