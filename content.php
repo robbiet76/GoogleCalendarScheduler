@@ -216,6 +216,36 @@ if ($endpoint !== '') {
             ]);
             exit;
         }
+        
+        // --------------------------------------------------------------
+        // Helper: load unmanaged scheduler entries safely
+        // --------------------------------------------------------------
+        $loadUnmanagedEntries = function (): array {
+            $all = SchedulerSync::readScheduleJsonStatic(
+                SchedulerSync::SCHEDULE_JSON_PATH
+            );
+
+            if (!is_array($all)) {
+                return [];
+            }
+
+            $out = [];
+
+            foreach ($all as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                // Managed entries are owned by GCS and must be excluded
+                if (SchedulerIdentity::extractKey($entry) !== null) {
+                    continue;
+                }
+
+                $out[] = $entry;
+            }
+
+            return $out;
+        };
 
         // --------------------------------------------------------------
         // Export unmanaged scheduler entries (DEBUG — JSON)
@@ -223,17 +253,15 @@ if ($endpoint !== '') {
         if ($endpoint === 'export_unmanaged_debug') {
             gcsJsonHeader();
 
-            $entries = is_array($entries) ? $entries : [];
+            $entries = $loadUnmanagedEntries();
             $result  = ExportService::export($entries);
 
-            // Safety: never accidentally emit HTML here
             if (!is_array($result)) {
                 header('Content-Type: text/plain; charset=utf-8');
                 echo 'Export failed: invalid export result.';
                 exit;
             }
 
-            // Remove large ICS payload from debug output
             if (isset($result['ics'])) {
                 $result['ics'] = '(omitted)';
             }
@@ -245,20 +273,20 @@ if ($endpoint !== '') {
         // --------------------------------------------------------------
         // Export unmanaged scheduler entries to ICS
         // --------------------------------------------------------------
-        if ($endpoint=== 'export_unmanaged_ics') {
+        if ($endpoint === 'export_unmanaged_ics') {
 
-            $result = ExportService::export($entries);
+            $entries = $loadUnmanagedEntries();
+            $result  = ExportService::export($entries);
 
             if (empty($result['ics'])) {
-                header('Content-Type: application/json');
+                header('Content-Type: application/json; charset=utf-8');
                 echo json_encode([
-                    'ok' => false,
+                    'ok'    => false,
                     'error' => 'No unmanaged scheduler entries available for export.',
                 ]);
                 exit;
             }
 
-            // IMPORTANT: no JSON headers here
             header('Content-Type: text/calendar; charset=utf-8');
             header('Content-Disposition: attachment; filename="gcs-unmanaged-export.ics"');
             header('Cache-Control: no-store');
