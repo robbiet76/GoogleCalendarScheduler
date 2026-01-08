@@ -37,6 +37,23 @@ final class InventoryService
             SchedulerSync::SCHEDULE_JSON_PATH
         );
 
+        // 🔍 TEMP DEBUG — REMOVE AFTER VALIDATION
+        foreach ($entries as $i => $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $managed = SchedulerIdentity::isGcsManaged($entry);
+
+            error_log(sprintf(
+                '[GCS DEBUG][Inventory] #%d playlist=%s managed=%s args=%s',
+                $i,
+                $entry['playlist'] ?? '(none)',
+                $managed ? 'YES' : 'NO',
+                json_encode($entry['args'] ?? null)
+            ));
+        }
+
         $total = 0;
         $managed = 0;
         $unmanaged = 0;
