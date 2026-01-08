@@ -216,7 +216,7 @@ if ($endpoint !== '') {
             ]);
             exit;
         }
-        
+
         // --------------------------------------------------------------
         // Helper: load unmanaged scheduler entries safely
         // --------------------------------------------------------------
@@ -279,10 +279,11 @@ if ($endpoint !== '') {
             $result  = ExportService::export($entries);
 
             if (empty($result['ics'])) {
-                header('Content-Type: application/json; charset=utf-8');
+                header('Content-Type: application/json');
                 echo json_encode([
-                    'ok'    => false,
-                    'error' => 'No unmanaged scheduler entries available for export.',
+                    'ok'      => true,
+                    'empty'   => true,
+                    'message' => 'No unmanaged scheduler entries found.',
                 ]);
                 exit;
             }
