@@ -5,10 +5,51 @@ final class ScheduleEntryExportAdapter
 {
     private const MAX_EXPORT_SPAN_DAYS = 366;
 
+    /**
+     * TEMP DEBUG helper — remove once export path is validated.
+     *
+     * Logs *why* an entry was skipped + a compact snapshot of key fields.
+     *
+     * @param array<string,mixed> $entry
+     */
+    private static function debugSkip(string $summary, string $reason, array $entry): void
+    {
+        $playlist = is_string($entry['playlist'] ?? null) ? $entry['playlist'] : '';
+        $command  = is_string($entry['command'] ?? null) ? $entry['command'] : '';
+        $enabled  = isset($entry['enabled']) ? (string)$entry['enabled'] : '(unset)';
+        $args     = $entry['args'] ?? null;
+
+        $startDate = is_string($entry['startDate'] ?? null) ? $entry['startDate'] : '';
+        $endDate   = is_string($entry['endDate'] ?? null) ? $entry['endDate'] : '';
+        $startTime = is_string($entry['startTime'] ?? null) ? $entry['startTime'] : '';
+        $endTime   = is_string($entry['endTime'] ?? null) ? $entry['endTime'] : '';
+        $day       = isset($entry['day']) ? (string)$entry['day'] : '(unset)';
+        $repeat    = isset($entry['repeat']) ? (string)$entry['repeat'] : '(unset)';
+        $stopType  = isset($entry['stopType']) ? (string)$entry['stopType'] : '(unset)';
+
+        error_log(sprintf(
+            '[GCS DEBUG][ExportAdapter] SKIP "%s": %s | playlist=%s command=%s enabled=%s day=%s repeat=%s stopType=%s startDate=%s endDate=%s startTime=%s endTime=%s args=%s',
+            ($summary !== '' ? $summary : '(no summary)'),
+            $reason,
+            ($playlist !== '' ? $playlist : '(none)'),
+            ($command !== '' ? $command : '(none)'),
+            $enabled,
+            $day,
+            $repeat,
+            $stopType,
+            ($startDate !== '' ? $startDate : '(empty)'),
+            ($endDate !== '' ? $endDate : '(empty)'),
+            ($startTime !== '' ? $startTime : '(empty)'),
+            ($endTime !== '' ? $endTime : '(empty)'),
+            json_encode($args)
+        ));
+    }
+
     public static function adapt(array $entry, array &$warnings): ?array
     {
         $summary = trim((string)($entry['playlist'] ?? $entry['command'] ?? ''));
         if ($summary === '') {
+            self::debugSkip('', 'missing playlist/command summary', $entry);
             $warnings[] = 'Skipped entry with no playlist or command name';
             return null;
         }
@@ -23,6 +64,7 @@ final class ScheduleEntryExportAdapter
         );
 
         if (!$startDate) {
+            self::debugSkip($summary, 'unable to resolve startDate', $entry);
             $warnings[] = "Export: '{$summary}' unable to resolve startDate; entry skipped.";
             return null;
         }
@@ -35,6 +77,7 @@ final class ScheduleEntryExportAdapter
         );
 
         if (!$endDate) {
+            self::debugSkip($summary, 'unable to resolve endDate', $entry);
             $warnings[] = "Export: '{$summary}' unable to resolve endDate; entry skipped.";
             return null;
         }
@@ -60,10 +103,13 @@ final class ScheduleEntryExportAdapter
             (string)($entry['startTime'] ?? '00:00:00'),
             (int)($entry['startTimeOffset'] ?? 0),
             $warnings,
-            "{$summary} startTime"
+            "{$summary} startTime",
+            $entry,
+            $summary
         );
 
         if (!$dtStart) {
+            self::debugSkip($summary, 'invalid DTSTART (resolveTime returned null)', $entry);
             $warnings[] = "Export: '{$summary}' invalid DTSTART; entry skipped.";
             return null;
         }
@@ -82,10 +128,13 @@ final class ScheduleEntryExportAdapter
                 (string)($entry['endTime'] ?? '00:00:00'),
                 (int)($entry['endTimeOffset'] ?? 0),
                 $warnings,
-                "{$summary} endTime"
+                "{$summary} endTime",
+                $entry,
+                $summary
             );
 
             if (!$dtEnd) {
+                self::debugSkip($summary, 'invalid DTEND (resolveTime returned null)', $entry);
                 $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
                 return null;
             }
@@ -96,6 +145,11 @@ final class ScheduleEntryExportAdapter
         }
 
         if ($dtEnd <= $dtStart) {
+            // Not a skip, but useful for diagnosing “end before start” patterns
+            error_log(sprintf(
+                '[GCS DEBUG][ExportAdapter] ADJUST "%s": DTEND <= DTSTART, rolling end +1 day',
+                $summary
+            ));
             $dtEnd = (clone $dtEnd)->modify('+1 day');
         }
 
@@ -126,11 +180,18 @@ final class ScheduleEntryExportAdapter
         string $time,
         int $offsetMinutes,
         array &$warnings,
-        string $context
+        string $context,
+        array $entryForDebug,
+        string $summaryForDebug
     ): array {
         // Absolute time
         if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
             $dt = FPPSemantics::combineDateTime($date, $time);
+            if (!$dt) {
+                self::debugSkip($summaryForDebug, "combineDateTime failed for {$context} ({$date} {$time})", $entryForDebug);
+                $warnings[] = "Export: {$context} unable to combine date/time '{$date} {$time}'.";
+                return [null, null];
+            }
             return [$dt, null];
         }
 
@@ -143,6 +204,7 @@ final class ScheduleEntryExportAdapter
             );
 
             if (!$resolved) {
+                self::debugSkip($summaryForDebug, "unable to resolve symbolic time for {$context} ({$time}, offset={$offsetMinutes})", $entryForDebug);
                 $warnings[] =
                     "Export: {$context} unable to resolve symbolic time '{$time}'.";
                 return [null, null];
@@ -154,6 +216,9 @@ final class ScheduleEntryExportAdapter
             ];
         }
 
+        // Unknown / malformed time string
+        self::debugSkip($summaryForDebug, "unrecognized time format for {$context} ('{$time}')", $entryForDebug);
+        $warnings[] = "Export: {$context} unrecognized time format '{$time}'.";
         return [null, null];
     }
 
