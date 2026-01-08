@@ -19,24 +19,44 @@ if (PHP_SAPI === 'cli') {
     return;
 }
 
-$pluginName = "GoogleCalendarScheduler";
+$pluginName = 'GoogleCalendarScheduler';
 $pluginRoot = __DIR__;
 
-$exporter   = $pluginRoot . "/bin/gcs-export";
-$runtimeDir = $pluginRoot . "/runtime";
-$envFile    = $runtimeDir . "/fpp-env.json";
+$exporter   = $pluginRoot . '/bin/gcs-export';
+$runtimeDir = $pluginRoot . '/runtime';
+$envFile    = $runtimeDir . '/fpp-env.json';
 
-/* Ensure runtime directory exists */
+// ---------------------------------------------------------------------
+// Ensure runtime directory exists
+// ---------------------------------------------------------------------
 if (!is_dir($runtimeDir)) {
-    @mkdir($runtimeDir, 0755, true);
+    if (!@mkdir($runtimeDir, 0755, true) && !is_dir($runtimeDir)) {
+        error_log('[GCS] Failed to create runtime directory: ' . $runtimeDir);
+        return;
+    }
 }
 
-/* Run exporter if available */
+// ---------------------------------------------------------------------
+// Run exporter (web-context only)
+// ---------------------------------------------------------------------
 if (is_executable($exporter)) {
-    exec(escapeshellcmd($exporter) . " >/dev/null 2>&1", $out, $rc);
+    /*
+     * IMPORTANT:
+     * - Set working directory so libfpp does not attempt to write
+     *   media_root.txt in unexpected locations.
+     * - Silence stdout/stderr; rely on exit code + log on failure.
+     */
+    chdir($pluginRoot);
+
+    exec(
+        escapeshellcmd($exporter) . ' >/dev/null 2>&1',
+        $out,
+        $rc
+    );
+
     if ($rc !== 0) {
         error_log("[GCS] gcs-export failed with exit code {$rc}");
     }
 } else {
-    error_log("[GCS] gcs-export binary missing or not executable");
+    error_log('[GCS] gcs-export binary missing or not executable');
 }
