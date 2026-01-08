@@ -16,3 +16,6 @@ plugin.googleCalendarScheduler.json
 # GoogleCalendarScheduler runtime artifacts
 runtime/*
 !runtime/.gitkeep
+
+# FPP compiled binaries
+/bin/gcs-export
