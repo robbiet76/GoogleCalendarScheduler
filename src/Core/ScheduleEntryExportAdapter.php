@@ -39,11 +39,11 @@ final class ScheduleEntryExportAdapter
         if ($playlist !== '') {
             $summary = $playlist;
             $type = str_ends_with(strtolower($playlist), '.fseq')
-                ? 'sequence'
-                : 'playlist';
+                ? FPPSemantics::TYPE_SEQUENCE
+                : FPPSemantics::TYPE_PLAYLIST;
         } elseif ($command !== '') {
             $summary = $command;
-            $type = 'command';
+            $type = FPPSemantics::TYPE_COMMAND;
         } else {
             self::debugSkip('', 'missing playlist, sequence, or command name', $entry);
             $warnings[] = 'Skipped entry with no playlist, sequence, or command name';
@@ -102,7 +102,7 @@ final class ScheduleEntryExportAdapter
         $yaml = [];
 
         // type (playlist is default → omitted)
-        if ($type !== 'playlist') {
+        if ($type !== FPPSemantics::TYPE_PLAYLIST) {
             $yaml['type'] = $type;
         }
 
@@ -113,7 +113,7 @@ final class ScheduleEntryExportAdapter
         }
 
         // command metadata
-        if ($type === 'command') {
+        if ($type === FPPSemantics::TYPE_COMMAND) {
             $yaml['command'] = [
                 'name' => $command,
                 'args' => array_values($entry['args'] ?? []),
@@ -126,9 +126,10 @@ final class ScheduleEntryExportAdapter
             $yaml['stopType'] = $stopType;
         }
 
-        // repeat
+        // repeat (TYPE-AWARE)
         $repeat = FPPSemantics::repeatToYaml((int)($entry['repeat'] ?? 0));
-        if ($repeat !== FPPSemantics::getDefaultRepeat()) {
+        $defaultRepeat = FPPSemantics::getDefaultRepeatForType($type);
+        if ($repeat !== $defaultRepeat) {
             $yaml['repeat'] = $repeat;
         }
 
