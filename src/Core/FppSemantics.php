@@ -21,16 +21,20 @@ declare(strict_types=1);
 final class FPPSemantics
 {
     /* =====================================================================
+     * Canonical defaults (single source of truth)
+     * ===================================================================== */
+
+    public const DEFAULT_ENABLED           = true;
+    public const DEFAULT_STOPTYPE          = 'graceful';
+    public const DEFAULT_REPEAT            = 'immediate';
+    public const DEFAULT_ROUNDING_MINUTES  = 30;
+
+    /* =====================================================================
      * Runtime environment (exported by FPP)
      * ===================================================================== */
 
     /**
      * Cached FPP runtime environment data.
-     *
-     * Originates from the C++ exporter (`fpp-env.json`) and is injected
-     * by higher-level services (e.g. ExportService).
-     *
-     * This class treats the environment as read-only semantic context.
      *
      * @var array<string,mixed>|null
      */
@@ -46,17 +50,11 @@ final class FPPSemantics
         self::$environment = $env;
     }
 
-    /**
-     * Whether runtime environment data has been provided.
-     */
     public static function hasEnvironment(): bool
     {
         return is_array(self::$environment);
     }
 
-    /**
-     * Latitude in decimal degrees, if available.
-     */
     public static function getLatitude(): ?float
     {
         return is_numeric(self::$environment['latitude'] ?? null)
@@ -64,9 +62,6 @@ final class FPPSemantics
             : null;
     }
 
-    /**
-     * Longitude in decimal degrees, if available.
-     */
     public static function getLongitude(): ?float
     {
         return is_numeric(self::$environment['longitude'] ?? null)
@@ -74,9 +69,6 @@ final class FPPSemantics
             : null;
     }
 
-    /**
-     * IANA timezone identifier, if available.
-     */
     public static function getTimezone(): ?string
     {
         return is_string(self::$environment['timezone'] ?? null)
@@ -88,12 +80,6 @@ final class FPPSemantics
      * Canonical DateTime construction
      * ===================================================================== */
 
-    /**
-     * Canonical DateTime constructor for FPP-derived values.
-     *
-     * This is the ONLY place DateTime::createFromFormat() should be used
-     * for schedule-related date/time construction.
-     */
     public static function combineDateTime(
         string $ymd,
         string $hms
@@ -120,6 +106,20 @@ final class FPPSemantics
     }
 
     /* =====================================================================
+     * Enabled / disabled semantics
+     * ===================================================================== */
+
+    public static function normalizeEnabled(mixed $value): bool
+    {
+        return !($value === false || $value === 0 || $value === '0');
+    }
+
+    public static function isDefaultEnabled(bool $enabled): bool
+    {
+        return $enabled === self::DEFAULT_ENABLED;
+    }
+
+    /* =====================================================================
      * Scheduler stop types
      * ===================================================================== */
 
@@ -136,6 +136,11 @@ final class FPPSemantics
         };
     }
 
+    public static function getDefaultStopType(): string
+    {
+        return self::DEFAULT_STOPTYPE;
+    }
+
     /* =====================================================================
      * Repeat semantics
      * ===================================================================== */
@@ -148,6 +153,11 @@ final class FPPSemantics
             $repeat >= 100 => (int) ($repeat / 100),
             default        => 'none',
         };
+    }
+
+    public static function getDefaultRepeat(): string
+    {
+        return self::DEFAULT_REPEAT;
     }
 
     /* =====================================================================
@@ -233,7 +243,7 @@ final class FPPSemantics
             $lat,
             $lon,
             $offsetMinutes,
-            30
+            self::DEFAULT_ROUNDING_MINUTES
         );
 
         if (!$display) {
@@ -250,7 +260,6 @@ final class FPPSemantics
             'yaml' => [
                 'symbolic'       => $symbolic,
                 'offsetMinutes' => $offsetMinutes,
-                'resolvedBy'     => 'FPPSemantics',
                 'displayTime'   => $display,
             ],
         ];

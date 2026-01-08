@@ -5,50 +5,29 @@ final class ScheduleEntryExportAdapter
 {
     private const MAX_EXPORT_SPAN_DAYS = 366;
 
-    /**
-     * TEMP DEBUG helper — remove once export path is validated.
-     *
-     * Logs *why* an entry was skipped + a compact snapshot of key fields.
-     *
-     * @param array<string,mixed> $entry
-     */
+    /* =====================================================================
+     * DEBUG
+     * ===================================================================== */
+
     private static function debugSkip(string $summary, string $reason, array $entry): void
     {
         $playlist = is_string($entry['playlist'] ?? null) ? $entry['playlist'] : '';
         $command  = is_string($entry['command'] ?? null) ? $entry['command'] : '';
         $enabled  = array_key_exists('enabled', $entry) ? (string)$entry['enabled'] : '(unset)';
-        $args     = $entry['args'] ?? null;
-
-        $startDate = is_string($entry['startDate'] ?? null) ? $entry['startDate'] : '';
-        $endDate   = is_string($entry['endDate'] ?? null) ? $entry['endDate'] : '';
-        $startTime = is_string($entry['startTime'] ?? null) ? $entry['startTime'] : '';
-        $endTime   = is_string($entry['endTime'] ?? null) ? $entry['endTime'] : '';
-        $day       = array_key_exists('day', $entry) ? (string)$entry['day'] : '(unset)';
-        $repeat    = array_key_exists('repeat', $entry) ? (string)$entry['repeat'] : '(unset)';
-        $stopType  = array_key_exists('stopType', $entry) ? (string)$entry['stopType'] : '(unset)';
-
-        $argsJson = json_encode($args);
-        if (is_string($argsJson) && strlen($argsJson) > 400) {
-            $argsJson = substr($argsJson, 0, 400) . '…';
-        }
 
         error_log(sprintf(
-            '[GCS DEBUG][ExportAdapter] SKIP "%s": %s | playlist=%s command=%s enabled=%s day=%s repeat=%s stopType=%s startDate=%s endDate=%s startTime=%s endTime=%s args=%s',
+            '[GCS DEBUG][ExportAdapter] SKIP "%s": %s | playlist=%s command=%s enabled=%s',
             ($summary !== '' ? $summary : '(no summary)'),
             $reason,
             ($playlist !== '' ? $playlist : '(none)'),
             ($command !== '' ? $command : '(none)'),
-            $enabled,
-            $day,
-            $repeat,
-            $stopType,
-            ($startDate !== '' ? $startDate : '(empty)'),
-            ($endDate !== '' ? $endDate : '(empty)'),
-            ($startTime !== '' ? $startTime : '(empty)'),
-            ($endTime !== '' ? $endTime : '(empty)'),
-            $argsJson
+            $enabled
         ));
     }
+
+    /* =====================================================================
+     * PUBLIC
+     * ===================================================================== */
 
     public static function adapt(array $entry, array &$warnings): ?array
     {
@@ -94,12 +73,36 @@ final class ScheduleEntryExportAdapter
             $summary
         );
 
-        /* ---------------- YAML base ---------------- */
+        /* ---------------- DTSTART day-mask alignment ---------------- */
 
-        $yaml = [
-            'stopType' => FPPSemantics::stopTypeToString((int)($entry['stopType'] ?? 0)),
-            'repeat'   => FPPSemantics::repeatToYaml((int)($entry['repeat'] ?? 0)),
-        ];
+        $dayEnum = (int)($entry['day'] ?? 7);
+        if ($dayEnum !== 7) {
+            $aligned = self::alignStartDateToDayMask($startDate, $dayEnum);
+            if ($aligned !== $startDate) {
+                $warnings[] =
+                    "Export: '{$summary}' startDate adjusted to first valid day-of-week ({$startDate} → {$aligned}).";
+                $startDate = $aligned;
+            }
+        }
+
+        /* ---------------- YAML (minimal) ---------------- */
+
+        $yaml = [];
+
+        $enabled = FPPSemantics::normalizeEnabled($entry['enabled'] ?? true);
+        if (!FPPSemantics::isDefaultEnabled($enabled)) {
+            $yaml['enabled'] = false;
+        }
+
+        $stopType = FPPSemantics::stopTypeToString((int)($entry['stopType'] ?? 0));
+        if ($stopType !== FPPSemantics::getDefaultStopType()) {
+            $yaml['stopType'] = $stopType;
+        }
+
+        $repeat = FPPSemantics::repeatToYaml((int)($entry['repeat'] ?? 0));
+        if ($repeat !== FPPSemantics::getDefaultRepeat()) {
+            $yaml['repeat'] = $repeat;
+        }
 
         /* ---------------- DTSTART ---------------- */
 
@@ -114,7 +117,7 @@ final class ScheduleEntryExportAdapter
         );
 
         if (!$dtStart) {
-            self::debugSkip($summary, 'invalid DTSTART (resolveTime returned null)', $entry);
+            self::debugSkip($summary, 'invalid DTSTART', $entry);
             $warnings[] = "Export: '{$summary}' invalid DTSTART; entry skipped.";
             return null;
         }
@@ -139,7 +142,7 @@ final class ScheduleEntryExportAdapter
             );
 
             if (!$dtEnd) {
-                self::debugSkip($summary, 'invalid DTEND (resolveTime returned null)', $entry);
+                self::debugSkip($summary, 'invalid DTEND', $entry);
                 $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
                 return null;
             }
@@ -150,11 +153,6 @@ final class ScheduleEntryExportAdapter
         }
 
         if ($dtEnd <= $dtStart) {
-            // Not a skip, but useful for diagnosing “end before start” patterns
-            error_log(sprintf(
-                '[GCS DEBUG][ExportAdapter] ADJUST "%s": DTEND <= DTSTART, rolling end +1 day',
-                $summary
-            ));
             $dtEnd = (clone $dtEnd)->modify('+1 day');
         }
 
@@ -178,7 +176,32 @@ final class ScheduleEntryExportAdapter
         ];
     }
 
-    /* ===================================================================== */
+    /* =====================================================================
+     * HELPERS
+     * ===================================================================== */
+
+    private static function alignStartDateToDayMask(string $ymd, int $dayEnum): string
+    {
+        $byDay = FPPSemantics::dayEnumToByDay($dayEnum);
+        if ($byDay === '') {
+            return $ymd;
+        }
+
+        $allowed = array_flip(explode(',', $byDay));
+        $dt = new DateTime($ymd);
+
+        for ($i = 0; $i < 7; $i++) {
+            $dow = strtoupper($dt->format('D')); // MON → MO
+            $dow = substr($dow, 0, 2);
+
+            if (isset($allowed[$dow])) {
+                return $dt->format('Y-m-d');
+            }
+            $dt->modify('+1 day');
+        }
+
+        return $ymd; // safety fallback
+    }
 
     private static function resolveTime(
         string $date,
@@ -189,52 +212,16 @@ final class ScheduleEntryExportAdapter
         array $entryForDebug,
         string $summaryForDebug
     ): array {
-        // Absolute time
         if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
             $dt = FPPSemantics::combineDateTime($date, $time);
-            if (!$dt) {
-                self::debugSkip(
-                    $summaryForDebug,
-                    "combineDateTime failed for {$context} ({$date} {$time})",
-                    $entryForDebug
-                );
-                $warnings[] = "Export: {$context} unable to combine date/time '{$date} {$time}'.";
-                return [null, null];
-            }
             return [$dt, null];
         }
 
-        // Symbolic time
         if (FPPSemantics::isSymbolicTime($time)) {
-            $resolved = FPPSemantics::resolveSymbolicTime(
-                $date,
-                $time,
-                $offsetMinutes
-            );
-
-            if (!$resolved) {
-                self::debugSkip(
-                    $summaryForDebug,
-                    "unable to resolve symbolic time for {$context} ({$time}, offset={$offsetMinutes})",
-                    $entryForDebug
-                );
-                $warnings[] = "Export: {$context} unable to resolve symbolic time '{$time}'.";
-                return [null, null];
-            }
-
-            return [
-                $resolved['datetime'],
-                $resolved['yaml'],
-            ];
+            $resolved = FPPSemantics::resolveSymbolicTime($date, $time, $offsetMinutes);
+            return $resolved ? [$resolved['datetime'], $resolved['yaml']] : [null, null];
         }
 
-        // Unknown / malformed time string
-        self::debugSkip(
-            $summaryForDebug,
-            "unrecognized time format for {$context} ('{$time}')",
-            $entryForDebug
-        );
-        $warnings[] = "Export: {$context} unrecognized time format '{$time}'.";
         return [null, null];
     }
 
@@ -246,15 +233,11 @@ final class ScheduleEntryExportAdapter
     ): string {
         if ($endDate < $startDate) {
             $y = (int)substr($endDate, 0, 4);
-            $mmdd = substr($endDate, 5);
-            $candidate = sprintf('%04d-%s', $y + 1, $mmdd);
-
+            $candidate = sprintf('%04d-%s', $y + 1, substr($endDate, 5));
             $warnings[] =
                 "Export: '{$summary}' endDate adjusted across year boundary ({$endDate} → {$candidate}).";
-
             return $candidate;
         }
-
         return $endDate;
     }
 
@@ -269,9 +252,8 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        $start = new DateTime($startDate);
-        $end   = new DateTime($endDate);
-        $max   = (clone $start)->modify('+' . self::MAX_EXPORT_SPAN_DAYS . ' days');
+        $end = new DateTime($endDate);
+        $max = (new DateTime($startDate))->modify('+' . self::MAX_EXPORT_SPAN_DAYS . ' days');
 
         if ($end > $max) {
             $warnings[] =
@@ -280,7 +262,7 @@ final class ScheduleEntryExportAdapter
         }
 
         $until = $end->format('Ymd') . 'T235959';
-        $dayEnum = (int)($entry['day'] ?? -1);
+        $dayEnum = (int)($entry['day'] ?? 7);
 
         if ($dayEnum === 7) {
             return "FREQ=DAILY;UNTIL={$until}";

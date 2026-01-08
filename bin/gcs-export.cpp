@@ -11,72 +11,80 @@
 static const char* OUTPUT_PATH =
     "/home/fpp/media/plugins/GoogleCalendarScheduler/runtime/fpp-env.json";
 
-int main() {
-    Json::Value root;
+int main()
+{
+    Json::Value root(Json::objectValue);
     root["schemaVersion"] = 1;
     root["source"] = "gcs-export";
 
-    // ---------------------------------------------------------------------
-    // Load FPP settings (REQUIRED)
-    // ---------------------------------------------------------------------
-    LoadSettings("/home/fpp/media", false);
+    // -------------------------------------------------------------
+    // Initialize FPP settings (REQUIRED for getSetting / locale)
+    // -------------------------------------------------------------
+    try {
+        LoadSettings("/home/fpp/media");
+    } catch (...) {
+        // LoadSettings should not throw, but we never allow exporter to crash
+        std::cerr << "WARN: LoadSettings threw unexpectedly\n";
+    }
 
-    // ---------------------------------------------------------------------
-    // Pull canonical values from FPP settings
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------
+    // Read canonical settings
+    // -------------------------------------------------------------
     std::string latStr = getSetting("Latitude");
     std::string lonStr = getSetting("Longitude");
     std::string tz     = getSetting("TimeZone");
 
-    double lat = latStr.empty() ? 0.0 : atof(latStr.c_str());
-    double lon = lonStr.empty() ? 0.0 : atof(lonStr.c_str());
+    double lat = latStr.empty() ? 0.0 : std::atof(latStr.c_str());
+    double lon = lonStr.empty() ? 0.0 : std::atof(lonStr.c_str());
 
     root["latitude"]  = lat;
     root["longitude"] = lon;
     root["timezone"]  = tz;
 
-    // ---------------------------------------------------------------------
-    // Locale data (holidays, locale name, etc.)
-    // ---------------------------------------------------------------------
-    Json::Value locale = LocaleHolder::GetLocale();
-    root["rawLocale"] = locale;
+    // -------------------------------------------------------------
+    // Locale data (best-effort)
+    // -------------------------------------------------------------
+    try {
+        Json::Value locale = LocaleHolder::GetLocale();
+        root["rawLocale"] = locale;
+    } catch (...) {
+        // Locale failure must never abort export
+        std::cerr << "WARN: Unable to load FPP locale\n";
+        root["rawLocale"] = Json::nullValue;
+    }
 
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------
     // Validation
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------
     bool ok = true;
+    Json::Value errors(Json::arrayValue);
 
     if (lat == 0.0 || lon == 0.0) {
         ok = false;
-        root["error"] =
-            "Latitude/Longitude not present (or zero) in FPP settings.";
-        std::cerr
-            << "WARN: Latitude/Longitude not present (or zero) in FPP settings."
-            << std::endl;
+        errors.append("Latitude/Longitude not present or zero");
+        std::cerr << "WARN: Latitude/Longitude not present (or zero)\n";
     }
 
     if (tz.empty()) {
         ok = false;
-        root["error"] =
-            "Timezone not present in FPP settings.";
-        std::cerr
-            << "WARN: Timezone not present in FPP settings."
-            << std::endl;
+        errors.append("Timezone not present");
+        std::cerr << "WARN: Timezone not present\n";
     }
 
     root["ok"] = ok;
+    root["errors"] = errors;
 
-    // ---------------------------------------------------------------------
-    // Write output
-    // ---------------------------------------------------------------------
-    std::ofstream out(OUTPUT_PATH);
-    if (!out) {
-        std::cerr << "ERROR: Unable to write " << OUTPUT_PATH << std::endl;
+    // -------------------------------------------------------------
+    // Write output atomically
+    // -------------------------------------------------------------
+    std::ofstream out(OUTPUT_PATH, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        std::cerr << "ERROR: Unable to write " << OUTPUT_PATH << "\n";
         return 2;
     }
 
     out << root.toStyledString();
     out.close();
 
-    return ok ? 0 : 1;
+    return 0; // exporter should never fail hard
 }
