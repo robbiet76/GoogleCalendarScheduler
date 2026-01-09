@@ -67,6 +67,23 @@ final class FPPSemantics
     }
 
     /* =====================================================================
+     * Scheduler guard semantics
+     * ===================================================================== */
+
+    /**
+     * Return the scheduler guard date used by FPP.
+     *
+     * FPP caps schedules at Dec 31 of (current year + 5).
+     */
+    public static function getSchedulerGuardDate(): DateTime
+    {
+        $currentYear = (int)date('Y');
+        $guardYear   = $currentYear + 5;
+
+        return new DateTime(sprintf('%04d-12-31', $guardYear));
+    }
+
+    /* =====================================================================
      * Runtime environment (exported by FPP)
      * ===================================================================== */
 

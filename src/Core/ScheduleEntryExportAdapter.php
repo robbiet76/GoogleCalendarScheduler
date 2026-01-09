@@ -3,8 +3,6 @@ declare(strict_types=1);
 
 final class ScheduleEntryExportAdapter
 {
-    private const MAX_EXPORT_SPAN_DAYS = 366;
-
     /* =====================================================================
      * DEBUG
      * ===================================================================== */
@@ -101,18 +99,15 @@ final class ScheduleEntryExportAdapter
 
         $yaml = [];
 
-        // type (playlist is default → omitted)
         if ($type !== FPPSemantics::TYPE_PLAYLIST) {
             $yaml['type'] = $type;
         }
 
-        // enabled (emit ONLY when false)
         $enabled = FPPSemantics::normalizeEnabled($entry['enabled'] ?? true);
         if (!FPPSemantics::isDefaultEnabled($enabled)) {
             $yaml['enabled'] = false;
         }
 
-        // command metadata
         if ($type === FPPSemantics::TYPE_COMMAND) {
             $yaml['command'] = [
                 'name' => $command,
@@ -120,13 +115,11 @@ final class ScheduleEntryExportAdapter
             ];
         }
 
-        // stopType
         $stopType = FPPSemantics::stopTypeToString((int)($entry['stopType'] ?? 0));
         if ($stopType !== FPPSemantics::getDefaultStopType()) {
             $yaml['stopType'] = $stopType;
         }
 
-        // repeat (TYPE-AWARE)
         $repeat = FPPSemantics::repeatToYaml((int)($entry['repeat'] ?? 0));
         $defaultRepeat = FPPSemantics::getDefaultRepeatForType($type);
         if ($repeat !== $defaultRepeat) {
@@ -157,33 +150,37 @@ final class ScheduleEntryExportAdapter
 
         /* ---------------- DTEND ---------------- */
 
-        if (FPPSemantics::isEndOfDayTime((string)($entry['endTime'] ?? ''))) {
-            $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
+        if ($type === FPPSemantics::TYPE_COMMAND) {
+            $dtEnd = (clone $dtStart)->modify('+1 minute');
         } else {
-            [$dtEnd] = self::resolveTime(
-                $startDate,
-                (string)($entry['endTime'] ?? '00:00:00'),
-                (int)($entry['endTimeOffset'] ?? 0),
-                $warnings,
-                "{$summary} endTime",
-                $entry,
-                $summary
-            );
+            if (FPPSemantics::isEndOfDayTime((string)($entry['endTime'] ?? ''))) {
+                $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
+            } else {
+                [$dtEnd] = self::resolveTime(
+                    $startDate,
+                    (string)($entry['endTime'] ?? '00:00:00'),
+                    (int)($entry['endTimeOffset'] ?? 0),
+                    $warnings,
+                    "{$summary} endTime",
+                    $entry,
+                    $summary
+                );
 
-            if (!$dtEnd) {
-                self::debugSkip($summary, 'invalid DTEND', $entry);
-                $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
-                return null;
+                if (!$dtEnd) {
+                    self::debugSkip($summary, 'invalid DTEND', $entry);
+                    $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
+                    return null;
+                }
             }
-        }
 
-        if ($dtEnd <= $dtStart) {
-            $dtEnd = (clone $dtEnd)->modify('+1 day');
+            if ($dtEnd <= $dtStart) {
+                $dtEnd = (clone $dtEnd)->modify('+1 day');
+            }
         }
 
         /* ---------------- RRULE ---------------- */
 
-        $rrule = self::buildClampedRrule(
+        $rrule = self::buildGuardedRrule(
             $entry,
             $startDate,
             $endDate,
@@ -266,7 +263,7 @@ final class ScheduleEntryExportAdapter
         return $endDate;
     }
 
-    private static function buildClampedRrule(
+    private static function buildGuardedRrule(
         array $entry,
         string $startDate,
         string $endDate,
@@ -277,13 +274,19 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        $end = new DateTime($endDate);
-        $max = (new DateTime($startDate))->modify('+' . self::MAX_EXPORT_SPAN_DAYS . ' days');
+        $$end = new DateTime($endDate);
+        $guard = FPPSemantics::getSchedulerGuardDate();
 
-        if ($end > $max) {
+        if ($end > $guard) {
             $warnings[] =
                 "Export: '{$summary}' endDate {$endDate} clamped for Google compatibility.";
-            $end = $max;
+            $end = clone $guard;
+        }
+
+        if ($end > $guard) {
+            $warnings[] =
+                "Export: '{$summary}' endDate {$endDate} clamped for Google compatibility.";
+            $end = $guard;
         }
 
         $until = $end->format('Ymd') . 'T235959';
