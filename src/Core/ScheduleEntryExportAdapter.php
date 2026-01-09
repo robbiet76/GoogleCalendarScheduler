@@ -128,9 +128,18 @@ final class ScheduleEntryExportAdapter
 
         /* ---------------- DTSTART ---------------- */
 
+        $startTime = (string)($entry['startTime'] ?? '00:00:00');
+
+        // Commands must have a real "fire time" (00:00:00 is almost always unintended)
+        if ($type === FPPSemantics::TYPE_COMMAND && $startTime === '00:00:00') {
+            self::debugSkip($summary, 'command has startTime 00:00:00 (invalid for export)', $entry);
+            $warnings[] = "Export: '{$summary}' command startTime '00:00:00' is invalid; entry skipped.";
+            return null;
+        }
+
         [$dtStart, $startYaml] = self::resolveTime(
             $startDate,
-            (string)($entry['startTime'] ?? '00:00:00'),
+            $startTime,
             (int)($entry['startTimeOffset'] ?? 0),
             $warnings,
             "{$summary} startTime",
@@ -151,14 +160,17 @@ final class ScheduleEntryExportAdapter
         /* ---------------- DTEND ---------------- */
 
         if ($type === FPPSemantics::TYPE_COMMAND) {
+            // Commands are exported as 1-minute events for clean round-trip import.
             $dtEnd = (clone $dtStart)->modify('+1 minute');
         } else {
-            if (FPPSemantics::isEndOfDayTime((string)($entry['endTime'] ?? ''))) {
+            $endTime = (string)($entry['endTime'] ?? '');
+
+            if (FPPSemantics::isEndOfDayTime($endTime)) {
                 $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
             } else {
                 [$dtEnd] = self::resolveTime(
                     $startDate,
-                    (string)($entry['endTime'] ?? '00:00:00'),
+                    ($endTime !== '' ? $endTime : '00:00:00'),
                     (int)($entry['endTimeOffset'] ?? 0),
                     $warnings,
                     "{$summary} endTime",
@@ -233,14 +245,26 @@ final class ScheduleEntryExportAdapter
         string $summaryForDebug
     ): array {
         if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
-            return [FPPSemantics::combineDateTime($date, $time), null];
+            $dt = FPPSemantics::combineDateTime($date, $time);
+            if (!$dt) {
+                self::debugSkip($summaryForDebug, "combineDateTime failed for {$context} ({$date} {$time})", $entryForDebug);
+                $warnings[] = "Export: {$context} unable to combine date/time '{$date} {$time}'.";
+            }
+            return [$dt, null];
         }
 
         if (FPPSemantics::isSymbolicTime($time)) {
             $resolved = FPPSemantics::resolveSymbolicTime($date, $time, $offsetMinutes);
-            return $resolved ? [$resolved['datetime'], $resolved['yaml']] : [null, null];
+            if (!$resolved) {
+                self::debugSkip($summaryForDebug, "unable to resolve symbolic time for {$context} ({$time}, offset={$offsetMinutes})", $entryForDebug);
+                $warnings[] = "Export: {$context} unable to resolve symbolic time '{$time}'.";
+                return [null, null];
+            }
+            return [$resolved['datetime'], $resolved['yaml']];
         }
 
+        self::debugSkip($summaryForDebug, "unrecognized time format for {$context} ('{$time}')", $entryForDebug);
+        $warnings[] = "Export: {$context} unrecognized time format '{$time}'.";
         return [null, null];
     }
 
@@ -274,19 +298,14 @@ final class ScheduleEntryExportAdapter
             return null;
         }
 
-        $$end = new DateTime($endDate);
+        $end = new DateTime($endDate);
         $guard = FPPSemantics::getSchedulerGuardDate();
 
+        // Guard date is the single cap (matches FPP semantics)
         if ($end > $guard) {
             $warnings[] =
                 "Export: '{$summary}' endDate {$endDate} clamped for Google compatibility.";
             $end = clone $guard;
-        }
-
-        if ($end > $guard) {
-            $warnings[] =
-                "Export: '{$summary}' endDate {$endDate} clamped for Google compatibility.";
-            $end = $guard;
         }
 
         $until = $end->format('Ymd') . 'T235959';
