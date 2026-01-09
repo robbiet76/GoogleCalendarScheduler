@@ -164,6 +164,7 @@ final class ScheduleEntryExportAdapter
         if ($startYaml) {
             $yaml['start'] = $startYaml;
         }
+        $dtStartDate = $dtStart->format('Y-m-d');
 
         /* ---------------- DTEND ---------------- */
 
@@ -177,7 +178,7 @@ final class ScheduleEntryExportAdapter
                 $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
             } else {
                 [$dtEnd] = self::resolveTime(
-                    $startDate,
+                    $dtStartDate,
                     ($endTime !== '' ? $endTime : '00:00:00'),
                     (int)($entry['endTimeOffset'] ?? 0),
                     $warnings,
