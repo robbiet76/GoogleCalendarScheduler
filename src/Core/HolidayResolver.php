@@ -168,15 +168,15 @@ final class HolidayResolver
         $origMonth = $month;
 
         // Convert FPP weekday to PHP ISO-8601 weekday (1=Monday .. 7=Sunday)
-        $phpDow = ($fppDow === 0) ? 7 : $fppDow;
+        $isoDow = ($fppDow === 0) ? 7 : $fppDow;
 
         if ($calc['type'] === 'tail') {
             $d = new DateTime(sprintf('%04d-%02d-01', $year, $month));
             $d->modify('last day of this month');
-            while ((int)$d->format('N') !== $phpDow) {
+            while ((int)$d->format('N') !== $isoDow) {
                 $d->modify('-1 day');
             }
-            $d->modify('+' . (($week - 1) * 7) . ' days');
+            $d->modify('-' . (($week - 1) * 7) . ' days');
 
             // Ensure the calculated date is still within the target month.
             // If not, the holiday definition is invalid for this year.
@@ -191,7 +191,7 @@ final class HolidayResolver
             $firstDow = (int)$firstOfMonth->format('N');
 
             // Days to first desired weekday
-            $delta = ($phpDow - $firstDow + 7) % 7;
+            $delta = ($isoDow - $firstDow + 7) % 7;
 
             $day = 1 + $delta + (($week - 1) * 7);
 
