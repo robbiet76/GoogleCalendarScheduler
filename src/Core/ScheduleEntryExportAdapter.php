@@ -35,13 +35,21 @@ final class ScheduleEntryExportAdapter
         /* ---------------- Determine entry type ---------------- */
 
         if ($playlist !== '') {
-            $summary = $playlist;
-            $type = str_ends_with(strtolower($playlist), '.fseq')
+            $isSequence = str_ends_with(strtolower($playlist), '.fseq');
+
+            $type = $isSequence
                 ? FPPSemantics::TYPE_SEQUENCE
                 : FPPSemantics::TYPE_PLAYLIST;
+
+            // Strip .fseq from sequence summaries only
+            $summary = $isSequence
+                ? preg_replace('/\.fseq$/i', '', $playlist)
+                : $playlist;
+
         } elseif ($command !== '') {
             $summary = $command;
             $type = FPPSemantics::TYPE_COMMAND;
+
         } else {
             self::debugSkip('', 'missing playlist, sequence, or command name', $entry);
             $warnings[] = 'Skipped entry with no playlist, sequence, or command name';
