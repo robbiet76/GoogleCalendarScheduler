@@ -1,0 +1,74 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+
+    /* ---------------------------------------------------------
+     * MAC: Commit & Push current feature branch
+     * ------------------------------------------------------ */
+    {
+      "label": "Git: Commit & Push (current branch)",
+      "type": "shell",
+      "command": "BRANCH=$(git rev-parse --abbrev-ref HEAD); if [ \"$BRANCH\" = \"master\" ] || [ \"$BRANCH\" = \"main\" ]; then echo \"❌ Refusing to commit or push directly to $BRANCH\"; exit 1; fi; git status && git commit -am \"${input:commitMessage}\" && git push",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": "build"
+    },
+
+    /* ---------------------------------------------------------
+     * MAC: Dry-run (status only, no commit, no push)
+     * ------------------------------------------------------ */
+    {
+      "label": "Git: Dry-run (status only)",
+      "type": "shell",
+      "command": "BRANCH=$(git rev-parse --abbrev-ref HEAD); if [ \"$BRANCH\" = \"master\" ] || [ \"$BRANCH\" = \"main\" ]; then echo \"⚠️  On protected branch $BRANCH — status only\"; fi; git status",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+
+    /* ---------------------------------------------------------
+     * MAC: Status (quick sanity check)
+     * ------------------------------------------------------ */
+    {
+      "label": "Git: Status",
+      "type": "shell",
+      "command": "git status",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+
+    /* ---------------------------------------------------------
+     * FPP: Pull current branch (run over SSH terminal)
+     * ------------------------------------------------------ */
+    {
+      "label": "FPP: Pull current branch",
+      "type": "shell",
+      "command": "cd /home/fpp/media/plugins/GoogleCalendarScheduler && git pull",
+      "problemMatcher": []
+    },
+
+    /* ---------------------------------------------------------
+     * FPP: Reset hard & pull (safe recovery)
+     * ------------------------------------------------------ */
+    {
+      "label": "FPP: Hard reset & pull",
+      "type": "shell",
+      "command": "cd /home/fpp/media/plugins/GoogleCalendarScheduler && git reset --hard HEAD && git pull",
+      "problemMatcher": []
+    }
+  ],
+
+  "inputs": [
+    {
+      "id": "commitMessage",
+      "type": "promptString",
+      "description": "Commit message",
+      "default": "Update GoogleCalendarScheduler"
+    }
+  ]
+}
