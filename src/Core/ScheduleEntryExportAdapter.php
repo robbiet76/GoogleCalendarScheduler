@@ -3,16 +3,14 @@ declare(strict_types=1);
 
 final class ScheduleEntryExportAdapter
 {
-    private const MAX_EXPORT_SPAN_DAYS = 366;
-
     /* =====================================================================
      * DEBUG
      * ===================================================================== */
 
     private static function debugSkip(string $summary, string $reason, array $entry): void
     {
-        $playlist = is_string($entry['playlist'] ?? null) ? $entry['playlist'] : '';
-        $command  = is_string($entry['command'] ?? null) ? $entry['command'] : '';
+        $playlist = trim((string)($entry['playlist'] ?? ''));
+        $command  = trim((string)($entry['command'] ?? ''));
         $enabled  = array_key_exists('enabled', $entry) ? (string)$entry['enabled'] : '(unset)';
 
         error_log(sprintf(
@@ -31,10 +29,30 @@ final class ScheduleEntryExportAdapter
 
     public static function adapt(array $entry, array &$warnings): ?array
     {
-        $summary = trim((string)($entry['playlist'] ?? $entry['command'] ?? ''));
-        if ($summary === '') {
-            self::debugSkip('', 'missing playlist/command summary', $entry);
-            $warnings[] = 'Skipped entry with no playlist or command name';
+        $playlist = trim((string)($entry['playlist'] ?? ''));
+        $command  = trim((string)($entry['command'] ?? ''));
+
+        /* ---------------- Determine entry type ---------------- */
+
+        if ($playlist !== '') {
+            $isSequence = str_ends_with(strtolower($playlist), '.fseq');
+
+            $type = $isSequence
+                ? FPPSemantics::TYPE_SEQUENCE
+                : FPPSemantics::TYPE_PLAYLIST;
+
+            // Strip .fseq from sequence summaries only
+            $summary = $isSequence
+                ? preg_replace('/\.fseq$/i', '', $playlist)
+                : $playlist;
+
+        } elseif ($command !== '') {
+            $summary = $command;
+            $type = FPPSemantics::TYPE_COMMAND;
+
+        } else {
+            self::debugSkip('', 'missing playlist, sequence, or command name', $entry);
+            $warnings[] = 'Skipped entry with no playlist, sequence, or command name';
             return null;
         }
 
@@ -85,13 +103,24 @@ final class ScheduleEntryExportAdapter
             }
         }
 
-        /* ---------------- YAML (minimal) ---------------- */
+        /* ---------------- YAML (minimal, semantic) ---------------- */
 
         $yaml = [];
+
+        if ($type !== FPPSemantics::TYPE_PLAYLIST) {
+            $yaml['type'] = $type;
+        }
 
         $enabled = FPPSemantics::normalizeEnabled($entry['enabled'] ?? true);
         if (!FPPSemantics::isDefaultEnabled($enabled)) {
             $yaml['enabled'] = false;
+        }
+
+        if ($type === FPPSemantics::TYPE_COMMAND) {
+            $yaml['command'] = [
+                'name' => $command,
+                'args' => array_values($entry['args'] ?? []),
+            ];
         }
 
         $stopType = FPPSemantics::stopTypeToString((int)($entry['stopType'] ?? 0));
@@ -100,15 +129,25 @@ final class ScheduleEntryExportAdapter
         }
 
         $repeat = FPPSemantics::repeatToYaml((int)($entry['repeat'] ?? 0));
-        if ($repeat !== FPPSemantics::getDefaultRepeat()) {
+        $defaultRepeat = FPPSemantics::getDefaultRepeatForType($type);
+        if ($repeat !== $defaultRepeat) {
             $yaml['repeat'] = $repeat;
         }
 
         /* ---------------- DTSTART ---------------- */
 
+        $startTime = (string)($entry['startTime'] ?? '00:00:00');
+
+        // Commands must have a real "fire time" (00:00:00 is almost always unintended)
+        if ($type === FPPSemantics::TYPE_COMMAND && $startTime === '00:00:00') {
+            self::debugSkip($summary, 'command has startTime 00:00:00 (invalid for export)', $entry);
+            $warnings[] = "Export: '{$summary}' command startTime '00:00:00' is invalid; entry skipped.";
+            return null;
+        }
+
         [$dtStart, $startYaml] = self::resolveTime(
             $startDate,
-            (string)($entry['startTime'] ?? '00:00:00'),
+            $startTime,
             (int)($entry['startTimeOffset'] ?? 0),
             $warnings,
             "{$summary} startTime",
@@ -128,37 +167,40 @@ final class ScheduleEntryExportAdapter
 
         /* ---------------- DTEND ---------------- */
 
-        if (FPPSemantics::isEndOfDayTime((string)($entry['endTime'] ?? ''))) {
-            $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
+        if ($type === FPPSemantics::TYPE_COMMAND) {
+            // Commands are exported as 1-minute events for clean round-trip import.
+            $dtEnd = (clone $dtStart)->modify('+1 minute');
         } else {
-            [$dtEnd, $endYaml] = self::resolveTime(
-                $startDate,
-                (string)($entry['endTime'] ?? '00:00:00'),
-                (int)($entry['endTimeOffset'] ?? 0),
-                $warnings,
-                "{$summary} endTime",
-                $entry,
-                $summary
-            );
+            $endTime = (string)($entry['endTime'] ?? '');
 
-            if (!$dtEnd) {
-                self::debugSkip($summary, 'invalid DTEND', $entry);
-                $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
-                return null;
+            if (FPPSemantics::isEndOfDayTime($endTime)) {
+                $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
+            } else {
+                [$dtEnd] = self::resolveTime(
+                    $startDate,
+                    ($endTime !== '' ? $endTime : '00:00:00'),
+                    (int)($entry['endTimeOffset'] ?? 0),
+                    $warnings,
+                    "{$summary} endTime",
+                    $entry,
+                    $summary
+                );
+
+                if (!$dtEnd) {
+                    self::debugSkip($summary, 'invalid DTEND', $entry);
+                    $warnings[] = "Export: '{$summary}' invalid DTEND; entry skipped.";
+                    return null;
+                }
             }
 
-            if ($endYaml) {
-                $yaml['end'] = $endYaml;
+            if ($dtEnd <= $dtStart) {
+                $dtEnd = (clone $dtEnd)->modify('+1 day');
             }
-        }
-
-        if ($dtEnd <= $dtStart) {
-            $dtEnd = (clone $dtEnd)->modify('+1 day');
         }
 
         /* ---------------- RRULE ---------------- */
 
-        $rrule = self::buildClampedRrule(
+        $rrule = self::buildGuardedRrule(
             $entry,
             $startDate,
             $endDate,
@@ -191,16 +233,14 @@ final class ScheduleEntryExportAdapter
         $dt = new DateTime($ymd);
 
         for ($i = 0; $i < 7; $i++) {
-            $dow = strtoupper($dt->format('D')); // MON → MO
-            $dow = substr($dow, 0, 2);
-
+            $dow = substr(strtoupper($dt->format('D')), 0, 2);
             if (isset($allowed[$dow])) {
                 return $dt->format('Y-m-d');
             }
             $dt->modify('+1 day');
         }
 
-        return $ymd; // safety fallback
+        return $ymd;
     }
 
     private static function resolveTime(
@@ -214,14 +254,25 @@ final class ScheduleEntryExportAdapter
     ): array {
         if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $time)) {
             $dt = FPPSemantics::combineDateTime($date, $time);
+            if (!$dt) {
+                self::debugSkip($summaryForDebug, "combineDateTime failed for {$context} ({$date} {$time})", $entryForDebug);
+                $warnings[] = "Export: {$context} unable to combine date/time '{$date} {$time}'.";
+            }
             return [$dt, null];
         }
 
         if (FPPSemantics::isSymbolicTime($time)) {
             $resolved = FPPSemantics::resolveSymbolicTime($date, $time, $offsetMinutes);
-            return $resolved ? [$resolved['datetime'], $resolved['yaml']] : [null, null];
+            if (!$resolved) {
+                self::debugSkip($summaryForDebug, "unable to resolve symbolic time for {$context} ({$time}, offset={$offsetMinutes})", $entryForDebug);
+                $warnings[] = "Export: {$context} unable to resolve symbolic time '{$time}'.";
+                return [null, null];
+            }
+            return [$resolved['datetime'], $resolved['yaml']];
         }
 
+        self::debugSkip($summaryForDebug, "unrecognized time format for {$context} ('{$time}')", $entryForDebug);
+        $warnings[] = "Export: {$context} unrecognized time format '{$time}'.";
         return [null, null];
     }
 
@@ -232,8 +283,11 @@ final class ScheduleEntryExportAdapter
         string $summary
     ): string {
         if ($endDate < $startDate) {
-            $y = (int)substr($endDate, 0, 4);
-            $candidate = sprintf('%04d-%s', $y + 1, substr($endDate, 5));
+            $candidate = sprintf(
+                '%04d-%s',
+                ((int)substr($endDate, 0, 4)) + 1,
+                substr($endDate, 5)
+            );
             $warnings[] =
                 "Export: '{$summary}' endDate adjusted across year boundary ({$endDate} → {$candidate}).";
             return $candidate;
@@ -241,7 +295,7 @@ final class ScheduleEntryExportAdapter
         return $endDate;
     }
 
-    private static function buildClampedRrule(
+    private static function buildGuardedRrule(
         array $entry,
         string $startDate,
         string $endDate,
@@ -253,12 +307,13 @@ final class ScheduleEntryExportAdapter
         }
 
         $end = new DateTime($endDate);
-        $max = (new DateTime($startDate))->modify('+' . self::MAX_EXPORT_SPAN_DAYS . ' days');
+        $guard = FPPSemantics::getSchedulerGuardDate();
 
-        if ($end > $max) {
+        // Guard date is the single cap (matches FPP semantics)
+        if ($end > $guard) {
             $warnings[] =
                 "Export: '{$summary}' endDate {$endDate} clamped for Google compatibility.";
-            $end = $max;
+            $end = clone $guard;
         }
 
         $until = $end->format('Ymd') . 'T235959';

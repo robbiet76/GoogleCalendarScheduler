@@ -24,10 +24,64 @@ final class FPPSemantics
      * Canonical defaults (single source of truth)
      * ===================================================================== */
 
-    public const DEFAULT_ENABLED           = true;
-    public const DEFAULT_STOPTYPE          = 'graceful';
-    public const DEFAULT_REPEAT            = 'immediate';
-    public const DEFAULT_ROUNDING_MINUTES  = 30;
+    public const DEFAULT_ENABLED          = true;
+    public const DEFAULT_STOPTYPE         = 'graceful';
+    public const DEFAULT_REPEAT_PLAYBACK  = 'immediate'; // playlists & sequences
+    public const DEFAULT_REPEAT_COMMAND   = 'none';      // commands
+    public const DEFAULT_ROUNDING_MINUTES = 30;
+
+    /* =====================================================================
+     * Entry types
+     * ===================================================================== */
+
+    public const TYPE_PLAYLIST = 'playlist';
+    public const TYPE_SEQUENCE = 'sequence';
+    public const TYPE_COMMAND  = 'command';
+
+    /**
+     * Normalize entry type.
+     *
+     * Playlist is the implicit default.
+     */
+    public static function normalizeType(?string $type): string
+    {
+        return match ($type) {
+            self::TYPE_SEQUENCE => self::TYPE_SEQUENCE,
+            self::TYPE_COMMAND  => self::TYPE_COMMAND,
+            default             => self::TYPE_PLAYLIST,
+        };
+    }
+
+    /**
+     * Default repeat value by entry type.
+     */
+    public static function getDefaultRepeatForType(string $type): string
+    {
+        $type = self::normalizeType($type);
+
+        return match ($type) {
+            self::TYPE_COMMAND  => self::DEFAULT_REPEAT_COMMAND,
+            self::TYPE_SEQUENCE,
+            self::TYPE_PLAYLIST => self::DEFAULT_REPEAT_PLAYBACK,
+        };
+    }
+
+    /* =====================================================================
+     * Scheduler guard semantics
+     * ===================================================================== */
+
+    /**
+     * Return the scheduler guard date used by FPP.
+     *
+     * FPP caps schedules at Dec 31 of (current year + 5).
+     */
+    public static function getSchedulerGuardDate(): DateTime
+    {
+        $currentYear = (int)date('Y');
+        $guardYear   = $currentYear + 5;
+
+        return new DateTime(sprintf('%04d-12-31', $guardYear));
+    }
 
     /* =====================================================================
      * Runtime environment (exported by FPP)
@@ -153,11 +207,6 @@ final class FPPSemantics
             $repeat >= 100 => (int) ($repeat / 100),
             default        => 'none',
         };
-    }
-
-    public static function getDefaultRepeat(): string
-    {
-        return self::DEFAULT_REPEAT;
     }
 
     /* =====================================================================
