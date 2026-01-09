@@ -190,6 +190,40 @@ final class FPPSemantics
         };
     }
 
+    /**
+     * Map YAML-friendly stopType values into the FPP scheduler enum.
+     *
+     * FPP ScheduleEntry.cpp:
+     * 0 = Graceful
+     * 1 = Hard
+     * 2 = Graceful Loop
+     */
+    public static function stopTypeToEnum($v): int
+    {
+        if ($v === null) {
+            return self::STOP_TYPE_GRACEFUL;
+        }
+
+        if (is_int($v)) {
+            return max(
+                self::STOP_TYPE_GRACEFUL,
+                min(self::STOP_TYPE_GRACEFUL_LOOP, $v)
+            );
+        }
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            return match ($s) {
+                'hard', 'hard_stop'     => self::STOP_TYPE_HARD,
+                'graceful_loop'         => self::STOP_TYPE_GRACEFUL_LOOP,
+                'graceful', '', 'none'  => self::STOP_TYPE_GRACEFUL,
+                default                 => self::STOP_TYPE_GRACEFUL,
+            };
+        }
+
+        return self::STOP_TYPE_GRACEFUL;
+    }
+
     public static function getDefaultStopType(): string
     {
         return self::DEFAULT_STOPTYPE;
