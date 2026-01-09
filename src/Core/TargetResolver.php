@@ -10,8 +10,10 @@ declare(strict_types=1);
  * Responsibilities:
  * - Interpret event summary text
  * - Determine whether it refers to a valid FPP playlist or sequence
+ * - Determine whether it refers to a valid FPP command
  *
  * Resolution Order:
+ * 0. Explicit command reference
  * 1. Playlist
  * 2. Sequence
  *
@@ -38,6 +40,19 @@ final class TargetResolver
         }
 
         /* -------------------------------------------------------------
+         * 0. Explicit command resolution
+         * ---------------------------------------------------------- */
+        if (str_starts_with($base, 'cmd:') || str_starts_with($base, 'command:')) {
+            $cmd = trim(substr($base, strpos($base, ':') + 1));
+            if ($cmd !== '') {
+                return [
+                    'type'   => 'command',
+                    'target' => $cmd,
+                ];
+            }
+        }
+
+        /* -------------------------------------------------------------
          * 1. Playlist resolution
          * ---------------------------------------------------------- */
         if (self::playlistExists($base)) {
@@ -50,11 +65,11 @@ final class TargetResolver
         /* -------------------------------------------------------------
          * 2. Sequence resolution (.fseq)
          * ---------------------------------------------------------- */
-        $seq = (str_ends_with($base, '.fseq')) ? $base : $base . '.fseq';
-        if (self::sequenceExists($seq)) {
+        $seqFile = (str_ends_with($base, '.fseq')) ? $base : $base . '.fseq';
+        if (self::sequenceExists($seqFile)) {
             return [
                 'type'   => 'sequence',
-                'target' => $seq,
+                'target' => pathinfo($seqFile, PATHINFO_FILENAME),
             ];
         }
 
