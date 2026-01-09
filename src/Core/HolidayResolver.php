@@ -52,17 +52,7 @@ final class HolidayResolver
 
         $def = $index[$shortName];
 
-        // Fixed-date holiday
-        if (isset($def['month'], $def['day'])) {
-            return new DateTime(sprintf(
-                '%04d-%02d-%02d',
-                $year,
-                (int)$def['month'],
-                (int)$def['day']
-            ));
-        }
-
-        // Calculated holiday
+        // Calculated holiday (FPP uses month/day=0 with a calc block)
         if (isset($def['calc']) && is_array($def['calc'])) {
             $dt = self::resolveCalculatedHoliday($def['calc'], $year);
             if ($dt instanceof DateTime) {
@@ -77,6 +67,15 @@ final class HolidayResolver
                 );
             }
             return $dt;
+        }
+
+        // Fixed-date holiday (only when month/day are real values)
+        if (isset($def['month'], $def['day'])) {
+            $m = (int)$def['month'];
+            $d = (int)$def['day'];
+            if ($m >= 1 && $m <= 12 && $d >= 1 && $d <= 31) {
+                return new DateTime(sprintf('%04d-%02d-%02d', $year, $m, $d));
+            }
         }
 
         return null;
