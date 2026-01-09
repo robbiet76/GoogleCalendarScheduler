@@ -151,18 +151,21 @@ final class HolidayResolver
         }
 
         $month = (int)$calc['month'];
-        $dow   = (int)$calc['dow'];   // 1 = Monday
+        $fppDow = (int)$calc['dow'];   // FPP: 0=Sunday .. 6=Saturday
         $week  = (int)$calc['week'];
+
+        // Convert FPP weekday to PHP ISO-8601 weekday (1=Monday .. 7=Sunday)
+        $phpDow = ($fppDow === 0) ? 7 : $fppDow;
 
         $d = new DateTime(sprintf('%04d-%02d-01', $year, $month));
 
         if ($calc['type'] === 'tail') {
             $d->modify('last day of this month');
-            while ((int)$d->format('N') !== $dow) {
+            while ((int)$d->format('N') !== $phpDow) {
                 $d->modify('-1 day');
             }
         } else {
-            while ((int)$d->format('N') !== $dow) {
+            while ((int)$d->format('N') !== $phpDow) {
                 $d->modify('+1 day');
             }
         }
