@@ -64,7 +64,19 @@ final class HolidayResolver
 
         // Calculated holiday
         if (isset($def['calc']) && is_array($def['calc'])) {
-            return self::resolveCalculatedHoliday($def['calc'], $year);
+            $dt = self::resolveCalculatedHoliday($def['calc'], $year);
+            if ($dt instanceof DateTime) {
+                error_log(
+                    '[GCS DEBUG][HolidayResolver] ' .
+                    $shortName . ' ' . $year . ' resolved to ' . $dt->format('Y-m-d')
+                );
+            } else {
+                error_log(
+                    '[GCS DEBUG][HolidayResolver] ' .
+                    $shortName . ' ' . $year . ' failed to resolve'
+                );
+            }
+            return $dt;
         }
 
         return null;
