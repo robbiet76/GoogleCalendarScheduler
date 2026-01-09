@@ -94,12 +94,23 @@ final class ScheduleEntryExportAdapter
         /* ---------------- DTSTART day-mask alignment ---------------- */
 
         $dayEnum = (int)($entry['day'] ?? 7);
+        // Apply day-mask logic only if startDate itself is not allowed.
+        // Holidays and explicit dates are treated identically once resolved.
         if ($dayEnum !== 7) {
-            $aligned = self::alignStartDateToDayMask($startDate, $dayEnum);
-            if ($aligned !== $startDate) {
-                $warnings[] =
-                    "Export: '{$summary}' startDate adjusted to first valid day-of-week ({$startDate} → {$aligned}).";
-                $startDate = $aligned;
+            $byDay = FPPSemantics::dayEnumToByDay($dayEnum);
+            if ($byDay !== '') {
+                $allowed = array_flip(explode(',', $byDay));
+                $dt = new DateTime($startDate);
+                $dow = substr(strtoupper($dt->format('D')), 0, 2);
+
+                if (!isset($allowed[$dow])) {
+                    $aligned = self::alignStartDateToDayMask($startDate, $dayEnum);
+                    if ($aligned !== $startDate) {
+                        $warnings[] =
+                            "Export: '{$summary}' startDate adjusted to first valid day-of-week ({$startDate} → {$aligned}).";
+                        $startDate = $aligned;
+                    }
+                }
             }
         }
 
