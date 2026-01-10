@@ -20,7 +20,7 @@ declare(strict_types=1);
  *
  * Guard window:
  * - Based on FPP system time
- * - End boundary is fixed to Dec 31 of (currentYear + 2)
+ * - End boundary is fixed to the FPPSemantics scheduler guard date
  *
  * NOTE:
  * Final scheduling policy (start-date validity, end-date capping, max entries)
@@ -58,8 +58,7 @@ final class SchedulerRunner
          * Horizon (analysis bound only)
          * ---------------------------------------------------------- */
         $now = new DateTime('now');
-        $guardYear  = ((int)$now->format('Y')) + 2;
-        $horizonEnd = new DateTime(sprintf('%04d-12-31 23:59:59', $guardYear));
+        $horizonEnd = FPPSemantics::getSchedulerGuardDate();
 
         /* ------------------------------------------------------------
          * Parse ICS

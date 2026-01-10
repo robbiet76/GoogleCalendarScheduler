@@ -52,19 +52,30 @@ final class HolidayResolver
 
         $def = $index[$shortName];
 
-        // Fixed-date holiday
-        if (isset($def['month'], $def['day'])) {
-            return new DateTime(sprintf(
-                '%04d-%02d-%02d',
-                $year,
-                (int)$def['month'],
-                (int)$def['day']
-            ));
+        // Calculated holiday (FPP uses month/day=0 with a calc block)
+        if (isset($def['calc']) && is_array($def['calc'])) {
+            $dt = self::resolveCalculatedHoliday($def['calc'], $year);
+            if ($dt instanceof DateTime) {
+                error_log(
+                    '[GCS DEBUG][HolidayResolver] ' .
+                    $shortName . ' ' . $year . ' resolved to ' . $dt->format('Y-m-d')
+                );
+            } else {
+                error_log(
+                    '[GCS DEBUG][HolidayResolver] ' .
+                    $shortName . ' ' . $year . ' failed to resolve'
+                );
+            }
+            return $dt;
         }
 
-        // Calculated holiday
-        if (isset($def['calc']) && is_array($def['calc'])) {
-            return self::resolveCalculatedHoliday($def['calc'], $year);
+        // Fixed-date holiday (only when month/day are real values)
+        if (isset($def['month'], $def['day'])) {
+            $m = (int)$def['month'];
+            $d = (int)$def['day'];
+            if ($m >= 1 && $m <= 12 && $d >= 1 && $d <= 31) {
+                return new DateTime(sprintf('%04d-%02d-%02d', $year, $m, $d));
+            }
         }
 
         return null;
@@ -151,23 +162,43 @@ final class HolidayResolver
         }
 
         $month = (int)$calc['month'];
-        $dow   = (int)$calc['dow'];   // 1 = Monday
+        $fppDow = (int)$calc['dow'];   // FPP: 0=Sunday .. 6=Saturday
         $week  = (int)$calc['week'];
+        $origMonth = $month;
 
-        $d = new DateTime(sprintf('%04d-%02d-01', $year, $month));
+        // Convert FPP weekday to PHP ISO-8601 weekday (1=Monday .. 7=Sunday)
+        $isoDow = ($fppDow === 0) ? 7 : $fppDow;
 
         if ($calc['type'] === 'tail') {
+            $d = new DateTime(sprintf('%04d-%02d-01', $year, $month));
             $d->modify('last day of this month');
-            while ((int)$d->format('N') !== $dow) {
+            while ((int)$d->format('N') !== $isoDow) {
                 $d->modify('-1 day');
             }
-        } else {
-            while ((int)$d->format('N') !== $dow) {
-                $d->modify('+1 day');
+            $d->modify('-' . (($week - 1) * 7) . ' days');
+
+            if ((int)$d->format('n') !== $origMonth) {
+                return null;
             }
+
+            return $d;
         }
 
-        $d->modify('+' . (($week - 1) * 7) . ' days');
-        return $d;
+        if ($calc['type'] === 'head') {
+            // Canonical Nth-weekday-of-month calculation (FPP-compatible)
+            $firstOfMonth = new DateTime(sprintf('%04d-%02d-01', $year, $month));
+            $firstDow = (int)$firstOfMonth->format('N');
+
+            $delta = ($isoDow - $firstDow + 7) % 7;
+            $day = 1 + $delta + (($week - 1) * 7);
+
+            if ($day < 1 || $day > (int)$firstOfMonth->format('t')) {
+                return null;
+            }
+
+            return new DateTime(sprintf('%04d-%02d-%02d', $year, $month, $day));
+        }
+
+        return null;
     }
 }

@@ -190,6 +190,40 @@ final class FPPSemantics
         };
     }
 
+    /**
+     * Map YAML-friendly stopType values into the FPP scheduler enum.
+     *
+     * FPP ScheduleEntry.cpp:
+     * 0 = Graceful
+     * 1 = Hard
+     * 2 = Graceful Loop
+     */
+    public static function stopTypeToEnum($v): int
+    {
+        if ($v === null) {
+            return self::STOP_TYPE_GRACEFUL;
+        }
+
+        if (is_int($v)) {
+            return max(
+                self::STOP_TYPE_GRACEFUL,
+                min(self::STOP_TYPE_GRACEFUL_LOOP, $v)
+            );
+        }
+
+        if (is_string($v)) {
+            $s = strtolower(trim($v));
+            return match ($s) {
+                'hard', 'hard_stop'     => self::STOP_TYPE_HARD,
+                'graceful_loop'         => self::STOP_TYPE_GRACEFUL_LOOP,
+                'graceful', '', 'none'  => self::STOP_TYPE_GRACEFUL,
+                default                 => self::STOP_TYPE_GRACEFUL,
+            };
+        }
+
+        return self::STOP_TYPE_GRACEFUL;
+    }
+
     public static function getDefaultStopType(): string
     {
         return self::DEFAULT_STOPTYPE;
@@ -326,6 +360,12 @@ final class FPPSemantics
     ): ?string {
         $raw = trim($raw);
 
+        error_log(
+            '[GCS DEBUG][FPPSemantics::resolveDate] context=' . $context .
+            ' raw=' . ($raw !== '' ? $raw : '(empty)') .
+            ' fallbackDate=' . ($fallbackDate ?? '(null)')
+        );
+
         // Absolute date
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) {
             if (self::isSentinelDate($raw)) {
@@ -337,17 +377,76 @@ final class FPPSemantics
 
         // Holiday (resolved via FPP locale)
         if ($raw !== '') {
+            $currentYear = (int)date('Y');
+            $today = new DateTime('today');
+
+            // Primary year hint:
+            // - If we have a fallback (typically the other bound of a range), anchor to that year.
+            // - Otherwise anchor to the current year, but apply a “season” heuristic for late-year holidays
+            //   when running early in the year (prevents Thanksgiving/Christmas season drifting a year ahead).
             $yearHint = $fallbackDate
                 ? (int)substr($fallbackDate, 0, 4)
-                : (int)date('Y');
+                : $currentYear;
+
+            error_log(
+                '[GCS DEBUG][FPPSemantics::resolveDate] attempting holiday resolve ' .
+                $raw . ' using yearHint=' . $yearHint
+            );
 
             $dt = HolidayResolver::dateFromHoliday($raw, $yearHint);
 
+            // If no fallbackDate (standalone holiday), and the resolved date is “far in the future”,
+            // prefer the previous year (typical holiday season behavior in Jan/Feb).
+            if (!$fallbackDate && ($dt instanceof DateTime)) {
+                $futureCutoff = (clone $today)->modify('+180 days');
+                if ($dt > $futureCutoff) {
+                    $altYear = $yearHint - 1;
+                    error_log(
+                        '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' . $raw .
+                        ' resolved far-future (' . $dt->format('Y-m-d') .
+                        '), retrying with yearHint=' . $altYear
+                    );
+                    $alt = HolidayResolver::dateFromHoliday($raw, $altYear);
+                    if ($alt instanceof DateTime) {
+                        $dt = $alt;
+                        $yearHint = $altYear;
+                    }
+                }
+            }
+
+            // If we DO have a fallbackDate (range bound), ensure monotonicity:
+            // if the resolved holiday is before the fallbackDate, roll forward one year.
+            if ($fallbackDate && ($dt instanceof DateTime)) {
+                $fb = DateTime::createFromFormat('Y-m-d', $fallbackDate);
+                if ($fb instanceof DateTime && $dt < $fb) {
+                    $altYear = $yearHint + 1;
+                    error_log(
+                        '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' . $raw .
+                        ' resolved before fallback (' . $dt->format('Y-m-d') .
+                        ' < ' . $fb->format('Y-m-d') .
+                        '), retrying with yearHint=' . $altYear
+                    );
+                    $alt = HolidayResolver::dateFromHoliday($raw, $altYear);
+                    if ($alt instanceof DateTime) {
+                        $dt = $alt;
+                        $yearHint = $altYear;
+                    }
+                }
+            }
+
             if ($dt instanceof DateTime) {
+                error_log(
+                    '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' .
+                    $raw . ' resolved to ' . $dt->format('Y-m-d')
+                );
                 return $dt->format('Y-m-d');
             }
         }
 
+        error_log(
+            '[GCS DEBUG][FPPSemantics::resolveDate] FAILED to resolve ' .
+            $raw . ' in context=' . $context
+        );
         $warnings[] = "Export: {$context} '{$raw}' invalid.";
         return null;
     }

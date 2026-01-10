@@ -19,8 +19,9 @@ declare(strict_types=1);
  *
  * SUPPORTED YAML (INTENTIONALLY LIMITED):
  * - Flat key: value pairs
- * - One-level nested maps using indentation
+ * - One-level nested maps using indentation (e.g. command metadata)
  * - Scalar values only (string, int, bool)
+ * - Explicit `type` field is authoritative (playlist | sequence | command)
  *
  * EXPLICITLY NOT SUPPORTED:
  * - Arrays / lists
@@ -212,6 +213,8 @@ final class YamlMetadata
     {
         $out = [];
 
+        // Preserve all scalar keys verbatim, including `type`.
+        // `type` is authoritative and must not be inferred or altered.
         foreach ($raw as $key => $value) {
             if (!is_string($key) || $key === '') {
                 continue;
@@ -245,7 +248,9 @@ final class YamlMetadata
     }
 
     /**
-     * Normalize a scalar YAML value.
+     * NOTE:
+     * - Lists are intentionally unsupported.
+     * - Scalar strings (e.g. IPs, host lists, command args) must be preserved verbatim.
      */
     private static function normalizeScalar(string $value)
     {

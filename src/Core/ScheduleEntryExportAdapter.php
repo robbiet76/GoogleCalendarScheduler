@@ -34,21 +34,24 @@ final class ScheduleEntryExportAdapter
 
         /* ---------------- Determine entry type ---------------- */
 
-        if ($playlist !== '') {
-            $isSequence = str_ends_with(strtolower($playlist), '.fseq');
+        if ($command !== '') {
+            // Commands have no playlist name in FPP schedule entries
+            $summary = $command;
+            $type = FPPSemantics::TYPE_COMMAND;
+
+        } elseif ($playlist !== '') {
+            // Prefer explicit sequence flag from FPP data; do not infer from name/extension
+            $isSequence = (bool)($entry['sequence'] ?? false);
 
             $type = $isSequence
                 ? FPPSemantics::TYPE_SEQUENCE
                 : FPPSemantics::TYPE_PLAYLIST;
 
-            // Strip .fseq from sequence summaries only
-            $summary = $isSequence
-                ? preg_replace('/\.fseq$/i', '', $playlist)
-                : $playlist;
-
-        } elseif ($command !== '') {
-            $summary = $command;
-            $type = FPPSemantics::TYPE_COMMAND;
+            // FPP UI may omit .fseq; normalize summary by stripping it only when present
+            $summary = $playlist;
+            if ($isSequence && str_ends_with(strtolower($summary), '.fseq')) {
+                $summary = preg_replace('/\.fseq$/i', '', $summary);
+            }
 
         } else {
             self::debugSkip('', 'missing playlist, sequence, or command name', $entry);
@@ -94,12 +97,23 @@ final class ScheduleEntryExportAdapter
         /* ---------------- DTSTART day-mask alignment ---------------- */
 
         $dayEnum = (int)($entry['day'] ?? 7);
+        // Apply day-mask logic only if startDate itself is not allowed.
+        // Holidays and explicit dates are treated identically once resolved.
         if ($dayEnum !== 7) {
-            $aligned = self::alignStartDateToDayMask($startDate, $dayEnum);
-            if ($aligned !== $startDate) {
-                $warnings[] =
-                    "Export: '{$summary}' startDate adjusted to first valid day-of-week ({$startDate} → {$aligned}).";
-                $startDate = $aligned;
+            $byDay = FPPSemantics::dayEnumToByDay($dayEnum);
+            if ($byDay !== '') {
+                $allowed = array_flip(explode(',', $byDay));
+                $dt = new DateTime($startDate);
+                $dow = substr(strtoupper($dt->format('D')), 0, 2);
+
+                if (!isset($allowed[$dow])) {
+                    $aligned = self::alignStartDateToDayMask($startDate, $dayEnum);
+                    if ($aligned !== $startDate) {
+                        $warnings[] =
+                            "Export: '{$summary}' startDate adjusted to first valid day-of-week ({$startDate} → {$aligned}).";
+                        $startDate = $aligned;
+                    }
+                }
             }
         }
 
@@ -117,10 +131,22 @@ final class ScheduleEntryExportAdapter
         }
 
         if ($type === FPPSemantics::TYPE_COMMAND) {
-            $yaml['command'] = [
-                'name' => $command,
-                'args' => array_values($entry['args'] ?? []),
-            ];
+            // Keep YAML minimal and within our supported subset (no nested arrays)
+            $yaml['command'] = $command;
+
+            $args = $entry['args'] ?? [];
+            if (is_array($args) && count($args) > 0) {
+                $yaml['args'] = implode(',', array_map('strval', array_values($args)));
+            }
+
+            // Multisync metadata (for round-trip symmetry)
+            if (!empty($entry['multisyncCommand'])) {
+                $yaml['multisync'] = true;
+                $hosts = trim((string)($entry['multisyncHosts'] ?? ''));
+                if ($hosts !== '') {
+                    $yaml['hosts'] = $hosts;
+                }
+            }
         }
 
         $stopType = FPPSemantics::stopTypeToString((int)($entry['stopType'] ?? 0));
@@ -164,6 +190,7 @@ final class ScheduleEntryExportAdapter
         if ($startYaml) {
             $yaml['start'] = $startYaml;
         }
+        $dtStartDate = $dtStart->format('Y-m-d');
 
         /* ---------------- DTEND ---------------- */
 
@@ -177,7 +204,7 @@ final class ScheduleEntryExportAdapter
                 $dtEnd = (clone $dtStart)->modify('+1 day')->setTime(0, 0, 0);
             } else {
                 [$dtEnd] = self::resolveTime(
-                    $startDate,
+                    $dtStartDate,
                     ($endTime !== '' ? $endTime : '00:00:00'),
                     (int)($entry['endTimeOffset'] ?? 0),
                     $warnings,

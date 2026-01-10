@@ -43,6 +43,17 @@ final class InventoryService
                 continue;
             }
 
+            // Legacy normalization: sequences were historically stored as playlist "<name>.fseq"
+            // Ensure inventory classification treats them as sequences with extensionless names.
+            if (
+                isset($entry['playlist']) &&
+                is_string($entry['playlist']) &&
+                str_ends_with($entry['playlist'], '.fseq')
+            ) {
+                $entry['sequence'] = 1;
+                $entry['playlist'] = pathinfo($entry['playlist'], PATHINFO_FILENAME);
+            }
+
             $managed = SchedulerIdentity::isGcsManaged($entry);
 
             error_log(sprintf(
@@ -62,6 +73,17 @@ final class InventoryService
         foreach ($entries as $entry) {
             if (!is_array($entry)) {
                 continue;
+            }
+
+            // Legacy normalization: sequences were historically stored as playlist "<name>.fseq"
+            // Ensure inventory classification treats them as sequences with extensionless names.
+            if (
+                isset($entry['playlist']) &&
+                is_string($entry['playlist']) &&
+                str_ends_with($entry['playlist'], '.fseq')
+            ) {
+                $entry['sequence'] = 1;
+                $entry['playlist'] = pathinfo($entry['playlist'], PATHINFO_FILENAME);
             }
 
             $total++;
@@ -106,6 +128,17 @@ final class InventoryService
         foreach ($entries as $entry) {
             if (!is_array($entry)) {
                 continue;
+            }
+
+            // Legacy normalization: sequences were historically stored as playlist "<name>.fseq"
+            // Ensure inventory classification treats them as sequences with extensionless names.
+            if (
+                isset($entry['playlist']) &&
+                is_string($entry['playlist']) &&
+                str_ends_with($entry['playlist'], '.fseq')
+            ) {
+                $entry['sequence'] = 1;
+                $entry['playlist'] = pathinfo($entry['playlist'], PATHINFO_FILENAME);
             }
 
             if (SchedulerIdentity::isGcsManaged($entry)) {

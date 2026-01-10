@@ -232,14 +232,17 @@ final class SchedulerSync
             $range = $intent['range'];
         }
 
-        $type   = self::coalesceString($tpl, ['type', 'entryType', 'intentType'], '');
-        $target = self::coalesceString($tpl, ['target'], '');
+        $typeRaw = self::coalesceString($tpl, ['type', 'entryType', 'intentType'], '');
+        $type    = FPPSemantics::normalizeType($typeRaw);
+        $target  = self::coalesceString($tpl, ['target'], '');
 
-        if ($type !== 'playlist' && $type !== 'command') {
-            return "Unable to determine schedule entry type (expected playlist or command); got '{$type}'";
+        if ($type !== FPPSemantics::TYPE_PLAYLIST
+            && $type !== FPPSemantics::TYPE_SEQUENCE
+            && $type !== FPPSemantics::TYPE_COMMAND) {
+            return "Unable to determine schedule entry type (expected playlist, sequence, or command); got '{$typeRaw}'";
         }
         if ($target === '') {
-            return 'Missing target for intent (expected playlist name or command name)';
+            return 'Missing target for intent (expected playlist/sequence name or command name)';
         }
 
         // UID may live on outer intent even when template/range is used
@@ -262,6 +265,11 @@ final class SchedulerSync
         }
         if (!$endDt) {
             return "Invalid or missing template end (expected Y-m-d H:i:s): '{$endRaw}'";
+        }
+
+        // Commands are represented as 1-minute events for symmetry with export.
+        if ($type === FPPSemantics::TYPE_COMMAND) {
+            $endDt = (clone $startDt)->modify('+1 minute');
         }
 
         $startTime = $startDt->format('H:i:s');
@@ -287,6 +295,12 @@ final class SchedulerSync
         if ($startDate === null) $startDate = $startDt->format('Y-m-d');
         if ($endDate === null)   $endDate = $startDate;
 
+        // FPP scheduler commands must have endDate == startDate.
+        // The 1-minute duration is calendar-side only.
+        if ($type === FPPSemantics::TYPE_COMMAND) {
+            $endDate = $startDate;
+        }
+
         // If days were not provided by range, fall back to the start date's weekday.
         if ($shortDays === '') {
             $shortDays = self::dowToShortDay((int)$startDt->format('w'));
@@ -298,11 +312,15 @@ final class SchedulerSync
         // Phase 29+: canonical managed tag (UID-only identity; no range/days metadata)
         $tag = SchedulerIdentity::buildArgsTag($uid);
 
-        // STOP TYPE (Phase 21, aligned to FPP ScheduleEntry.cpp)
-        $stopType = self::stopTypeToFppStopType($tpl['stopType'] ?? null);
+        // STOP TYPE (aligned to FPP ScheduleEntry.cpp via FPPSemantics)
+        $stopType = FPPSemantics::stopTypeToEnum($tpl['stopType'] ?? null);
 
-        // REPEAT (Phase 21)
-        $repeat   = self::repeatToFppRepeat($tpl['repeat'] ?? null);
+        // REPEAT (type-aware defaults via FPPSemantics)
+        $repeatRaw = $tpl['repeat'] ?? null;
+        if ($repeatRaw === null) {
+            $repeatRaw = FPPSemantics::getDefaultRepeatForType($type);
+        }
+        $repeat = self::repeatToFppRepeat($repeatRaw);
 
         $args = [];
         if (isset($tpl['args']) && is_array($tpl['args'])) {
@@ -319,7 +337,7 @@ final class SchedulerSync
         $multisyncCommand = self::coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
 
         $entry = [
-            'enabled'          => 1,
+            'enabled'          => FPPSemantics::DEFAULT_ENABLED ? 1 : 0,
             'sequence'         => 0,
             'day'              => $fppDayEnum,
             'startTime'        => $startTime,
@@ -336,46 +354,24 @@ final class SchedulerSync
             'multisyncCommand' => $multisyncCommand,
         ];
 
-        if ($type === 'playlist') {
-            $entry['playlist'] = $target;
+        if ($type === FPPSemantics::TYPE_PLAYLIST) {
+            $entry['playlist']  = $target;
+            $entry['sequence']  = 0;
+            $entry['command']   = '';
+        } elseif ($type === FPPSemantics::TYPE_SEQUENCE) {
+            // Sequences behave like playlists but are flagged and use extensionless names.
+            $entry['playlist']  = $target;
+            $entry['sequence']  = 1;
+            $entry['command']   = '';
         } else {
-            $entry['command']  = $target;
-            $entry['playlist'] = '';
+            $entry['command']   = $target;
+            $entry['playlist']  = '';
+            $entry['sequence']  = 0;
         }
 
         return $entry;
     }
 
-    /**
-     * Phase 21 (clean): Map YAML-friendly stopType values into FPP enum.
-     *
-     * FPP ScheduleEntry.cpp:
-     * 0 = Graceful
-     * 1 = Hard
-     * 2 = Graceful Loop
-     */
-    private static function stopTypeToFppStopType($v): int
-    {
-        if ($v === null) {
-            return 0;
-        }
-
-        if (is_int($v)) {
-            return max(0, min(2, $v));
-        }
-
-        if (is_string($v)) {
-            $s = strtolower(trim($v));
-            return match ($s) {
-                'hard', 'hard_stop' => 1,
-                'graceful_loop'     => 2,
-                'graceful'          => 0,
-                default             => 0,
-            };
-        }
-
-        return 0;
-    }
 
     /**
      * Phase 21 (clean): Map YAML-friendly repeat values into FPP's encoded repeat integer.

@@ -53,15 +53,11 @@ final class SchedulerPlanner
         /* -----------------------------------------------------------------
          * 0. Guard date
          * ----------------------------------------------------------------- */
-        $currentYear = (int)date('Y');
-        $guardYear   = $currentYear + 5;
-        $guardDate   = sprintf('%04d-12-31', $guardYear);
+        $guardDate = FPPSemantics::getSchedulerGuardDate()->format('Y-m-d');
 
         if ($debug) {
             self::dbg($config, 'guard', [
-                'currentYear' => $currentYear,
-                'guardYear'   => $guardYear,
-                'guardDate'   => $guardDate,
+                'guardDate' => $guardDate,
             ]);
         }
 
@@ -152,12 +148,14 @@ final class SchedulerPlanner
                     'template' => [
                         'uid'        => $uid,
                         'summary'    => $summary,
-                        'type'       => (string)$resolved['type'],
+                        'type'       => FPPSemantics::normalizeType((string)$resolved['type']),
                         'target'     => $resolved['target'],
                         'start'      => $baseStartDT->format('Y-m-d H:i:s'),
                         'end'        => $baseEndDT->format('Y-m-d H:i:s'),
-                        'stopType'   => 'graceful',
-                        'repeat'     => 'immediate',
+                        'stopType'   => FPPSemantics::getDefaultStopType(),
+                        'repeat'     => FPPSemantics::getDefaultRepeatForType(
+                            FPPSemantics::normalizeType((string)$resolved['type'])
+                        ),
                         'isOverride' => false,
                     ],
                     'range' => [
