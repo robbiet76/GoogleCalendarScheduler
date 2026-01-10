@@ -94,6 +94,17 @@ final class SchedulerApply
             $applyPlan['expectedDeletedKeys']
         );
 
+        // Commit manifest snapshot after successful apply
+        $manifest = $plan['manifest'] ?? null;
+        if (is_array($manifest)) {
+            $store = new ManifestStore();
+            $store->commitCurrent(
+                $manifest['calendarMeta'] ?? [],
+                $manifest['entries'] ?? [],
+                $manifest['order'] ?? []
+            );
+        }
+
         return [
             'ok'     => true,
             'dryRun' => false,
