@@ -211,14 +211,28 @@ final class SchedulerSync
     public static function diffAgainstManifest(array $desiredEntries): array
     {
         $store = new ManifestStore();
+
+        // Existing manifest identities (authoritative)
+        // @var array<string,ManifestIdentity>
         $manifest = $store->load();
 
-        $desiredById = [];
+        $existing = [];
+        foreach (($manifest['identities'] ?? []) as $row) {
+            $identity = ManifestIdentity::fromArray($row);
+            $existing[$identity->id()] = $identity;
+        }
+
+        // Desired identities keyed by id
+        // @var array<string,ManifestIdentity>
+        $desired = [];
+
         foreach ($desiredEntries as $entry) {
-            if (!is_array($entry) || !isset($entry['_manifest']['id'])) {
+            if (!is_array($entry) || !isset($entry['_manifest']) || !is_array($entry['_manifest'])) {
                 continue;
             }
-            $desiredById[$entry['_manifest']['id']] = $entry;
+
+            $identity = ManifestIdentity::fromArray($entry['_manifest']);
+            $desired[$identity->id()] = $identity;
         }
 
         $toCreate = [];
@@ -226,23 +240,21 @@ final class SchedulerSync
         $toDelete = [];
 
         // Detect creates and updates
-        foreach ($desiredById as $id => $entry) {
-            $hash = $entry['_manifest']['hash'] ?? null;
-
-            if (!isset($manifest['entries'][$id])) {
-                $toCreate[$id] = $entry;
+        foreach ($desired as $id => $identity) {
+            if (!isset($existing[$id])) {
+                $toCreate[$id] = $identity;
                 continue;
             }
 
-            if ($manifest['entries'][$id]['hash'] !== $hash) {
-                $toUpdate[$id] = $entry;
+            if (!$identity->sameHashAs($existing[$id])) {
+                $toUpdate[$id] = $identity;
             }
         }
 
         // Detect deletes
-        foreach ($manifest['entries'] as $id => $meta) {
-            if (!isset($desiredById[$id])) {
-                $toDelete[$id] = $meta;
+        foreach ($existing as $id => $identity) {
+            if (!isset($desired[$id])) {
+                $toDelete[$id] = $identity;
             }
         }
 
@@ -280,6 +292,7 @@ final class SchedulerSync
     {
         $tpl = $intent;
         $range = null;
+        $payload = [];
 
         if (isset($intent['template']) && is_array($intent['template'])) {
             $tpl = $intent['template'];
@@ -287,6 +300,16 @@ final class SchedulerSync
         if (isset($intent['range']) && is_array($intent['range'])) {
             $range = $intent['range'];
         }
+        if (isset($intent['payload']) && is_array($intent['payload'])) {
+            $payload = $intent['payload'];
+        }
+
+        // Extract GCS metadata (opaque, never merged or persisted)
+        $gcs = [];
+        if (isset($intent['gcs']) && is_array($intent['gcs'])) {
+            $gcs = $intent['gcs'];
+        }
+        // $gcs is treated as opaque metadata and must never be merged into the scheduler entry or used for identity.
 
         $typeRaw = self::coalesceString($tpl, ['type', 'entryType', 'intentType'], '');
         $type    = FPPSemantics::normalizeType($typeRaw);
@@ -376,15 +399,8 @@ final class SchedulerSync
         }
         $repeat = self::repeatToFppRepeat($repeatRaw);
 
-        $args = [];
-        if (isset($tpl['args']) && is_array($tpl['args'])) {
-            $args = array_values($tpl['args']);
-        }
-
         // NOTE: Ownership and identity are tracked exclusively via the Manifest.
         // Scheduler args must remain user-defined only (especially for commands).
-
-        $multisyncCommand = self::coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
 
         $entry = [
             'enabled'          => FPPSemantics::DEFAULT_ENABLED ? 1 : 0,
@@ -400,8 +416,6 @@ final class SchedulerSync
             'stopType'         => $stopType,
             'playlist'         => '',
             'command'          => '',
-            'args'             => $args,
-            'multisyncCommand' => $multisyncCommand,
         ];
 
         if ($type === FPPSemantics::TYPE_PLAYLIST) {
@@ -419,10 +433,19 @@ final class SchedulerSync
             $entry['sequence']  = 0;
         }
 
+        // Payload is opaque command metadata.
+        // It must never be merged into the scheduler entry structure.
+        // SchedulerApply is responsible for interpreting and applying it.
+        if (!empty($payload)) {
+            $entry['_payload'] = $payload;
+        }
+
         // Manifest identity is attached in-memory only. It must not be persisted to schedule.json.
+        $manifest = ManifestIdentity::fromIntent($intent);
+
         $entry['_manifest'] = [
-            'id' => ManifestIdentity::buildId($entry),
-            'hash' => ManifestIdentity::buildHash($entry),
+            'id'   => $manifest->id(),
+            'hash' => $manifest->hash(),
         ];
 
         // Debug: emits manifest identity for traceability during development.
@@ -516,39 +539,6 @@ final class SchedulerSync
         };
     }
 
-    /**
-     * Remove any GCS-owned tags from args[].
-     *
-     * Phase 29+ policy:
-     * - We do NOT preserve any legacy tag variants in scheduler state.
-     * - We always emit exactly one canonical managed tag built by SchedulerIdentity.
-     *
-     * @param array<int,mixed> $args
-     * @return array<int,mixed>
-     */
-    private static function stripAllGcsTagsFromArgs(array $args): array
-    {
-        $out = [];
-
-        foreach ($args as $a) {
-            if (!is_string($a)) {
-                $out[] = $a;
-                continue;
-            }
-
-            // Remove any legacy internal tags or new display-prefixed tags
-            if (strpos($a, SchedulerIdentity::INTERNAL_TAG) !== false) {
-                continue;
-            }
-            if (strpos($a, SchedulerIdentity::DISPLAY_TAG) !== false) {
-                continue;
-            }
-
-            $out[] = $a;
-        }
-
-        return array_values($out);
-    }
 
     private static function parseYmdHms(string $s): ?DateTime
     {

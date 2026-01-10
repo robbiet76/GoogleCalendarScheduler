@@ -14,6 +14,63 @@ declare(strict_types=1);
  */
 final class ManifestIdentity
 {
+    private array $ids = [];
+    private array $hashes = [];
+
+    /**
+     * Build a ManifestIdentity from a single intent.
+     *
+     * This is a thin adapter used by SchedulerSync so it does not
+     * need to know about bulk/series identity construction.
+     */
+    public static function fromIntent(array $intent): self
+    {
+        return self::fromSeries([$intent]);
+    }
+
+    /**
+     * Build a ManifestIdentity from a series of intents.
+     */
+    public static function fromSeries(array $series): self
+    {
+        $ids = [];
+        $hashes = [];
+
+        foreach ($series as $entry) {
+            $ids[] = self::buildId($entry);
+            $hashes[] = self::buildHash($entry);
+        }
+
+        $instance = new self();
+        $instance->ids = $ids;
+        $instance->hashes = $hashes;
+
+        return $instance;
+    }
+
+    public static function fromArray(array $data): self
+    {
+        $instance = new self();
+        $instance->ids = $data['ids'] ?? [];
+        $instance->hashes = $data['hashes'] ?? [];
+        return $instance;
+    }
+
+    public function id(): string
+    {
+        return $this->ids[0] ?? '';
+    }
+
+    public function hash(): string
+    {
+        return $this->hashes[0] ?? '';
+    }
+
+    public function sameHashAs(self $other): bool
+    {
+        return $this->hash() === $other->hash();
+    }
+
     /**
      * Build a stable manifest ID for an entry.
      *

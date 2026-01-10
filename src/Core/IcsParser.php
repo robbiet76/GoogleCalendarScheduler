@@ -115,6 +115,8 @@ final class IcsParser
                 $uid            = null;
                 $summary        = '';
                 $description    = null;
+                $payload        = [];
+                $gcs            = [];
                 $dtstart        = null;
                 $dtend          = null;
                 $isAllDay       = false;
@@ -133,6 +135,21 @@ final class IcsParser
                 if (preg_match('/DESCRIPTION:(.+)/s', $raw, $m)) {
                     // Normalize Google Calendar literal "\n"
                     $description = str_replace('\n', "\n", trim($m[1]));
+                    // Initialize payload and gcs containers
+                    $payload = [];
+                    $gcs = [];
+                    // Detect GCS marker string "|M||GCS:"
+                    $markerPos = strpos($description, '|M||GCS:');
+                    if ($markerPos !== false) {
+                        // Extract full marker token (do not parse or modify)
+                        // Marker token assumed to start at $markerPos and continue until next whitespace or end of string
+                        // Since instructions say do not parse or modify, extract from markerPos to next space or end
+                        $remaining = substr($description, $markerPos);
+                        if (preg_match('/^\|M\|\|GCS:[^\s]*/', $remaining, $markerMatch)) {
+                            $marker = $markerMatch[0];
+                            $gcs['marker'] = $marker;
+                        }
+                    }
                 }
 
                 if (preg_match('/DTSTART([^:]*):(.+)/', $raw, $m)) {
@@ -187,6 +204,8 @@ final class IcsParser
                         ? $recurrenceId->format('Y-m-d H:i:s')
                         : null,
                     'isOverride'   => ($recurrenceId !== null),
+                    'payload'      => $payload,
+                    'gcs'          => $gcs,
                 ];
             }
 

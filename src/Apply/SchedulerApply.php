@@ -221,11 +221,21 @@ final class SchedulerApply
 
     private static function normalizeForApply(array $entry): array
     {
-        // Ensure FPP "day" enum sanity
+        // Strip ONLY known GCS-internal metadata keys before writing to schedule.json.
+        // Do NOT remove arbitrary underscore-prefixed keys since FPP/other plugins may
+        // legitimately use them.
+        foreach (['_gcs', '_payload', '_manifest'] as $k) {
+            if (array_key_exists($k, $entry)) {
+                unset($entry[$k]);
+            }
+        }
+
+        // Ensure FPP "day" enum sanity (0-15). Default to Everyday (7).
         if (!isset($entry['day']) || !is_int($entry['day']) || $entry['day'] < 0 || $entry['day'] > 15) {
             $entry['day'] = 7; // Everyday
         }
 
+        // Ensure args always exists and is an array (FPP-safe). Commands may use args.
         if (!isset($entry['args']) || !is_array($entry['args'])) {
             $entry['args'] = [];
         }

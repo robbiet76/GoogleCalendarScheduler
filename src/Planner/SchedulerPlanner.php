@@ -121,6 +121,26 @@ final class SchedulerPlanner
                 continue;
             }
 
+            // Extract opaque pass-through data
+            $payload = (isset($s['payload']) && is_array($s['payload'])) ? $s['payload'] : [];
+            $gcs     = (isset($s['gcs']) && is_array($s['gcs'])) ? $s['gcs'] : [];
+
+            // ------------------------------------------------------------------
+            // Invariant: payload and gcs are opaque metadata containers.
+            // They MUST NOT be merged into the scheduler template or identity.
+            // SchedulerPlanner only passes them through for downstream consumers.
+            // ------------------------------------------------------------------
+
+            // Defensive: ensure no accidental leakage of payload/gcs into template
+            if (
+                isset($baseEv['template']) &&
+                (
+                    (is_array($baseEv['template']) && (array_key_exists('payload', $baseEv['template']) || array_key_exists('gcs', $baseEv['template'])))
+                )
+            ) {
+                throw new \RuntimeException("Invariant violation: payload/gcs found inside template for uid $uid");
+            }
+
             try {
                 $baseStartDT = new DateTime((string)$baseEv['start']);
                 $baseEndDT   = new DateTime((string)$baseEv['end']);
@@ -145,6 +165,8 @@ final class SchedulerPlanner
                 'overrides' => [],
                 'base' => [
                     'uid' => $uid,
+                    'payload' => $payload,
+                    'gcs'     => $gcs,
                     'template' => [
                         'uid'        => $uid,
                         'summary'    => $summary,
@@ -165,6 +187,9 @@ final class SchedulerPlanner
                     ],
                 ],
             ];
+            // Defensive: ensure no metadata leakage into template
+            unset($bundles[count($bundles) - 1]['base']['template']['payload']);
+            unset($bundles[count($bundles) - 1]['base']['template']['gcs']);
         }
 
         if ($debug) {
