@@ -12,6 +12,7 @@ declare(strict_types=1);
  * - Resolve scheduler targets from event summaries
  * - Parse YAML metadata per occurrence (analysis-only)
  * - Emit series analysis suitable for Planner semantic projection
+ * - Attach manifest identity metadata to resolved scheduler entries
  *
  * Guarantees:
  * - No scheduler writes
@@ -194,6 +195,19 @@ final class SchedulerRunner
                 'occurrences'  => $occurrences,
                 'overrideOccs' => $overrideOccs,
                 'yamlBase'     => $baseYaml,
+                'manifest'     => [
+                    'id'   => ManifestIdentity::buildId([
+                        'summary'  => $summary,
+                        'resolved' => $resolved,
+                        'yaml'     => $baseYaml,
+                    ]),
+                    'hash' => ManifestIdentity::buildHash([
+                        'summary'  => $summary,
+                        'resolved' => $resolved,
+                        'yaml'     => $baseYaml,
+                        'base'     => $base,
+                    ]),
+                ],
                 'horizon'      => [
                     'start' => $now->format('Y-m-d H:i:s'),
                     'end'   => $horizonEnd->format('Y-m-d H:i:s'),

@@ -43,6 +43,8 @@ require_once __DIR__ . '/Core/FppSemantics.php';
 /* ---------- Identity / comparison ---------- */
 require_once __DIR__ . '/Core/SchedulerIdentity.php';
 require_once __DIR__ . '/Core/SchedulerComparator.php';
+require_once __DIR__ . '/Core/ManifestIdentity.php';
+require_once __DIR__ . '/Core/ManifestStore.php';
 
 /* ---------- Scheduler state ---------- */
 require_once __DIR__ . '/Core/ExistingScheduleEntry.php';

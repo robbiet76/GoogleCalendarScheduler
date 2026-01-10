@@ -197,6 +197,62 @@ final class SchedulerSync
         }
     }
 
+
+    /* -------------------------------------------------------------------------
+     * Manifest diff (pure, no I/O)
+     * ---------------------------------------------------------------------- */
+
+    /**
+     * Compare desired scheduler entries against the manifest.
+     *
+     * @param array<int,array<string,mixed>> $desiredEntries
+     * @return array{toCreate:array,toUpdate:array,toDelete:array}
+     */
+    public static function diffAgainstManifest(array $desiredEntries): array
+    {
+        $store = new ManifestStore();
+        $manifest = $store->load();
+
+        $desiredById = [];
+        foreach ($desiredEntries as $entry) {
+            if (!is_array($entry) || !isset($entry['_manifest']['id'])) {
+                continue;
+            }
+            $desiredById[$entry['_manifest']['id']] = $entry;
+        }
+
+        $toCreate = [];
+        $toUpdate = [];
+        $toDelete = [];
+
+        // Detect creates and updates
+        foreach ($desiredById as $id => $entry) {
+            $hash = $entry['_manifest']['hash'] ?? null;
+
+            if (!isset($manifest['entries'][$id])) {
+                $toCreate[$id] = $entry;
+                continue;
+            }
+
+            if ($manifest['entries'][$id]['hash'] !== $hash) {
+                $toUpdate[$id] = $entry;
+            }
+        }
+
+        // Detect deletes
+        foreach ($manifest['entries'] as $id => $meta) {
+            if (!isset($desiredById[$id])) {
+                $toDelete[$id] = $meta;
+            }
+        }
+
+        return [
+            'toCreate' => $toCreate,
+            'toUpdate' => $toUpdate,
+            'toDelete' => $toDelete,
+        ];
+    }
+
     /* -------------------------------------------------------------------------
      * Intent → scheduler entry mapping
      * ---------------------------------------------------------------------- */
@@ -309,8 +365,6 @@ final class SchedulerSync
         // Phase 20 FIX: FPP "day" MUST be an enum selector (0..15), not a weekday bitmask.
         $fppDayEnum = self::shortDaysToFppDayEnum($shortDays, $startDt);
 
-        // Phase 29+: canonical managed tag (UID-only identity; no range/days metadata)
-        $tag = SchedulerIdentity::buildArgsTag($uid);
 
         // STOP TYPE (aligned to FPP ScheduleEntry.cpp via FPPSemantics)
         $stopType = FPPSemantics::stopTypeToEnum($tpl['stopType'] ?? null);
@@ -327,12 +381,8 @@ final class SchedulerSync
             $args = array_values($tpl['args']);
         }
 
-        // Phase 29+: remove any existing GCS-managed tags (legacy or new) before adding the canonical one
-        $args = self::stripAllGcsTagsFromArgs($args);
-
-        if ($tag !== '') {
-            $args[] = $tag;
-        }
+        // NOTE: Ownership and identity are tracked exclusively via the Manifest.
+        // Scheduler args must remain user-defined only (especially for commands).
 
         $multisyncCommand = self::coalesceBool($tpl, ['multisyncCommand', 'multisync_command'], false);
 
@@ -368,6 +418,15 @@ final class SchedulerSync
             $entry['playlist']  = '';
             $entry['sequence']  = 0;
         }
+
+        // Manifest identity is attached in-memory only. It must not be persisted to schedule.json.
+        $entry['_manifest'] = [
+            'id' => ManifestIdentity::buildId($entry),
+            'hash' => ManifestIdentity::buildHash($entry),
+        ];
+
+        // Debug: emits manifest identity for traceability during development.
+        error_log('[GCS DEBUG][ManifestIdentity] ' . json_encode($entry['_manifest']));
 
         return $entry;
     }
