@@ -111,7 +111,19 @@ final class SchedulerRunner
             if (!empty($refEv['isAllDay'])) continue;
 
             $summary = (string)($refEv['summary'] ?? '');
-            $resolved = TargetResolver::resolve($summary);
+
+            // Resolve YAML metadata first (authoritative if present)
+            $resolved = null;
+            if (!empty($baseYaml['type']) && !empty($baseYaml['target'])) {
+                $resolved = [
+                    'type'   => (string)$baseYaml['type'],
+                    'target' => (string)$baseYaml['target'],
+                ];
+            } else {
+                // Fallback to summary-based resolution for non-GCS calendars
+                $resolved = TargetResolver::resolve($summary);
+            }
+
             if (!$resolved) {
                 $trace[] = [
                     'uid' => $uid,
