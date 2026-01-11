@@ -27,10 +27,15 @@ declare(strict_types=1);
  * Enable debug via:
  * - config['runtime']['debug_ordering'] = true
  *   (or export GCS_DEBUG_ORDERING=1)
+ *
+ * CONTRACT (Identity):
+ * - Desired entries emitted by this planner ALWAYS have uid + _manifest.
+ * - Existing FPP schedule entries MAY NOT have uid or manifest.
+ * - SchedulerDiff is responsible for reconciling that asymmetry.
  */
 final class SchedulerPlanner
 {
-    private const MAX_MANAGED_ENTRIES = 100;
+    private const DEFAULT_MAX_MANAGED_ENTRIES = 100;
 
     /**
      * Safety cap for iterative ordering passes.
@@ -102,9 +107,9 @@ final class SchedulerPlanner
             if (!$resolved || empty($resolved['type']) || !array_key_exists('target', $resolved)) {
                 if ($debug) {
                     self::dbg($config, 'skip_series_unresolved', [
-                        'uid'     => $uid,
-                        'summary' => $summary,
-                        'resolved'=> $resolved,
+                        'uid'      => $uid,
+                        'summary'  => $summary,
+                        'resolved' => $resolved,
                     ]);
                 }
                 continue;
@@ -164,7 +169,7 @@ final class SchedulerPlanner
             $bundles[] = [
                 'overrides' => [],
                 'base' => [
-                    'uid' => $uid,
+                    'uid'     => $uid,
                     'payload' => $payload,
                     'gcs'     => $gcs,
                     'template' => [
@@ -187,21 +192,23 @@ final class SchedulerPlanner
                     ],
                 ],
             ];
+
             // Defensive: ensure no metadata leakage into template
             unset($bundles[count($bundles) - 1]['base']['template']['payload']);
             unset($bundles[count($bundles) - 1]['base']['template']['gcs']);
+
             // DEBUG: verify fresh base intent creation (no mutation, no reuse)
             if ($debug) {
                 $created = $bundles[count($bundles) - 1]['base'];
                 self::dbg($config, 'planner_base_created', [
-                    'uid'        => (string)($created['uid'] ?? ''),
-                    'summary'    => (string)($created['template']['summary'] ?? ''),
-                    'type'       => (string)($created['template']['type'] ?? ''),
-                    'target'     => $created['template']['target'] ?? null,
-                    'range'      => $created['range'] ?? null,
-                    'start'      => $created['template']['start'] ?? null,
-                    'end'        => $created['template']['end'] ?? null,
-                    'object_id'  => spl_object_id((object)$created),
+                    'uid'       => (string)($created['uid'] ?? ''),
+                    'summary'   => (string)($created['template']['summary'] ?? ''),
+                    'type'      => (string)($created['template']['type'] ?? ''),
+                    'target'    => $created['template']['target'] ?? null,
+                    'range'     => $created['range'] ?? null,
+                    'start'     => $created['template']['start'] ?? null,
+                    'end'       => $created['template']['end'] ?? null,
+                    'object_id' => spl_object_id((object)$created),
                 ]);
             }
         }
@@ -349,14 +356,19 @@ final class SchedulerPlanner
 
         foreach ($bundles as $bundle) {
             // Overrides would be emitted here (above base) when enabled.
+
             // ------------------------------------------------------------------
             // Build manifest identity ONCE at planning time (immutable thereafter)
             // ------------------------------------------------------------------
-            // Ensure UID is always present on intent for manifest identity
-            if (!isset($bundle['base']['uid']) || $bundle['base']['uid'] === '') {
+            // CONTRACT:
+            // - Desired entries ALWAYS have uid + _manifest attached here.
+            // - Existing FPP schedule entries MAY NOT have uid or manifest.
+            // - SchedulerDiff is responsible for reconciling that asymmetry.
+            if (!isset($bundle['base']['uid']) || (string)$bundle['base']['uid'] === '') {
                 throw new \RuntimeException('Invariant violation: missing uid on base intent before manifest identity');
             }
             $bundle['base']['uid'] = (string)$bundle['base']['uid'];
+
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
             if ($debug) {
                 self::dbg($config, 'manifest_identity', [
@@ -390,12 +402,13 @@ final class SchedulerPlanner
         /* -----------------------------------------------------------------
          * 5. Global managed entry cap
          * ----------------------------------------------------------------- */
-        if (count($desiredEntries) > self::MAX_MANAGED_ENTRIES) {
+        $maxManaged = self::maxManagedEntries($config);
+        if (count($desiredEntries) > $maxManaged) {
             return [
                 'ok' => false,
                 'error' => [
                     'type'      => 'scheduler_entry_limit_exceeded',
-                    'limit'     => self::MAX_MANAGED_ENTRIES,
+                    'limit'     => $maxManaged,
                     'attempted' => count($desiredEntries),
                     'guardDate' => $guardDate,
                 ],
@@ -498,19 +511,26 @@ final class SchedulerPlanner
     {
         $b = $bundle['base'] ?? [];
         return [
-            'uid'      => (string)($b['uid'] ?? ''),
-            'summary'  => (string)($b['template']['summary'] ?? ''),
-            'type'     => (string)($b['template']['type'] ?? ''),
-            'target'   => $b['template']['target'] ?? null,
-            'range'    => $b['range'] ?? null,
-            'startTime'=> substr((string)($b['template']['start'] ?? ''), 11, 8),
-            'endTime'  => substr((string)($b['template']['end'] ?? ''), 11, 8),
+            'uid'       => (string)($b['uid'] ?? ''),
+            'summary'   => (string)($b['template']['summary'] ?? ''),
+            'type'      => (string)($b['template']['type'] ?? ''),
+            'target'    => $b['template']['target'] ?? null,
+            'range'     => $b['range'] ?? null,
+            'startTime' => substr((string)($b['template']['start'] ?? ''), 11, 8),
+            'endTime'   => substr((string)($b['template']['end'] ?? ''), 11, 8),
         ];
     }
 
     /* ===============================================================
      * Core helpers
      * =============================================================== */
+
+    private static function maxManagedEntries(array $cfg): int
+    {
+        $v = $cfg['limits']['max_managed_entries'] ?? self::DEFAULT_MAX_MANAGED_ENTRIES;
+        $v = is_int($v) ? $v : (int)$v;
+        return ($v > 0) ? $v : self::DEFAULT_MAX_MANAGED_ENTRIES;
+    }
 
     private static function applyGuardRulesToEntry(array $entry, string $guardDate): ?array
     {
@@ -819,13 +839,11 @@ final class SchedulerPlanner
         $bStartT = self::timeToSeconds(substr((string)$bBase['template']['start'], 11));
 
         $aStartD = (string)($aBase['range']['start'] ?? '');
-        $aEndD   = (string)($aBase['range']['end'] ?? '');
         $bStartD = (string)($bBase['range']['start'] ?? '');
-        $bEndD   = (string)($bBase['range']['end'] ?? '');
 
         /* -------------------------------------------------------------
-        * 1) Later daily start time wins (overlap only)
-        * ------------------------------------------------------------- */
+         * 1) Later daily start time wins (overlap only)
+         * ------------------------------------------------------------- */
         if ($aStartT > $bStartT) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_later_start_time_overlap', [
@@ -837,9 +855,9 @@ final class SchedulerPlanner
         }
 
         /* -------------------------------------------------------------
-        * 2) Same daily start time → later calendar start date wins
-        *    (seasonal override, same phase)
-        * ------------------------------------------------------------- */
+         * 2) Same daily start time → later calendar start date wins
+         *    (seasonal override, same phase)
+         * ------------------------------------------------------------- */
         if ($aStartT === $bStartT && $aStartD !== '' && $bStartD !== '' && $aStartD > $bStartD) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_later_date_same_start_time', [
@@ -855,8 +873,8 @@ final class SchedulerPlanner
         }
 
         /* -------------------------------------------------------------
-        * 4) Final safety: prevent start-time starvation
-        * ------------------------------------------------------------- */
+         * 3) Final safety: prevent start-time starvation
+         * ------------------------------------------------------------- */
         if (self::blocksStartAtIntendedMoment($aBase, $bBase)) {
             if ($debug) {
                 self::dbg($cfg, 'dominance_blocks_start_moment', [
