@@ -352,6 +352,11 @@ final class SchedulerPlanner
             // ------------------------------------------------------------------
             // Build manifest identity ONCE at planning time (immutable thereafter)
             // ------------------------------------------------------------------
+            // Ensure UID is always present on intent for manifest identity
+            if (!isset($bundle['base']['uid']) || $bundle['base']['uid'] === '') {
+                throw new \RuntimeException('Invariant violation: missing uid on base intent before manifest identity');
+            }
+            $bundle['base']['uid'] = (string)$bundle['base']['uid'];
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
             if ($debug) {
                 self::dbg($config, 'manifest_identity', [
