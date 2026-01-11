@@ -46,24 +46,18 @@ require_once __DIR__ . '/Core/SchedulerComparator.php';
 require_once __DIR__ . '/Core/ManifestIdentity.php';
 require_once __DIR__ . '/Core/ManifestStore.php';
 
-require_once __DIR__ . '/Core/ManifestResult.php';
-require_once __DIR__ . '/Core/PreviewFormatter.php';
-
 /* ---------- Scheduler state ---------- */
 require_once __DIR__ . '/Core/ExistingScheduleEntry.php';
 require_once __DIR__ . '/Core/ComparableScheduleEntry.php';
 require_once __DIR__ . '/Core/SchedulerState.php';
 require_once __DIR__ . '/Core/SchedulerDiffResult.php';
-
 require_once __DIR__ . '/Core/SchedulerIntent.php';
 
 /* ---------- Parsing / metadata ---------- */
 require_once __DIR__ . '/Core/IcsFetcher.php';
 require_once __DIR__ . '/Core/IcsParser.php';
 require_once __DIR__ . '/Core/YamlMetadata.php';
-
 require_once __DIR__ . '/Core/TargetResolver.php';
-
 require_once __DIR__ . '/Core/DiffPreviewer.php';
 require_once __DIR__ . '/Core/ScheduleEntryExportAdapter.php';
 
@@ -96,6 +90,8 @@ try {
  * Planner — PURE planning layer (NO WRITES)
  * ============================================================
  */
+require_once __DIR__ . '/Planner/ManifestResult.php';
+require_once __DIR__ . '/Planner/PreviewFormatter.php';
 require_once __DIR__ . '/Planner/SchedulerSync.php';
 require_once __DIR__ . '/Planner/SchedulerRunner.php';
 require_once __DIR__ . '/Planner/SchedulerDiff.php';
