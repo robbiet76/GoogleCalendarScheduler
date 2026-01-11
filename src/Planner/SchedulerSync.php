@@ -224,6 +224,14 @@ final class SchedulerSync
         foreach ($scheduleEntries as $idx => $entry) {
             try {
                 $intent = self::existingEntryToIntent($entry);
+                // Debug: log intent identity fields before ManifestIdentity construction
+                error_log('[GCS DEBUG][Intent Identity Input] ' . json_encode([
+                    'type'      => $intent['template']['type'] ?? null,
+                    'target'    => $intent['template']['target'] ?? null,
+                    'start'     => $intent['template']['start'] ?? null,
+                    'end'       => $intent['template']['end'] ?? null,
+                    'range'     => $intent['range'] ?? null,
+                ]));
                 $identity = ManifestIdentity::fromIntent($intent);
                 $existing[$identity->id()] = $identity;
 
@@ -263,7 +271,8 @@ final class SchedulerSync
             if (!is_array($entry) || !isset($entry['_manifest']) || !is_array($entry['_manifest'])) {
                 continue;
             }
-
+            // Debug: log manifest input before identity construction
+            error_log('[GCS DEBUG][Desired Manifest Input] ' . json_encode($entry['_manifest']));
             $identity = ManifestIdentity::fromArray($entry['_manifest']);
             $desired[$identity->id()] = $identity;
         }
