@@ -222,39 +222,10 @@ final class SchedulerSync
         $scheduleEntries = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
 
         foreach ($scheduleEntries as $idx => $entry) {
-            try {
-                $intent = self::existingEntryToIntent($entry);
-                // Debug: log intent identity fields before ManifestIdentity construction
-                error_log('[GCS DEBUG][Intent Identity Input] ' . json_encode([
-                    'type'      => $intent['template']['type'] ?? null,
-                    'target'    => $intent['template']['target'] ?? null,
-                    'start'     => $intent['template']['start'] ?? null,
-                    'end'       => $intent['template']['end'] ?? null,
-                    'range'     => $intent['range'] ?? null,
-                ]));
-                $identity = ManifestIdentity::fromIntent($intent);
-                $existing[$identity->id()] = $identity;
-
-                error_log(sprintf(
-                    '[GCS DEBUG][Inventory] #%d playlist=%s command=%s sequence=%s day=%s startDate=%s startTime=%s endTime=%s args=%s',
-                    $idx,
-                    $entry['playlist'] ?? '',
-                    $entry['command'] ?? '',
-                    isset($entry['sequence']) ? (string)$entry['sequence'] : '',
-                    isset($entry['day']) ? (string)$entry['day'] : '',
-                    $entry['startDate'] ?? '',
-                    $entry['startTime'] ?? '',
-                    $entry['endTime'] ?? '',
-                    isset($entry['args']) ? json_encode($entry['args']) : 'null'
-                ));
-            } catch (Throwable $e) {
-                // Skip entries that cannot form a stable identity
-                error_log(sprintf(
-                    '[GCS DEBUG][Inventory] #%d skipped (%s)',
-                    $idx,
-                    $e->getMessage()
-                ));
-            }
+            // NOTE: Existing scheduler entries do NOT carry calendar UID or full intent data.
+            // ManifestIdentity must NOT be constructed at this phase.
+            // Adoption identity is computed ONLY from planner-generated entries.
+            continue;
         }
 
         // ------------------------------------------------------------------
