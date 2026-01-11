@@ -78,15 +78,28 @@ final class ManifestIdentity
      */
     public static function buildId(array $entry): string
     {
-        if (!empty($entry['command'])) {
-            $target = $entry['command'];
-        } else {
-            $target = $entry['playlist'] ?? '';
-        }
+        $identity = [
+            'type'       => self::entryType($entry),
+            'target'     => !empty($entry['command'])
+                ? (string)$entry['command']
+                : (string)($entry['playlist'] ?? ''),
+            'startTime'  => (string)($entry['startTime'] ?? ''),
+            'endTime'    => (string)($entry['endTime'] ?? ''),
+            'day'        => isset($entry['day']) ? (int)$entry['day'] : null,
+            'startDate'  => isset($entry['startDate'])
+                ? self::normalizeDate((string)$entry['startDate'])
+                : null,
+            'endDate'    => isset($entry['endDate'])
+                ? self::normalizeDate((string)$entry['endDate'])
+                : null,
+        ];
 
-        $type = self::entryType($entry);
+        ksort($identity);
 
-        return hash('sha256', implode('|', [$type, $target]));
+        return hash(
+            'sha256',
+            json_encode($identity, JSON_UNESCAPED_SLASHES)
+        );
     }
 
     /**
