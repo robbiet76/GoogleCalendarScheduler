@@ -223,13 +223,20 @@ final class SchedulerSync
 
         foreach ($scheduleEntries as $idx => $entry) {
             try {
-                $identity = ManifestIdentity::fromExistingEntry($entry);
+                $intent = self::existingEntryToIntent($entry);
+                $identity = ManifestIdentity::fromIntent($intent);
                 $existing[$identity->id()] = $identity;
 
                 error_log(sprintf(
-                    '[GCS DEBUG][Inventory] #%d playlist=%s managed=NO args=%s',
+                    '[GCS DEBUG][Inventory] #%d playlist=%s command=%s sequence=%s day=%s startDate=%s startTime=%s endTime=%s args=%s',
                     $idx,
                     $entry['playlist'] ?? '',
+                    $entry['command'] ?? '',
+                    isset($entry['sequence']) ? (string)$entry['sequence'] : '',
+                    isset($entry['day']) ? (string)$entry['day'] : '',
+                    $entry['startDate'] ?? '',
+                    $entry['startTime'] ?? '',
+                    $entry['endTime'] ?? '',
                     isset($entry['args']) ? json_encode($entry['args']) : 'null'
                 ));
             } catch (Throwable $e) {
@@ -660,5 +667,76 @@ final class SchedulerSync
             }
         }
         return $default;
+    }
+    /**
+     * Convert an existing FPP schedule.json entry into an intent-shaped array
+     * suitable for ManifestIdentity generation.
+     *
+     * Identity fields only. No payload, no args.
+     *
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private static function existingEntryToIntent(array $entry): array
+    {
+        $sequenceFlag = isset($entry['sequence']) ? (int)$entry['sequence'] : 0;
+        $playlist = isset($entry['playlist']) ? (string)$entry['playlist'] : '';
+        $command  = isset($entry['command']) ? (string)$entry['command'] : '';
+
+        // Determine type + target
+        $type = '';
+        $target = '';
+        if ($command !== '') {
+            $type = FPPSemantics::TYPE_COMMAND;
+            $target = $command;
+        } elseif ($playlist !== '') {
+            $type = ($sequenceFlag === 1) ? FPPSemantics::TYPE_SEQUENCE : FPPSemantics::TYPE_PLAYLIST;
+            $target = $playlist;
+        }
+
+        if ($type === '' || $target === '') {
+            throw new RuntimeException('Unable to determine type/target from existing schedule entry');
+        }
+
+        $startDate = isset($entry['startDate']) ? (string)$entry['startDate'] : '';
+        $endDate   = isset($entry['endDate']) ? (string)$entry['endDate'] : '';
+        $startTime = isset($entry['startTime']) ? (string)$entry['startTime'] : '';
+        $endTime   = isset($entry['endTime']) ? (string)$entry['endTime'] : '';
+
+        if ($startDate === '' || $startTime === '' || $endTime === '') {
+            throw new RuntimeException('Missing startDate/startTime/endTime on existing schedule entry');
+        }
+        if ($endDate === '') {
+            $endDate = $startDate;
+        }
+
+        // Build template times in the same shape we use elsewhere
+        $templateStart = $startDate . ' ' . $startTime;
+        $templateEnd   = $startDate . ' ' . $endTime;
+
+        // For commands, the calendar-side duration is 1 minute; existing entries may show endTime==startTime.
+        // Identity for commands is based on start time only, so we keep the raw values.
+
+        // Range: if the entry spans multiple dates, include the date range.
+        $range = [];
+        if ($endDate !== '' && $endDate !== $startDate) {
+            $range['start'] = $startDate;
+            $range['end'] = $endDate;
+        }
+
+        // If `day` is present, preserve it for identity normalization where applicable.
+        if (isset($entry['day'])) {
+            $range['day'] = $entry['day'];
+        }
+
+        return [
+            'template' => [
+                'type' => $type,
+                'target' => $target,
+                'start' => $templateStart,
+                'end' => $templateEnd,
+            ],
+            'range' => $range,
+        ];
     }
 }
