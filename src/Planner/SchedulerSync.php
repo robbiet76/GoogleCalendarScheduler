@@ -206,7 +206,7 @@ final class SchedulerSync
      * Compare desired scheduler entries against the manifest.
      *
      * @param array<int,array<string,mixed>> $desiredEntries
-     * @return array{toCreate:array,toUpdate:array,toDelete:array}
+     * @return array{toCreate:array,toUpdate:array,toDelete:array,toAdopt:array,toConflict:array}
      */
     public static function diffAgainstManifest(array $desiredEntries): array
     {
@@ -238,6 +238,46 @@ final class SchedulerSync
         $toCreate = [];
         $toUpdate = [];
         $toDelete = [];
+        $toAdopt = [];
+        $toConflict = [];
+
+        // Adoption detection (before create/update/delete logic)
+        // Build maps of hashes to identities
+        $existingByHash = [];
+        foreach ($existing as $id => $identity) {
+            $hash = $identity->hash();
+            if (!isset($existingByHash[$hash])) {
+                $existingByHash[$hash] = [];
+            }
+            $existingByHash[$hash][$id] = $identity;
+        }
+        $desiredByHash = [];
+        foreach ($desired as $id => $identity) {
+            $hash = $identity->hash();
+            if (!isset($desiredByHash[$hash])) {
+                $desiredByHash[$hash] = [];
+            }
+            $desiredByHash[$hash][$id] = $identity;
+        }
+        // For each hash, check for one-to-one adoption candidates
+        foreach ($desiredByHash as $hash => $desiredIdentities) {
+            if (!isset($existingByHash[$hash])) {
+                continue;
+            }
+            $existingIdentities = $existingByHash[$hash];
+            if (count($existingIdentities) === 1 && count($desiredIdentities) === 1) {
+                // Adoption candidate: exactly one existing and one desired identity share this hash
+                $desiredId = array_key_first($desiredIdentities);
+                $existingId = array_key_first($existingIdentities);
+                $toAdopt[$desiredId] = $desiredIdentities[$desiredId];
+                // Remove from both $existing and $desired so not considered for create/update/delete
+                unset($existing[$existingId]);
+                unset($desired[$desiredId]);
+            } else {
+                // Conflict: hash appears more than once on either side
+                $toConflict[$hash] = true;
+            }
+        }
 
         // Detect creates and updates
         foreach ($desired as $id => $identity) {
@@ -259,9 +299,11 @@ final class SchedulerSync
         }
 
         return [
-            'toCreate' => $toCreate,
-            'toUpdate' => $toUpdate,
-            'toDelete' => $toDelete,
+            'toCreate'   => $toCreate,
+            'toUpdate'   => $toUpdate,
+            'toDelete'   => $toDelete,
+            'toAdopt'    => $toAdopt,
+            'toConflict' => $toConflict,
         ];
     }
 
