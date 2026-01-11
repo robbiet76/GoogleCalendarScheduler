@@ -72,6 +72,20 @@ final class ManifestIdentity
     }
 
     /**
+     * Debug-only helper.
+     *
+     * Returns a minimal representation useful for diff diagnostics.
+     * This must not affect identity behavior.
+     */
+    public function toDebugArray(): array
+    {
+        return [
+            'id'   => $this->id(),
+            'hash'=> $this->hash(),
+        ];
+    }
+
+    /**
      * Build a stable manifest ID for an entry.
      *
      * This ID represents *what* the entry is, not when it runs.

@@ -295,6 +295,28 @@ final class SchedulerSync
             ));
         }
 
+        // Debug helper: compare identity hash inputs
+        $debugCompareIdentities = function (
+            ManifestIdentity $existing,
+            ManifestIdentity $desired
+        ): void {
+            $eArr = $existing->toDebugArray();
+            $dArr = $desired->toDebugArray();
+
+            $allKeys = array_unique(array_merge(array_keys($eArr), array_keys($dArr)));
+            foreach ($allKeys as $k) {
+                $ev = $eArr[$k] ?? null;
+                $dv = $dArr[$k] ?? null;
+                if ($ev !== $dv) {
+                    error_log(sprintf(
+                        '[GCS ADOPT][DIFF] field=%s existing=%s desired=%s',
+                        $k,
+                        json_encode($ev),
+                        json_encode($dv)
+                    ));
+                }
+            }
+        };
         // Adoption detection (before create/update/delete logic)
         // Build maps of hashes to identities
         $existingByHash = [];
@@ -320,6 +342,11 @@ final class SchedulerSync
             }
             $existingIdentities = $existingByHash[$hash];
             if (count($existingIdentities) === 1 && count($desiredIdentities) === 1) {
+                // Extra debug: confirm no hidden diffs
+                $debugCompareIdentities(
+                    array_values($existingIdentities)[0],
+                    array_values($desiredIdentities)[0]
+                );
                 // Adoption candidate: exactly one existing and one desired identity share this hash
                 $desiredId = array_key_first($desiredIdentities);
                 $existingId = array_key_first($existingIdentities);
