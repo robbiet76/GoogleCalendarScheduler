@@ -14,6 +14,7 @@ declare(strict_types=1);
  * - Identity matching is already complete before comparison
  * - Identity is defined by the FULL GCS v1 tag (handled elsewhere)
  * - This class MUST NOT attempt to infer ownership or identity
+ * - Semantic equivalence is defined strictly by an explicit canonical field list
  *
  * NON-GOALS:
  * - No scheduler writes
@@ -22,6 +23,21 @@ declare(strict_types=1);
  */
 final class SchedulerComparator
 {
+    private const CANONICAL_FIELDS = [
+        'type',
+        'target',
+        'startDate',
+        'endDate',
+        'day',
+        'startTime',
+        'endTime',
+        'playlist',
+        'sequence',
+        'repeat',
+        'stopType',
+        'command',
+    ];
+
     /**
      * Determine whether an existing scheduler entry and a desired entry
      * are functionally equivalent.
@@ -40,38 +56,11 @@ final class SchedulerComparator
         $a = $existing->raw();
         $b = $desired;
 
-        /*
-         * Remove non-semantic / runtime-only fields.
-         *
-         * These fields do not affect scheduler behavior and must not
-         * cause spurious updates.
-         */
-        unset(
-            $a['id'],
-            $a['lastRun'],
-            $b['id']
-        );
-
-        // Compare normalized structures
-        return self::normalize($a) === self::normalize($b);
-    }
-
-    /**
-     * Normalize an entry for comparison.
-     *
-     * Current strategy:
-     * - Sort keys recursively at the top level
-     *
-     * NOTE:
-     * - Values are assumed to already be normalized by upstream mapping
-     * - Deeper normalization should be added ONLY if proven necessary
-     *
-     * @param array<string,mixed> $entry
-     * @return array<string,mixed>
-     */
-    private static function normalize(array $entry): array
-    {
-        ksort($entry);
-        return $entry;
+        foreach (self::CANONICAL_FIELDS as $field) {
+            if (($a[$field] ?? null) !== ($b[$field] ?? null)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

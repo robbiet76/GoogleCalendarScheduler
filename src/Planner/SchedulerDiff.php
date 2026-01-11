@@ -8,14 +8,13 @@ declare(strict_types=1);
  * existing scheduler state.
  *
  * Identity model:
- * - Identity is derived from the planner-attached manifest on each desired entry.
- * - Existing managed scheduler entries are matched by the same manifest id.
+ * - Desired entries MUST include a planner-attached `_manifest` array with a non-empty `id` string.
+ * - Existing entries are considered plugin-managed ONLY if they include `_manifest.id`.
+ * - Unmanaged existing entries (typical FPP schedules) are still read by SchedulerState but are ignored by the diff.
  *
  * Notes:
  * - This file intentionally does NOT introduce new dependencies (no new methods
  *   on SchedulerState/SchedulerEntry, and no new SchedulerIdentity class).
- * - Manifest id extraction is implemented defensively to support the shapes we
- *   see across planner/sync/state layers.
  */
 final class SchedulerDiff
 {
@@ -38,11 +37,16 @@ final class SchedulerDiff
         // Index existing managed scheduler entries by manifest id.
         $existingById = [];
         foreach ($this->state->getEntries() as $entry) {
+            if (!is_array($entry)) {
+                continue;
+            }
             $id = self::extractManifestIdFromExisting($entry);
             if ($id === null) {
                 continue;
             }
-            $existingById[$id] = $entry;
+            if (!isset($existingById[$id])) {
+                $existingById[$id] = $entry;
+            }
         }
 
         $toCreate = [];
@@ -96,29 +100,15 @@ final class SchedulerDiff
     /**
      * Extract manifest id from a desired entry array.
      *
-     * Expected shapes (best effort):
-     * - $entry['_manifest']['id']
-     * - $entry['_manifest']['manifestId']
-     * - $entry['_manifestId'] / $entry['manifestId']
+     * Desired entries must have a planner-attached manifest bundle.
      */
     private static function extractManifestIdFromDesired(array $entry): ?string
     {
-        // Primary: planner-attached manifest bundle.
+        // Planner-attached manifest bundle.
         if (isset($entry['_manifest']) && is_array($entry['_manifest'])) {
-            $m  = $entry['_manifest'];
-            $id = self::extractIdFromManifestArray($m);
+            $id = self::extractIdFromManifestArray($entry['_manifest']);
             if ($id !== null) {
                 return $id;
-            }
-        }
-
-        // Alternate common field names.
-        foreach (['_manifestId', 'manifestId', 'manifest_id', 'manifestID'] as $k) {
-            if (isset($entry[$k]) && is_string($entry[$k])) {
-                $v = trim($entry[$k]);
-                if ($v !== '') {
-                    return $v;
-                }
             }
         }
 
@@ -126,85 +116,23 @@ final class SchedulerDiff
     }
 
     /**
-     * Extract manifest id from an existing scheduler entry (object or array).
+     * Extract manifest id from an existing scheduler entry array.
      *
-     * We avoid assuming a specific SchedulerEntry API; instead we try common patterns:
-     * - array entry with '_manifest'
-     * - object exposing toArray()/jsonSerialize()
-     * - object exposing getMeta()/getData()/getExtra() returning arrays
+     * Existing entries are managed only if they carry plugin-managed manifest metadata at the top level.
+     *
+     * @param array<string,mixed> $entry
      */
-    private static function extractManifestIdFromExisting(mixed $entry): ?string
+    private static function extractManifestIdFromExisting(array $entry): ?string
     {
-        // If state entries are arrays.
-        if (is_array($entry)) {
-            return self::extractManifestIdFromDesired($entry);
-        }
-
-        // Try common conversion methods.
-        if (is_object($entry)) {
-            // toArray()
-            if (method_exists($entry, 'toArray')) {
-                $arr = $entry->toArray();
-                if (is_array($arr)) {
-                    $id = self::extractManifestIdFromDesired($arr);
-                    if ($id !== null) {
-                        return $id;
-                    }
-                }
-            }
-
-            // jsonSerialize()
-            if ($entry instanceof JsonSerializable) {
-                $arr = $entry->jsonSerialize();
-                if (is_array($arr)) {
-                    $id = self::extractManifestIdFromDesired($arr);
-                    if ($id !== null) {
-                        return $id;
-                    }
-                }
-            }
-
-            // getMeta()/getData()/getExtra() style accessors.
-            foreach (['getMeta', 'getData', 'getExtra', 'getPayload'] as $m) {
-                if (method_exists($entry, $m)) {
-                    try {
-                        $arr = $entry->{$m}();
-                    } catch (Throwable $t) {
-                        $arr = null;
-                    }
-                    if (is_array($arr)) {
-                        $id = self::extractManifestIdFromDesired($arr);
-                        if ($id !== null) {
-                            return $id;
-                        }
-                        // Also allow manifest itself to be returned here.
-                        $id = self::extractIdFromManifestArray($arr);
-                        if ($id !== null) {
-                            return $id;
-                        }
-                    }
-                }
-            }
-
-            // Direct property (last resort).
-            foreach (['_manifest', 'manifest', 'meta', 'data'] as $prop) {
-                if (property_exists($entry, $prop)) {
-                    /** @var mixed $val */
-                    $val = $entry->{$prop};
-                    if (is_array($val)) {
-                        $id = self::extractManifestIdFromDesired(['_manifest' => $val] + $val);
-                        if ($id !== null) {
-                            return $id;
-                        }
-                        $id = self::extractIdFromManifestArray($val);
-                        if ($id !== null) {
-                            return $id;
-                        }
-                    }
-                }
+        // Preferred: embedded manifest bundle.
+        if (isset($entry['_manifest']) && is_array($entry['_manifest'])) {
+            $id = self::extractIdFromManifestArray($entry['_manifest']);
+            if ($id !== null) {
+                return $id;
             }
         }
 
+        // If there is no manifest bundle, this is an unmanaged (plain FPP) entry.
         return null;
     }
 
@@ -213,9 +141,8 @@ final class SchedulerDiff
      */
     private static function extractIdFromManifestArray(array $manifest): ?string
     {
-        // NOTE: Do NOT fall back to calendar UID here. UID is optional (and often missing on existing FPP entries)
-        // and must not be treated as a manifest identity.
-        foreach (['id', 'manifestId', 'manifest_id', 'manifestID'] as $k) {
+        // UID is optional and must not be treated as identity.
+        foreach (['id'] as $k) {
             if (isset($manifest[$k]) && is_string($manifest[$k])) {
                 $v = trim($manifest[$k]);
                 if ($v !== '') {

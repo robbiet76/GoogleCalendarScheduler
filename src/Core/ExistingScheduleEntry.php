@@ -7,7 +7,8 @@ declare(strict_types=1);
  * Lightweight wrapper around a raw FPP scheduler entry.
  *
  * Responsibilities:
- * - Expose scheduler entry identity via GCS tag
+ * - Expose scheduler entry identity via manifest UID when present
+ * - Expose derived identity fields for unmanaged (legacy) entries
  * - Provide managed/unmanaged classification
  * - Offer UI-safe representations for preview output
  *
@@ -30,11 +31,11 @@ final class ExistingScheduleEntry
     }
 
     /**
-     * Extract the GCS identity key from this scheduler entry.
+     * Extract the manifest UID from this scheduler entry.
      *
-     * @return string|null GCS UID or null if not present
+     * @return string|null Manifest UID or null if not present
      */
-    public function getGcsUid(): ?string
+    public function getManifestUid(): ?string
     {
         return SchedulerIdentity::extractKey($this->raw);
     }
@@ -58,6 +59,24 @@ final class ExistingScheduleEntry
     }
 
     /**
+     * Return identity-relevant fields for legacy (unmanaged) entries.
+     *
+     * @return array<string,mixed>
+     */
+    public function getIdentityFields(): array
+    {
+        return [
+            'type'      => $this->raw['type'] ?? null,
+            'playlist'  => $this->raw['playlist'] ?? null,
+            'command'   => $this->raw['command'] ?? null,
+            'startDate' => $this->raw['startDate'] ?? null,
+            'startTime' => $this->raw['startTime'] ?? null,
+            'endTime'   => $this->raw['endTime'] ?? null,
+            'day'       => $this->raw['day'] ?? null,
+        ];
+    }
+
+    /**
      * Produce a UI-safe representation of this scheduler entry.
      *
      * Ensures no objects or non-serializable values leak into
@@ -68,7 +87,7 @@ final class ExistingScheduleEntry
     public function toPreviewArray(): array
     {
         return [
-            'uid'       => $this->getGcsUid(),
+            'uid'       => $this->getManifestUid(),
             'playlist'  => isset($this->raw['playlist']) ? (string)$this->raw['playlist'] : '',
             'command'   => isset($this->raw['command']) ? (string)$this->raw['command'] : '',
             'startDate' => $this->raw['startDate'] ?? null,

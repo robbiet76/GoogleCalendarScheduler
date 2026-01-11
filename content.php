@@ -46,13 +46,6 @@ require_once __DIR__ . '/src/Core/SunTimeEstimator.php';
 // Planner services (PURE — no writes)
 // ---------------------------------------------------------------------
 require_once __DIR__ . '/src/Planner/ExportService.php';
-require_once __DIR__ . '/src/Planner/InventoryService.php';
-
-// ---------------------------------------------------------------------
-// Apply services (WRITE boundary — guarded, never auto-run)
-// ---------------------------------------------------------------------
-require_once __DIR__ . '/src/Apply/SchedulerCleanupPlanner.php';
-require_once __DIR__ . '/src/Apply/SchedulerCleanupApplier.php';
 
 $cfg = Config::load();
 
@@ -327,33 +320,6 @@ if ($endpoint !== '') {
                 ]);
                 exit;
             }
-        }
-
-        // --------------------------------------------------------------
-        // Cleanup preview (read-only)
-        // --------------------------------------------------------------
-        if ($endpoint=== 'cleanup_preview') {
-            gcsJsonHeader();
-
-            $plan = SchedulerCleanupPlanner::plan();
-
-            echo json_encode([
-                'ok' => !empty($plan['ok']),
-                'plan' => $plan,
-            ]);
-            exit;
-        }
-
-        // --------------------------------------------------------------
-        // Cleanup apply (guarded write)
-        // --------------------------------------------------------------
-        if ($endpoint=== 'cleanup_apply') {
-            gcsJsonHeader();
-
-            $res = SchedulerCleanupApplier::apply();
-
-            echo json_encode($res);
-            exit;
         }
 
     } catch (Throwable $e) {
