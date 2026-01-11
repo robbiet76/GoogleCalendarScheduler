@@ -88,7 +88,8 @@ final class ManifestIdentity
     /**
      * Build a stable manifest ID for an entry.
      *
-     * This ID represents *what* the entry is, not when it runs.
+     * This ID represents the schedule identity:
+     * type + target + time window + date range + days.
      */
     public static function buildId(array $entry): string
     {
@@ -99,7 +100,9 @@ final class ManifestIdentity
                 : (string)($entry['playlist'] ?? ''),
             'startTime'  => (string)($entry['startTime'] ?? ''),
             'endTime'    => (string)($entry['endTime'] ?? ''),
-            'day'        => isset($entry['day']) ? (int)$entry['day'] : null,
+            'days'       => isset($entry['days'])
+                ? (string)$entry['days']
+                : (isset($entry['day']) ? (string)$entry['day'] : null),
             'startDate'  => isset($entry['startDate'])
                 ? self::normalizeDate((string)$entry['startDate'])
                 : null,
