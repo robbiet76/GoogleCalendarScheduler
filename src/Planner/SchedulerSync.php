@@ -520,6 +520,7 @@ final class SchedulerSync
             'playlist'         => '',
             'command'          => '',
         ];
+        $entry['uid'] = $uid;
 
         if ($type === FPPSemantics::TYPE_PLAYLIST) {
             $entry['playlist']  = $target;
