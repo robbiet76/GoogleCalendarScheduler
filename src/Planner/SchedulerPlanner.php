@@ -335,6 +335,14 @@ final class SchedulerPlanner
 
         foreach ($bundles as $bundle) {
             // Overrides would be emitted here (above base) when enabled.
+            // ------------------------------------------------------------------
+            // Build manifest identity ONCE at planning time (immutable thereafter)
+            // ------------------------------------------------------------------
+            $manifest = ManifestIdentity::fromIntent($bundle['base']);
+            $bundle['base']['_manifest'] = [
+                'id'   => $manifest->id(),
+                'hash' => $manifest->hash(),
+            ];
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
             if (!$entry || !is_array($entry)) {
                 continue;

@@ -503,16 +503,9 @@ final class SchedulerSync
             $entry['_payload'] = $payload;
         }
 
-        // Manifest identity is attached in-memory only. It must not be persisted to schedule.json.
-        $manifest = ManifestIdentity::fromIntent($intent);
-
-        $entry['_manifest'] = [
-            'id'   => $manifest->id(),
-            'hash' => $manifest->hash(),
-        ];
-
-        // Debug: emits manifest identity for traceability during development.
-        error_log('[GCS DEBUG][ManifestIdentity] ' . json_encode($entry['_manifest']));
+        // NOTE:
+        // Manifest identity is NOT generated here.
+        // Identity is assigned in SchedulerPlanner after full normalization.
 
         return $entry;
     }
