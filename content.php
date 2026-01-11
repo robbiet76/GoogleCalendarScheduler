@@ -129,22 +129,19 @@ if ($endpoint !== '') {
         }
 
         // --------------------------------------------------------------
-        // Diff (plan-only): returns creates/updates/deletes + snapshots
+        // Diff (plan-only): returns formatted preview array
         // --------------------------------------------------------------
         if ($endpoint=== 'diff') {
             gcsJsonHeader();
 
             $plan = SchedulerPlanner::plan($cfg);
 
+            $manifest = ManifestResult::fromPlannerResult($plan);
+            $preview  = PreviewFormatter::format($manifest);
+
             echo json_encode([
-                'ok'   => true,
-                'diff' => [
-                    'creates'        => (isset($plan['creates']) && is_array($plan['creates'])) ? $plan['creates'] : [],
-                    'updates'        => (isset($plan['updates']) && is_array($plan['updates'])) ? $plan['updates'] : [],
-                    'deletes'        => (isset($plan['deletes']) && is_array($plan['deletes'])) ? $plan['deletes'] : [],
-                    'desiredEntries' => (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) ? $plan['desiredEntries'] : [],
-                    'existingRaw'    => (isset($plan['existingRaw']) && is_array($plan['existingRaw'])) ? $plan['existingRaw'] : [],
-                ],
+                'ok'      => true,
+                'preview' => $preview,
             ]);
             exit;
         }
@@ -764,9 +761,9 @@ previewBtn.addEventListener('click', function () {
                 return;
             }
 
-            var creates = d.diff.creates.length;
-            var updates = d.diff.updates.length;
-            var deletes = d.diff.deletes.length;
+            var creates = d.preview.creates.length;
+            var updates = d.preview.updates.length;
+            var deletes = d.preview.deletes.length;
 
             diffSummary.classList.remove('gcs-hidden');
             diffSummary.innerHTML = `

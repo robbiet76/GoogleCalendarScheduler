@@ -46,6 +46,9 @@ require_once __DIR__ . '/Core/SchedulerComparator.php';
 require_once __DIR__ . '/Core/ManifestIdentity.php';
 require_once __DIR__ . '/Core/ManifestStore.php';
 
+require_once __DIR__ . '/Core/ManifestResult.php';
+require_once __DIR__ . '/Core/PreviewFormatter.php';
+
 /* ---------- Scheduler state ---------- */
 require_once __DIR__ . '/Core/ExistingScheduleEntry.php';
 require_once __DIR__ . '/Core/ComparableScheduleEntry.php';

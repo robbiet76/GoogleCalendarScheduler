@@ -52,17 +52,14 @@ final class SchedulerApply
         ];
 
         if ($dryRun) {
-            return [
-                'ok'             => true,
-                'dryRun'         => true,
-                'counts'         => $previewCounts,
-                'creates'        => $plan['creates'] ?? [],
-                'updates'        => $plan['updates'] ?? [],
-                'deletes'        => $plan['deletes'] ?? [],
-                'desiredEntries' => $desired,
-                'existingRaw'    => $existing,
-                'desiredBundles' => $plan['desiredBundles'] ?? [],
-            ];
+            $result = new ManifestResult(
+                $plan['creates'] ?? [],
+                $plan['updates'] ?? [],
+                $plan['deletes'] ?? [],
+                $plan['messages'] ?? []
+            );
+
+            return PreviewFormatter::format($result);
         }
 
         $applyPlan = self::planApply($existing, $desired);
