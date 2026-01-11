@@ -93,6 +93,25 @@ final class ManifestIdentity
      */
     public static function buildId(array $entry): string
     {
+        if (
+            empty($entry['startDate']) ||
+            empty($entry['endDate']) ||
+            (!isset($entry['day']) && !isset($entry['days']))
+        ) {
+            error_log(
+                '[GCS ERROR][IDENTITY INVALID INPUT] ' .
+                json_encode([
+                    'summary' => $entry['summary'] ?? null,
+                    'uid'     => $entry['uid'] ?? null,
+                    'keys'    => array_keys($entry),
+                ], JSON_UNESCAPED_SLASHES)
+            );
+
+            throw new RuntimeException(
+                'ManifestIdentity::buildId called with non-expanded entry'
+            );
+        }
+
         $identity = [
             'type'       => self::entryType($entry),
             'target'     => !empty($entry['command'])
@@ -126,6 +145,25 @@ final class ManifestIdentity
      */
     public static function buildHash(array $entry): string
     {
+        if (
+            empty($entry['startDate']) ||
+            empty($entry['endDate']) ||
+            (!isset($entry['day']) && !isset($entry['days']))
+        ) {
+            error_log(
+                '[GCS ERROR][IDENTITY INVALID INPUT] ' .
+                json_encode([
+                    'summary' => $entry['summary'] ?? null,
+                    'uid'     => $entry['uid'] ?? null,
+                    'keys'    => array_keys($entry),
+                ], JSON_UNESCAPED_SLASHES)
+            );
+
+            throw new RuntimeException(
+                'ManifestIdentity::buildHash called with non-expanded entry'
+            );
+        }
+
         $normalized = self::normalize($entry);
 
         // DEBUG: log normalized identity input before hashing
