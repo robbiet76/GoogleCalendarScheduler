@@ -212,15 +212,41 @@ final class SchedulerSync
     {
         $store = new ManifestStore();
 
-        // Existing manifest identities (authoritative)
-        // @var array<string,ManifestIdentity>
-        $manifest = $store->load();
+        // ------------------------------------------------------------------
+        // Build identities for EXISTING scheduler entries (adoption support)
+        // ------------------------------------------------------------------
 
         $existing = [];
-        foreach (($manifest['identities'] ?? []) as $row) {
-            $identity = ManifestIdentity::fromArray($row);
-            $existing[$identity->id()] = $identity;
+
+        // Read live schedule.json and synthesize identities
+        $scheduleEntries = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
+
+        foreach ($scheduleEntries as $idx => $entry) {
+            try {
+                $identity = ManifestIdentity::fromExistingEntry($entry);
+                $existing[$identity->id()] = $identity;
+
+                error_log(sprintf(
+                    '[GCS DEBUG][Inventory] #%d playlist=%s managed=NO args=%s',
+                    $idx,
+                    $entry['playlist'] ?? '',
+                    isset($entry['args']) ? json_encode($entry['args']) : 'null'
+                ));
+            } catch (Throwable $e) {
+                // Skip entries that cannot form a stable identity
+                error_log(sprintf(
+                    '[GCS DEBUG][Inventory] #%d skipped (%s)',
+                    $idx,
+                    $e->getMessage()
+                ));
+            }
         }
+
+        // ------------------------------------------------------------------
+        // Load manifest identities (authoritative ownership record)
+        // ------------------------------------------------------------------
+
+        $manifest = $store->load();
 
         // Desired identities keyed by id
         // @var array<string,ManifestIdentity>
