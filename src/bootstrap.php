@@ -48,7 +48,6 @@ require_once __DIR__ . '/Core/ManifestStore.php';
 
 /* ---------- Scheduler state ---------- */
 require_once __DIR__ . '/Core/ExistingScheduleEntry.php';
-require_once __DIR__ . '/Core/ComparableScheduleEntry.php';
 require_once __DIR__ . '/Core/SchedulerState.php';
 require_once __DIR__ . '/Core/SchedulerDiffResult.php';
 require_once __DIR__ . '/Core/SchedulerIntent.php';
@@ -95,7 +94,6 @@ require_once __DIR__ . '/Planner/PreviewFormatter.php';
 require_once __DIR__ . '/Planner/SchedulerSync.php';
 require_once __DIR__ . '/Planner/SchedulerRunner.php';
 require_once __DIR__ . '/Planner/SchedulerDiff.php';
-require_once __DIR__ . '/Planner/InventorySnapshot.php';
 require_once __DIR__ . '/Planner/InventoryService.php';
 require_once __DIR__ . '/Planner/ExportService.php';
 require_once __DIR__ . '/Planner/SchedulerPlanner.php';
@@ -105,6 +103,5 @@ require_once __DIR__ . '/Planner/SchedulerPlanner.php';
  * Apply — WRITE BOUNDARY (scheduler mutations ONLY)
  * ============================================================
  */
-require_once __DIR__ . '/Apply/SchedulerCleanupPlanner.php';
-require_once __DIR__ . '/Apply/SchedulerCleanupApplier.php';
+
 require_once __DIR__ . '/Apply/SchedulerApply.php';
