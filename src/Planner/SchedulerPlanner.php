@@ -371,6 +371,7 @@ final class SchedulerPlanner
 
             // Attach manifest AFTER entry materialization so it is preserved
             $entry['_manifest'] = [
+                'uid'  => (string)($bundle['base']['uid'] ?? ''),
                 'id'   => $manifest->id(),
                 'hash' => $manifest->hash(),
             ];
