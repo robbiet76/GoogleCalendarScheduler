@@ -15,14 +15,13 @@ declare(strict_types=1);
  * - Write schedule.json atomically
  * - Verify post-write integrity
  *
- * HARD GUARANTEES (Phase 29+):
+ * HARD GUARANTEES (Manifest architecture):
  * - Unmanaged entries are never modified
- * - Managed entries are matched by UID ONLY
- * - Exactly one canonical managed tag per entry
+ * - Managed entries are matched by canonical identity (manifest id) only
  * - schedule.json is never partially written
  * - Apply is idempotent for the same planner output
  *
- * Phase 28/29:
+ * Ordering:
  * - Apply preserves Planner ordering exactly
  * - No implicit re-sorting
  */
@@ -115,8 +114,9 @@ final class SchedulerApply
      * - Unmanaged entries preserved in original order
      * - Managed entries rewritten in Planner-provided order
      *
-     * Identity model (Phase 29+):
-     * - UID-only
+     * Identity model:
+     * - Canonical manifest identity (manifest id) only.
+     * - Legacy/hand-written FPP entries without manifest identity are treated as unmanaged.
      *
      * @param array<int,array<string,mixed>> $existing
      * @param array<int,array<string,mixed>> $desired
@@ -124,61 +124,62 @@ final class SchedulerApply
      */
     private static function planApply(array $existing, array $desired): array
     {
-        // Desired managed entries indexed by UID
-        $desiredByUid   = [];
-        $uidsInOrder    = [];
+        // Desired managed entries indexed by canonical key (manifest id)
+        $desiredByKey = [];
+        $keysInOrder  = [];
 
         foreach ($desired as $d) {
             if (!is_array($d)) {
                 continue;
             }
 
-            $uid = SchedulerIdentity::extractKey($d);
-            if ($uid === null) {
+            $key = self::extractManagedKey($d);
+            if ($key === null) {
+                // Desired entries should normally have a key; if not, skip rather than writing malformed data.
                 continue;
             }
 
-            if (!isset($desiredByUid[$uid])) {
-                $uidsInOrder[] = $uid;
+            if (!isset($desiredByKey[$key])) {
+                $keysInOrder[] = $key;
             }
 
-            $desiredByUid[$uid] = self::normalizeForApply($d);
+            $desiredByKey[$key] = self::normalizeForApply($d);
         }
 
-        // Existing managed entries indexed by UID
-        $existingManagedByUid = [];
+        // Existing managed entries indexed by canonical key (manifest id)
+        $existingManagedByKey = [];
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
                 continue;
             }
 
-            $uid = SchedulerIdentity::extractKey($ex);
-            if ($uid === null) {
+            $key = self::extractManagedKey($ex);
+            if ($key === null) {
                 continue;
             }
 
-            $existingManagedByUid[$uid] = $ex;
+            $existingManagedByKey[$key] = $ex;
         }
 
-        // Compute creates / updates / deletes
+        // Compute creates / updates / deletes (keyed by canonical identity)
         $creates = [];
         $updates = [];
         $deletes = [];
 
-        foreach ($desiredByUid as $uid => $d) {
-            if (!isset($existingManagedByUid[$uid])) {
-                $creates[] = $uid;
+        foreach ($desiredByKey as $key => $d) {
+            if (!isset($existingManagedByKey[$key])) {
+                $creates[] = $key;
                 continue;
             }
 
-            if (!self::entriesEquivalentForCompare($existingManagedByUid[$uid], $d)) {
-                $updates[] = $uid;
+            if (!self::entriesEquivalentForCompare($existingManagedByKey[$key], $d)) {
+                $updates[] = $key;
             }
         }
 
-        foreach ($existingManagedByUid as $uid => $_) {
-            if (!isset($desiredByUid[$uid])) {
-                $deletes[] = $uid;
+        foreach ($existingManagedByKey as $key => $_) {
+            if (!isset($desiredByKey[$key])) {
+                $deletes[] = $key;
             }
         }
 
@@ -195,14 +196,15 @@ final class SchedulerApply
                 continue;
             }
 
-            if (SchedulerIdentity::extractKey($ex) === null) {
+            // Unmanaged = no canonical managed key
+            if (self::extractManagedKey($ex) === null) {
                 $newSchedule[] = $ex;
             }
         }
 
-        foreach ($uidsInOrder as $uid) {
-            if (isset($desiredByUid[$uid])) {
-                $newSchedule[] = $desiredByUid[$uid];
+        foreach ($keysInOrder as $key) {
+            if (isset($desiredByKey[$key])) {
+                $newSchedule[] = $desiredByKey[$key];
             }
         }
 
@@ -211,17 +213,38 @@ final class SchedulerApply
             'updates'             => $updates,
             'deletes'             => $deletes,
             'newSchedule'         => $newSchedule,
-            'expectedManagedKeys' => array_keys($desiredByUid),
+            'expectedManagedKeys' => array_keys($desiredByKey),
             'expectedDeletedKeys' => $deletes,
         ];
+    }
+
+    /**
+     * Extract the canonical "managed key" for an entry.
+     *
+     * Managed entries must have a manifest identity. Legacy FPP entries without
+     * manifest identity are unmanaged by definition.
+     */
+    private static function extractManagedKey(array $entry): ?string
+    {
+        // Preferred: manifest id
+        if (isset($entry['_manifest']) && is_array($entry['_manifest'])) {
+            $id = $entry['_manifest']['id'] ?? null;
+            if (is_string($id) && $id !== '') {
+                return $id;
+            }
+        }
+
+        // No fallback: without a manifest id, the entry is unmanaged by definition.
+        return null;
     }
 
     private static function normalizeForApply(array $entry): array
     {
         // Strip ONLY known GCS-internal metadata keys before writing to schedule.json.
+        // IMPORTANT: _manifest is canonical state and MUST persist.
         // Do NOT remove arbitrary underscore-prefixed keys since FPP/other plugins may
         // legitimately use them.
-        foreach (['_gcs', '_payload', '_manifest'] as $k) {
+        foreach (['_gcs', '_payload'] as $k) {
             if (array_key_exists($k, $entry)) {
                 unset($entry[$k]);
             }
@@ -232,26 +255,27 @@ final class SchedulerApply
             $entry['day'] = 7; // Everyday
         }
 
-        // Ensure args always exists and is an array (FPP-safe). Commands may use args.
-        if (!isset($entry['args']) || !is_array($entry['args'])) {
-            $entry['args'] = [];
-        }
-
         return $entry;
     }
 
+    /**
+     * Equivalence check for apply decisions.
+     *
+     * Compares normalized schedule-entry arrays, not domain objects.
+     *
+     * Delegates to SchedulerComparator when available (canonical field list),
+     * otherwise falls back to stable structural compare.
+     */
     private static function entriesEquivalentForCompare(array $a, array $b): bool
     {
-        unset(
-            $a['id'],
-            $a['lastRun'],
-            $b['id'],
-            $b['lastRun']
-        );
+        if (class_exists('SchedulerComparator') && method_exists('SchedulerComparator', 'isEquivalent')) {
+            return SchedulerComparator::isEquivalent($a, $b);
+        }
 
+        // Fallback: ignore runtime-only fields and compare deterministically
+        unset($a['id'], $a['lastRun'], $b['id'], $b['lastRun']);
         ksort($a);
         ksort($b);
-
         return $a === $b;
     }
 }

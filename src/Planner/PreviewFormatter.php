@@ -20,63 +20,42 @@ final class PreviewFormatter
     {
         $rows = [];
 
-        foreach ($result->creates() as $entry) {
-            $rows[] = self::row('create', $entry);
+        foreach ($result->creates() as $intent) {
+            $rows[] = self::row('create', $intent);
         }
 
-        foreach ($result->updates() as $entry) {
-            $rows[] = self::row('update', $entry);
+        foreach ($result->updates() as $pair) {
+            // updates are { before, after }
+            $rows[] = self::row('update', $pair['after']);
         }
 
-        foreach ($result->deletes() as $entry) {
-            $rows[] = self::row('delete', $entry);
+        foreach ($result->deletes() as $intent) {
+            $rows[] = self::row('delete', $intent);
         }
 
         return [
-            'version' => 1,
-            'mode'    => 'preview',
-            'summary' => $result->summary(),
-            'rows'    => $rows,
-            'messages'=> $result->messages(),
+            'version'  => 1,
+            'mode'     => 'preview',
+            'summary'  => $result->summary(),
+            'rows'     => $rows,
+            'messages' => $result->messages(),
         ];
     }
 
-    private static function row(string $action, array $entry): array
+    private static function row(string $action, $intent): array
     {
         return [
-            'action' => $action,                 // create | update | delete
-            'type'   => self::resolveType($entry), // playlist | sequence | command
-            'target' => self::resolveTarget($entry),
+            'action' => $action,               // create | update | delete
+            'type'   => $intent->getType(),    // playlist | sequence | command
+            'target' => $intent->getTarget(),
 
-            'when'   => [
-                'day'        => $entry['day']        ?? null,
-                'startTime'  => $entry['startTime']  ?? null,
-                'endTime'    => $entry['endTime']    ?? null,
-                'startDate'  => $entry['startDate']  ?? null,
-                'endDate'    => $entry['endDate']    ?? null,
+            'when' => [
+                'day'       => $intent->getDay(),
+                'startTime' => $intent->getStartTime(),
+                'endTime'   => $intent->getEndTime(),
+                'startDate' => $intent->getStartDate(),
+                'endDate'   => $intent->getEndDate(),
             ],
         ];
-    }
-
-    private static function resolveType(array $e): string
-    {
-        if (!empty($e['command'])) {
-            return 'command';
-        }
-        if (!empty($e['sequence'])) {
-            return 'sequence';
-        }
-        return 'playlist';
-    }
-
-    private static function resolveTarget(array $e): string
-    {
-        if (!empty($e['command'])) {
-            return (string)$e['command'];
-        }
-        if (!empty($e['playlist'])) {
-            return (string)$e['playlist'];
-        }
-        return '(unknown)';
     }
 }

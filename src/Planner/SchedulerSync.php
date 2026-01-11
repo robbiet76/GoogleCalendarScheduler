@@ -1,24 +1,32 @@
 <?php
+
 declare(strict_types=1);
+
+// Ensure a stable debug flag. Some call sites expect GCS_DEBUG to exist.
+if (!defined('GCS_DEBUG')) {
+    define('GCS_DEBUG', false);
+}
 
 /**
  * SchedulerSync
  *
- * Canonical scheduler I/O and intent-to-entry mapping layer.
+ * Canonical scheduler.json I/O layer (plus legacy mapping helpers pending extraction).
  *
  * Responsibilities:
- * - Read and write schedule.json safely
- * - Perform atomic writes with backup and verification
- * - Convert resolved scheduling intents into FPP scheduler entries
+ * - Read schedule.json safely
+ * - Write schedule.json atomically
+ * - Create timestamped backups
+ * - Verify post-write scheduler state
  *
- * HARD RULES:
- * - This class does NOT compute diffs
- * - This class does NOT read or write the manifest
- * - This class does NOT perform dry-run logic
- * - This class does NOT apply policy decisions
+ * NON-RESPONSIBILITIES (by design):
+ * - Does NOT compute diffs
+ * - Does NOT generate or compare identities
+ * - Does NOT read or write manifests
+ * - Does NOT apply policy or adoption logic
  *
- * All mutation decisions (diff/adopt/update/delete) are made elsewhere.
- * This class only performs trusted mechanical operations.
+ * This class is primarily a mechanical I/O utility.
+ * It currently also contains intent→entry mapping used by call sites;
+ * that mapping should be extracted to a dedicated builder when we finish untangling dependencies.
  */
 final class SchedulerSync
 {

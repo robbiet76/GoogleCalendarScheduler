@@ -28,24 +28,24 @@ final class ManifestResult
      * Scheduler entries that should be updated.
      *
      * Each element contains:
-     *  - before: ExistingSchedulerEntry
+     *  - before: ExistingScheduleEntry
      *  - after:  ScheduleIntent
      *
-     * @var array<int, array{before: mixed, after: mixed}>
+     * @var array<int, array{before: ExistingScheduleEntry, after: ScheduleIntent}>
      */
     public array $update = [];
 
     /**
      * Scheduler entries that should be deleted.
      *
-     * @var array<int, mixed>
+     * @var array<int, ExistingScheduleEntry>
      */
     public array $delete = [];
 
     /**
      * Scheduler entries that are already correct and unchanged.
      *
-     * @var array<int, mixed>
+     * @var array<int, ExistingScheduleEntry>
      */
     public array $unchanged = [];
 
@@ -115,7 +115,7 @@ final class ManifestResult
     }
 
     /**
-     * @return array<int, array{before: mixed, after: mixed}>
+     * @return array<int, array{before: ExistingScheduleEntry, after: ScheduleIntent}>
      */
     public function updates(): array
     {
@@ -123,7 +123,7 @@ final class ManifestResult
     }
 
     /**
-     * @return array<int, mixed>
+     * @return array<int, ExistingScheduleEntry>
      */
     public function deletes(): array
     {
@@ -131,7 +131,7 @@ final class ManifestResult
     }
 
     /**
-     * @return array<int, mixed>
+     * @return array<int, ExistingScheduleEntry>
      */
     public function unchanged(): array
     {
