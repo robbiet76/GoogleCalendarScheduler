@@ -190,6 +190,20 @@ final class SchedulerPlanner
             // Defensive: ensure no metadata leakage into template
             unset($bundles[count($bundles) - 1]['base']['template']['payload']);
             unset($bundles[count($bundles) - 1]['base']['template']['gcs']);
+            // DEBUG: verify fresh base intent creation (no mutation, no reuse)
+            if ($debug) {
+                $created = $bundles[count($bundles) - 1]['base'];
+                self::dbg($config, 'planner_base_created', [
+                    'uid'        => (string)($created['uid'] ?? ''),
+                    'summary'    => (string)($created['template']['summary'] ?? ''),
+                    'type'       => (string)($created['template']['type'] ?? ''),
+                    'target'     => $created['template']['target'] ?? null,
+                    'range'      => $created['range'] ?? null,
+                    'start'      => $created['template']['start'] ?? null,
+                    'end'        => $created['template']['end'] ?? null,
+                    'object_id'  => spl_object_id((object)$created),
+                ]);
+            }
         }
 
         if ($debug) {
