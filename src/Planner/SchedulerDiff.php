@@ -105,7 +105,7 @@ final class SchedulerDiff
     {
         // Primary: planner-attached manifest bundle.
         if (isset($entry['_manifest']) && is_array($entry['_manifest'])) {
-            $m = $entry['_manifest'];
+            $m  = $entry['_manifest'];
             $id = self::extractIdFromManifestArray($m);
             if ($id !== null) {
                 return $id;
@@ -114,8 +114,11 @@ final class SchedulerDiff
 
         // Alternate common field names.
         foreach (['_manifestId', 'manifestId', 'manifest_id', 'manifestID'] as $k) {
-            if (isset($entry[$k]) && is_string($entry[$k]) && $entry[$k] !== '') {
-                return $entry[$k];
+            if (isset($entry[$k]) && is_string($entry[$k])) {
+                $v = trim($entry[$k]);
+                if ($v !== '') {
+                    return $v;
+                }
             }
         }
 
@@ -186,6 +189,7 @@ final class SchedulerDiff
             // Direct property (last resort).
             foreach (['_manifest', 'manifest', 'meta', 'data'] as $prop) {
                 if (property_exists($entry, $prop)) {
+                    /** @var mixed $val */
                     $val = $entry->{$prop};
                     if (is_array($val)) {
                         $id = self::extractManifestIdFromDesired(['_manifest' => $val] + $val);
@@ -209,9 +213,14 @@ final class SchedulerDiff
      */
     private static function extractIdFromManifestArray(array $manifest): ?string
     {
-        foreach (['id', 'manifestId', 'manifest_id', 'manifestID', 'uid'] as $k) {
-            if (isset($manifest[$k]) && is_string($manifest[$k]) && $manifest[$k] !== '') {
-                return $manifest[$k];
+        // NOTE: Do NOT fall back to calendar UID here. UID is optional (and often missing on existing FPP entries)
+        // and must not be treated as a manifest identity.
+        foreach (['id', 'manifestId', 'manifest_id', 'manifestID'] as $k) {
+            if (isset($manifest[$k]) && is_string($manifest[$k])) {
+                $v = trim($manifest[$k]);
+                if ($v !== '') {
+                    return $v;
+                }
             }
         }
         return null;

@@ -13,10 +13,11 @@ declare(strict_types=1);
  *
  * HARD RULES:
  * - This class does NOT compute diffs
- * - This class does NOT apply policy decisions
+ * - This class does NOT read or write the manifest
  * - This class does NOT perform dry-run logic
+ * - This class does NOT apply policy decisions
  *
- * All mutation decisions are made elsewhere.
+ * All mutation decisions (diff/adopt/update/delete) are made elsewhere.
  * This class only performs trusted mechanical operations.
  */
 final class SchedulerSync
@@ -173,10 +174,10 @@ final class SchedulerSync
                 continue;
             }
 
-            // Phase 29+: identity key is UID-only (SchedulerIdentity is the authority)
-            $key = SchedulerIdentity::extractKey($entry);
-            if ($key !== null) {
-                $present[$key] = true;
+            // Verification is UID-only.
+            // Existing unmanaged entries may not have a UID and are ignored.
+            if (isset($entry['uid']) && is_string($entry['uid']) && $entry['uid'] !== '') {
+                $present[$entry['uid']] = true;
             }
         }
 
@@ -198,175 +199,6 @@ final class SchedulerSync
     }
 
 
-    /* -------------------------------------------------------------------------
-     * Manifest diff (pure, no I/O)
-     * ---------------------------------------------------------------------- */
-
-    /**
-     * Compare desired scheduler entries against the manifest.
-     *
-     * @param array<int,array<string,mixed>> $desiredEntries
-     * @return array{toCreate:array,toUpdate:array,toDelete:array,toAdopt:array,toConflict:array}
-     */
-    public static function diffAgainstManifest(array $desiredEntries): array
-    {
-        $store = new ManifestStore();
-
-        // ------------------------------------------------------------------
-        // Build identities for EXISTING scheduler entries (adoption support)
-        // ------------------------------------------------------------------
-
-        $existing = [];
-
-        // Read live schedule.json and synthesize identities
-        $scheduleEntries = self::readScheduleJsonStatic(self::SCHEDULE_JSON_PATH);
-
-        foreach ($scheduleEntries as $idx => $entry) {
-            // NOTE: Existing scheduler entries do NOT carry calendar UID or full intent data.
-            // ManifestIdentity must NOT be constructed at this phase.
-            // Adoption identity is computed ONLY from planner-generated entries.
-            continue;
-        }
-
-        // ------------------------------------------------------------------
-        // Load manifest identities (authoritative ownership record)
-        // ------------------------------------------------------------------
-
-        $manifest = $store->load();
-
-        // Desired identities keyed by id
-        // @var array<string,ManifestIdentity>
-        $desired = [];
-
-        foreach ($desiredEntries as $entry) {
-            if (!is_array($entry) || !isset($entry['_manifest']) || !is_array($entry['_manifest'])) {
-                continue;
-            }
-            // Debug: log manifest input before identity construction
-            error_log('[GCS DEBUG][Desired Manifest Input] ' . json_encode($entry['_manifest']));
-            $identity = ManifestIdentity::fromArray($entry['_manifest']);
-            $desired[$identity->id()] = $identity;
-        }
-
-        $toCreate = [];
-        $toUpdate = [];
-        $toDelete = [];
-        $toAdopt = [];
-        $toConflict = [];
-
-        // ---------------- GCS ADOPTION DEBUG ----------------
-        error_log('---------------- GCS ADOPTION DEBUG ----------------');
-
-        error_log('[GCS ADOPT] Existing identities:');
-        foreach ($existing as $identity) {
-            error_log(sprintf(
-                '[GCS ADOPT][EXISTING] id=%s hash=%s',
-                $identity->id(),
-                $identity->hash()
-            ));
-        }
-
-        error_log('[GCS ADOPT] Desired identities:');
-        foreach ($desired as $identity) {
-            error_log(sprintf(
-                '[GCS ADOPT][DESIRED] id=%s hash=%s',
-                $identity->id(),
-                $identity->hash()
-            ));
-        }
-
-        // Debug helper: compare identity hash inputs
-        $debugCompareIdentities = function (
-            ManifestIdentity $existing,
-            ManifestIdentity $desired
-        ): void {
-            $eArr = $existing->toDebugArray();
-            $dArr = $desired->toDebugArray();
-
-            $allKeys = array_unique(array_merge(array_keys($eArr), array_keys($dArr)));
-            foreach ($allKeys as $k) {
-                $ev = $eArr[$k] ?? null;
-                $dv = $dArr[$k] ?? null;
-                if ($ev !== $dv) {
-                    error_log(sprintf(
-                        '[GCS ADOPT][DIFF] field=%s existing=%s desired=%s',
-                        $k,
-                        json_encode($ev),
-                        json_encode($dv)
-                    ));
-                }
-            }
-        };
-        // Adoption detection (before create/update/delete logic)
-        // Build maps of hashes to identities
-        $existingByHash = [];
-        foreach ($existing as $id => $identity) {
-            $hash = $identity->hash();
-            if (!isset($existingByHash[$hash])) {
-                $existingByHash[$hash] = [];
-            }
-            $existingByHash[$hash][$id] = $identity;
-        }
-        $desiredByHash = [];
-        foreach ($desired as $id => $identity) {
-            $hash = $identity->hash();
-            if (!isset($desiredByHash[$hash])) {
-                $desiredByHash[$hash] = [];
-            }
-            $desiredByHash[$hash][$id] = $identity;
-        }
-        // For each hash, check for one-to-one adoption candidates
-        foreach ($desiredByHash as $hash => $desiredIdentities) {
-            if (!isset($existingByHash[$hash])) {
-                continue;
-            }
-            $existingIdentities = $existingByHash[$hash];
-            if (count($existingIdentities) === 1 && count($desiredIdentities) === 1) {
-                // Extra debug: confirm no hidden diffs
-                $debugCompareIdentities(
-                    array_values($existingIdentities)[0],
-                    array_values($desiredIdentities)[0]
-                );
-                // Adoption candidate: exactly one existing and one desired identity share this hash
-                $desiredId = array_key_first($desiredIdentities);
-                $existingId = array_key_first($existingIdentities);
-                $toAdopt[$desiredId] = $desiredIdentities[$desiredId];
-                // Remove from both $existing and $desired so not considered for create/update/delete
-                unset($existing[$existingId]);
-                unset($desired[$desiredId]);
-            } else {
-                // Conflict: hash appears more than once on either side
-                $toConflict[$hash] = true;
-            }
-        }
-
-        // Detect creates and updates
-        foreach ($desired as $id => $identity) {
-            if (!isset($existing[$id])) {
-                $toCreate[$id] = $identity;
-                continue;
-            }
-
-            if (!$identity->sameHashAs($existing[$id])) {
-                $toUpdate[$id] = $identity;
-            }
-        }
-
-        // Detect deletes
-        foreach ($existing as $id => $identity) {
-            if (!isset($desired[$id])) {
-                $toDelete[$id] = $identity;
-            }
-        }
-
-        return [
-            'toCreate'   => $toCreate,
-            'toUpdate'   => $toUpdate,
-            'toDelete'   => $toDelete,
-            'toAdopt'    => $toAdopt,
-            'toConflict' => $toConflict,
-        ];
-    }
 
     /* -------------------------------------------------------------------------
      * Intent → scheduler entry mapping
@@ -427,10 +259,10 @@ final class SchedulerSync
             return 'Missing target for intent (expected playlist/sequence name or command name)';
         }
 
-        // UID may live on outer intent even when template/range is used
-        $uid = self::coalesceString($intent, ['uid'], '');
+        // UID may live on the outer intent even when template/range is used
+        $uid = self::extractUid($intent);
         if ($uid === '') {
-            $uid = self::coalesceString($tpl, ['uid'], '');
+            $uid = self::extractUid($tpl);
         }
         if ($uid === '') {
             return 'Missing uid for intent (required for managed scheduler entries)';
@@ -549,21 +381,23 @@ final class SchedulerSync
         // Identity is assigned in SchedulerPlanner after full normalization.
 
         // DEBUG: log final scheduler entry shape before returning
-        error_log('[GCS DEBUG][SYNC ENTRY CREATED] ' . json_encode([
-            'type'       => $type,
-            'target'     => $target,
-            'uid'        => $uid,
-            'startDate'  => $entry['startDate'] ?? null,
-            'endDate'    => $entry['endDate'] ?? null,
-            'day'        => $entry['day'] ?? null,
-            'startTime'  => $entry['startTime'] ?? null,
-            'endTime'    => $entry['endTime'] ?? null,
-            'playlist'   => $entry['playlist'] ?? null,
-            'command'    => $entry['command'] ?? null,
-            'sequence'   => $entry['sequence'] ?? null,
-            'repeat'     => $entry['repeat'] ?? null,
-            'stopType'   => $entry['stopType'] ?? null,
-        ]));
+        if (self::isDebugEnabled()) {
+            error_log('[GCS DEBUG][SYNC ENTRY CREATED] ' . json_encode([
+                'type'       => $type,
+                'target'     => $target,
+                'uid'        => $uid,
+                'startDate'  => $entry['startDate'] ?? null,
+                'endDate'    => $entry['endDate'] ?? null,
+                'day'        => $entry['day'] ?? null,
+                'startTime'  => $entry['startTime'] ?? null,
+                'endTime'    => $entry['endTime'] ?? null,
+                'playlist'   => $entry['playlist'] ?? null,
+                'command'    => $entry['command'] ?? null,
+                'sequence'   => $entry['sequence'] ?? null,
+                'repeat'     => $entry['repeat'] ?? null,
+                'stopType'   => $entry['stopType'] ?? null,
+            ]));
+        }
         // Preserve manifest identity if present (opaque, planner-owned)
         if (isset($intent['_manifest']) && is_array($intent['_manifest'])) {
             $entry['_manifest'] = $intent['_manifest'];
@@ -696,75 +530,26 @@ final class SchedulerSync
         }
         return $default;
     }
-    /**
-     * Convert an existing FPP schedule.json entry into an intent-shaped array
-     * suitable for ManifestIdentity generation.
-     *
-     * Identity fields only. No payload, no args.
-     *
-     * @param array<string,mixed> $entry
-     * @return array<string,mixed>
-     */
-    private static function existingEntryToIntent(array $entry): array
+
+    private static function isDebugEnabled(): bool
     {
-        $sequenceFlag = isset($entry['sequence']) ? (int)$entry['sequence'] : 0;
-        $playlist = isset($entry['playlist']) ? (string)$entry['playlist'] : '';
-        $command  = isset($entry['command']) ? (string)$entry['command'] : '';
-
-        // Determine type + target
-        $type = '';
-        $target = '';
-        if ($command !== '') {
-            $type = FPPSemantics::TYPE_COMMAND;
-            $target = $command;
-        } elseif ($playlist !== '') {
-            $type = ($sequenceFlag === 1) ? FPPSemantics::TYPE_SEQUENCE : FPPSemantics::TYPE_PLAYLIST;
-            $target = $playlist;
+        // Prefer an explicit constant if defined.
+        if (defined('GCS_DEBUG')) {
+            return (bool) constant('GCS_DEBUG');
         }
 
-        if ($type === '' || $target === '') {
-            throw new RuntimeException('Unable to determine type/target from existing schedule entry');
+        // Allow enabling via environment variable for deployments where constants aren't set.
+        $env = getenv('GCS_DEBUG');
+        if ($env === false) {
+            return false;
         }
 
-        $startDate = isset($entry['startDate']) ? (string)$entry['startDate'] : '';
-        $endDate   = isset($entry['endDate']) ? (string)$entry['endDate'] : '';
-        $startTime = isset($entry['startTime']) ? (string)$entry['startTime'] : '';
-        $endTime   = isset($entry['endTime']) ? (string)$entry['endTime'] : '';
+        $v = strtolower(trim((string) $env));
+        return in_array($v, ['1', 'true', 'yes', 'on'], true);
+    }
 
-        if ($startDate === '' || $startTime === '' || $endTime === '') {
-            throw new RuntimeException('Missing startDate/startTime/endTime on existing schedule entry');
-        }
-        if ($endDate === '') {
-            $endDate = $startDate;
-        }
-
-        // Build template times in the same shape we use elsewhere
-        $templateStart = $startDate . ' ' . $startTime;
-        $templateEnd   = $startDate . ' ' . $endTime;
-
-        // For commands, the calendar-side duration is 1 minute; existing entries may show endTime==startTime.
-        // Identity for commands is based on start time only, so we keep the raw values.
-
-        // Range: if the entry spans multiple dates, include the date range.
-        $range = [];
-        if ($endDate !== '' && $endDate !== $startDate) {
-            $range['start'] = $startDate;
-            $range['end'] = $endDate;
-        }
-
-        // If `day` is present, preserve it for identity normalization where applicable.
-        if (isset($entry['day'])) {
-            $range['day'] = $entry['day'];
-        }
-
-        return [
-            'template' => [
-                'type' => $type,
-                'target' => $target,
-                'start' => $templateStart,
-                'end' => $templateEnd,
-            ],
-            'range' => $range,
-        ];
+    private static function extractUid(array $src): string
+    {
+        return (isset($src['uid']) && is_string($src['uid'])) ? $src['uid'] : '';
     }
 }

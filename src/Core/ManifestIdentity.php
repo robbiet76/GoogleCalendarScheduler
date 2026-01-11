@@ -185,11 +185,16 @@ final class ManifestIdentity
     {
         $normalized = $entry;
 
-        // Remove runtime / ownership artifacts
         unset(
-            $normalized['args'],
-            $normalized['multisyncCommand'],
-            $normalized['multisyncHosts']
+            $normalized['_manifest'],
+            $normalized['uid'],
+            $normalized['summary'],
+            $normalized['description'],
+            $normalized['range'],
+            $normalized['template'],
+            $normalized['resolved'],
+            $normalized['yaml'],
+            $normalized['gcs']
         );
 
         // Normalize dates
