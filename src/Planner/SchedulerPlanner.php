@@ -339,6 +339,16 @@ final class SchedulerPlanner
             // Build manifest identity ONCE at planning time (immutable thereafter)
             // ------------------------------------------------------------------
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
+            if ($debug) {
+                self::dbg($config, 'manifest_identity', [
+                    'uid'    => (string)($bundle['base']['uid'] ?? ''),
+                    'id'     => $manifest->id(),
+                    'hash'   => $manifest->hash(),
+                    'range'  => $bundle['base']['range'] ?? null,
+                    'type'   => $bundle['base']['template']['type'] ?? null,
+                    'target' => $bundle['base']['template']['target'] ?? null,
+                ]);
+            }
 
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
             if (!$entry || !is_array($entry)) {
