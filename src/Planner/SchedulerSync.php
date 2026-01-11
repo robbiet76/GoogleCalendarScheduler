@@ -576,6 +576,22 @@ final class SchedulerSync
         // Manifest identity is NOT generated here.
         // Identity is assigned in SchedulerPlanner after full normalization.
 
+        // DEBUG: log final scheduler entry shape before returning
+        error_log('[GCS DEBUG][SYNC ENTRY CREATED] ' . json_encode([
+            'type'       => $type,
+            'target'     => $target,
+            'uid'        => $uid,
+            'startDate'  => $entry['startDate'] ?? null,
+            'endDate'    => $entry['endDate'] ?? null,
+            'day'        => $entry['day'] ?? null,
+            'startTime'  => $entry['startTime'] ?? null,
+            'endTime'    => $entry['endTime'] ?? null,
+            'playlist'   => $entry['playlist'] ?? null,
+            'command'    => $entry['command'] ?? null,
+            'sequence'   => $entry['sequence'] ?? null,
+            'repeat'     => $entry['repeat'] ?? null,
+            'stopType'   => $entry['stopType'] ?? null,
+        ]));
         return $entry;
     }
 
