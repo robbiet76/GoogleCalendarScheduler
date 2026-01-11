@@ -241,6 +241,27 @@ final class SchedulerSync
         $toAdopt = [];
         $toConflict = [];
 
+        // ---------------- GCS ADOPTION DEBUG ----------------
+        error_log('---------------- GCS ADOPTION DEBUG ----------------');
+
+        error_log('[GCS ADOPT] Existing identities:');
+        foreach ($existing as $identity) {
+            error_log(sprintf(
+                '[GCS ADOPT][EXISTING] id=%s hash=%s',
+                $identity->id(),
+                $identity->hash()
+            ));
+        }
+
+        error_log('[GCS ADOPT] Desired identities:');
+        foreach ($desired as $identity) {
+            error_log(sprintf(
+                '[GCS ADOPT][DESIRED] id=%s hash=%s',
+                $identity->id(),
+                $identity->hash()
+            ));
+        }
+
         // Adoption detection (before create/update/delete logic)
         // Build maps of hashes to identities
         $existingByHash = [];
