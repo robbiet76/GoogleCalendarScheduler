@@ -4,25 +4,34 @@ declare(strict_types=1);
 /**
  * SchedulerComparator
  *
- * Determines whether an existing scheduler entry is semantically
- * equivalent to a desired entry produced by the planner.
+ * Determines whether an existing scheduler entry and a desired
+ * scheduler entry are semantically equivalent.
  *
- * PURPOSE:
- * - Decide UPDATE vs NO-OP once identity has already been matched
- *
- * IMPORTANT ASSUMPTIONS (Phase 17+):
- * - Identity matching is already complete before comparison
- * - Identity is defined by the FULL GCS v1 tag (handled elsewhere)
- * - This class MUST NOT attempt to infer ownership or identity
- * - Semantic equivalence is defined strictly by an explicit canonical field list
+ * ARCHITECTURE (Manifest-based):
+ * - Identity matching is completed BEFORE this comparator is invoked
+ * - Both inputs are raw scheduler-entry arrays
+ * - This class decides UPDATE vs NO-OP only
  *
  * NON-GOALS:
- * - No scheduler writes
- * - No mutation of inputs
- * - No normalization beyond simple structural comparison
+ * - No ownership inference
+ * - No identity checks
+ * - No normalization
+ * - No mutation
+ * - No scheduler I/O
  */
 final class SchedulerComparator
 {
+    /**
+     * Canonical semantic fields.
+     *
+     * These fields fully define the functional behavior of a scheduler entry.
+     * If ANY of these differ, the entry must be updated.
+     *
+     * IMPORTANT:
+     * - Payload is compared as a whole (opaque)
+     * - No derived fields
+     * - Order does not matter
+     */
     private const CANONICAL_FIELDS = [
         'type',
         'target',
@@ -36,31 +45,25 @@ final class SchedulerComparator
         'repeat',
         'stopType',
         'command',
+        'payload',
     ];
 
     /**
-     * Determine whether an existing scheduler entry and a desired entry
-     * are functionally equivalent.
+     * Determine whether two scheduler entries are functionally equivalent.
      *
-     * If this returns true, the planner will treat the entry as a NO-OP.
-     * If false, the entry will be scheduled for UPDATE.
+     * @param array<string,mixed> $existing Existing scheduler entry (from FPP)
+     * @param array<string,mixed> $desired  Desired scheduler entry (from planner)
      *
-     * @param ExistingScheduleEntry $existing Existing scheduler entry
-     * @param array<string,mixed>      $desired  Desired scheduler entry
      * @return bool True if equivalent; false if update required
      */
-    public static function isEquivalent(
-        ExistingScheduleEntry $existing,
-        array $desired
-    ): bool {
-        $a = $existing->raw();
-        $b = $desired;
-
+    public static function isEquivalent(array $existing, array $desired): bool
+    {
         foreach (self::CANONICAL_FIELDS as $field) {
-            if (($a[$field] ?? null) !== ($b[$field] ?? null)) {
+            if (($existing[$field] ?? null) !== ($desired[$field] ?? null)) {
                 return false;
             }
         }
+
         return true;
     }
 }
