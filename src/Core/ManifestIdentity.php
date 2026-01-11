@@ -127,7 +127,17 @@ final class ManifestIdentity
     public static function buildHash(array $entry): string
     {
         $normalized = self::normalize($entry);
-        return hash('sha256', json_encode($normalized, JSON_UNESCAPED_SLASHES));
+
+        // DEBUG: log normalized identity input before hashing
+        error_log(
+            '[GCS DEBUG][IDENTITY HASH INPUT] ' .
+            json_encode($normalized, JSON_UNESCAPED_SLASHES)
+        );
+
+        return hash(
+            'sha256',
+            json_encode($normalized, JSON_UNESCAPED_SLASHES)
+        );
     }
 
     /**
