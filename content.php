@@ -147,6 +147,24 @@ if ($endpoint !== '') {
         }
 
         // --------------------------------------------------------------
+        // Adopt existing scheduler entries (preview only — NO WRITES)
+        // --------------------------------------------------------------
+        if ($endpoint === 'adopt_preview') {
+            gcsJsonHeader();
+
+            $plan = SchedulerPlanner::plan($cfg);
+
+            $manifest = ManifestResult::fromPlannerResult($plan);
+            $preview  = PreviewFormatter::format($manifest);
+
+            echo json_encode([
+                'ok'      => true,
+                'preview' => $preview,
+            ]);
+            exit;
+        }
+
+        // --------------------------------------------------------------
         // Apply (WRITE path): blocked if dry-run is enabled
         // --------------------------------------------------------------
         if ($endpoint=== 'apply') {
@@ -465,6 +483,16 @@ $canSave    = ($isEmpty || $isIcsValid);
         </button>
     </div>
 
+    <div style="margin-top:12px;">
+        <button
+            type="button"
+            class="buttons"
+            id="gcs-preview-adopt-btn"
+        >
+            Preview Adoption
+        </button>
+    </div>
+
 </div>
 
 <style>
@@ -715,6 +743,7 @@ var unmanagedSection = document.getElementById('gcs-unmanaged-section');
 var unmanagedStatus  = document.getElementById('gcs-unmanaged-status');
 var unmanagedText    = unmanagedStatus.querySelector('.gcs-status-text');
 var exportBtn        = document.getElementById('gcs-export-unmanaged-btn');
+var previewAdoptBtn  = document.getElementById('gcs-preview-adopt-btn');
 
 fetch(ENDPOINT + '&endpoint=scheduler_inventory')
     .then(r => r.json())
@@ -857,6 +886,36 @@ if (exportBtn) {
                 'Export ready. Your unmanaged schedules have been downloaded.'
             );
         }, 800);
+    });
+}
+
+if (previewAdoptBtn) {
+    previewAdoptBtn.addEventListener('click', function () {
+
+        gcsSetStatus(
+            'info',
+            'Previewing adoption of existing scheduler entries…'
+        );
+
+        fetch(ENDPOINT + '&endpoint=adopt_preview')
+            .then(r => r.json())
+            .then(d => {
+                if (!d || !d.ok) {
+                    gcsSetStatus('error', 'Failed to generate adoption preview.');
+                    return;
+                }
+
+                diffSummary.classList.remove('gcs-hidden');
+                diffSummary.innerHTML =
+                    (d.preview && d.preview.html)
+                        ? d.preview.html
+                        : '<em>No adoptable entries found.</em>';
+
+                previewActions.classList.add('gcs-hidden');
+            })
+            .catch(() => {
+                gcsSetStatus('error', 'Error communicating with scheduler.');
+            });
     });
 }
 
