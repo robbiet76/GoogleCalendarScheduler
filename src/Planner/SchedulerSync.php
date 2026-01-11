@@ -563,6 +563,10 @@ final class SchedulerSync
             'repeat'     => $entry['repeat'] ?? null,
             'stopType'   => $entry['stopType'] ?? null,
         ]));
+        // Preserve manifest identity if present (opaque, planner-owned)
+        if (isset($intent['_manifest']) && is_array($intent['_manifest'])) {
+            $entry['_manifest'] = $intent['_manifest'];
+        }
         return $entry;
     }
 
