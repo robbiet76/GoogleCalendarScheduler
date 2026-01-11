@@ -339,14 +339,17 @@ final class SchedulerPlanner
             // Build manifest identity ONCE at planning time (immutable thereafter)
             // ------------------------------------------------------------------
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
-            $bundle['base']['_manifest'] = [
-                'id'   => $manifest->id(),
-                'hash' => $manifest->hash(),
-            ];
+
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
             if (!$entry || !is_array($entry)) {
                 continue;
             }
+
+            // Attach manifest AFTER entry materialization so it is preserved
+            $entry['_manifest'] = [
+                'id'   => $manifest->id(),
+                'hash' => $manifest->hash(),
+            ];
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
             if ($guarded !== null) {
