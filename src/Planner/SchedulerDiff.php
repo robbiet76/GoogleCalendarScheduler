@@ -39,12 +39,38 @@ final class SchedulerDiff
             error_log('[GCS DEBUG][DIFF] compute() start: desired=' . count($this->desired));
         }
 
+        $isNormalizedScheduleEntry = static function (array $e): bool {
+            // Must look like a schedule entry, not a manifest/preview wrapper.
+            // Required: date range info and time info.
+            if (isset($e['range']) && is_array($e['range'])) {
+                $range = $e['range'];
+                $hasDates = (isset($range['start']) && isset($range['end']) && (isset($range['days']) || isset($range['day'])));
+            } else {
+                $hasDates = (isset($e['startDate']) && isset($e['endDate']) && (isset($e['days']) || isset($e['day'])));
+            }
+            $hasTimes = (isset($e['startTime']) && isset($e['endTime']));
+            // Must have some target/type indicator typical of entries.
+            $hasTarget = (isset($e['playlist']) || isset($e['sequence']) || isset($e['command']) || isset($e['target']) || isset($e['type']));
+            return $hasDates && $hasTimes && $hasTarget;
+        };
+
         // Index existing managed scheduler entries by manifest id.
         $existingManagedById = [];
         $existingUnmanaged = [];
         foreach ($this->state->getEntries() as $idx => $entry) {
             if (!is_array($entry)) {
                 continue;
+            }
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][DIFF][EXISTING SHAPE] ' . json_encode([
+                    'index' => $idx,
+                    'keys'  => array_keys($entry),
+                    'has_manifest' => isset($entry['_manifest']),
+                    'has_range' => isset($entry['range']),
+                    'has_startDate' => isset($entry['startDate']),
+                    'has_endDate' => isset($entry['endDate']),
+                    'has_days' => (isset($entry['days']) || isset($entry['day'])),
+                ]));
             }
             $id = self::extractManifestIdFromExisting($entry);
             if ($id === null) {
@@ -157,6 +183,22 @@ final class SchedulerDiff
                             'existing_keys' => array_keys($existing),
                             'desired_keys' => array_keys($desiredEntry),
                         ]));
+                    }
+
+                    $existingOk = $isNormalizedScheduleEntry($existing);
+                    $desiredOk  = $isNormalizedScheduleEntry($desiredEntry);
+
+                    if (!$existingOk || !$desiredOk) {
+                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                            error_log('[GCS DEBUG][DIFF][SEMANTIC SKIP NON_NORMALIZED] ' . json_encode([
+                                'existing_index' => $key,
+                                'existing_ok' => $existingOk,
+                                'desired_ok' => $desiredOk,
+                                'existing_keys' => array_keys($existing),
+                                'desired_keys' => array_keys($desiredEntry),
+                            ]));
+                        }
+                        continue;
                     }
 
                     // Semantic equivalence check (UID intentionally ignored)
