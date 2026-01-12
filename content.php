@@ -145,16 +145,33 @@ if ($endpoint !== '') {
         if ($endpoint === 'adopt_preview') {
             gcsJsonHeader();
 
-            $plan = SchedulerPlanner::plan($cfg);
+            try {
+                error_log('[GCS DEBUG][ADOPT_PREVIEW] start');
 
-            $manifest = ManifestResult::fromPlannerResult($plan);
-            $preview  = PreviewFormatter::format($manifest);
+                $plan = SchedulerPlanner::plan($cfg);
+                error_log('[GCS DEBUG][ADOPT_PREVIEW] planner completed');
 
-            echo json_encode([
-                'ok'      => true,
-                'preview' => $preview,
-            ]);
-            exit;
+                $manifest = ManifestResult::fromPlannerResult($plan);
+                error_log('[GCS DEBUG][ADOPT_PREVIEW] manifest built');
+
+                $preview  = PreviewFormatter::format($manifest);
+                error_log('[GCS DEBUG][ADOPT_PREVIEW] preview formatted');
+
+                echo json_encode([
+                    'ok'      => true,
+                    'preview' => $preview,
+                ]);
+                exit;
+            } catch (\Throwable $e) {
+                error_log('[GCS ERROR][ADOPT_PREVIEW] ' . $e->getMessage());
+                error_log($e->getTraceAsString());
+
+                echo json_encode([
+                    'ok'    => false,
+                    'error' => $e->getMessage(),
+                ]);
+                exit;
+            }
         }
 
         // --------------------------------------------------------------
