@@ -272,9 +272,7 @@ final class SchedulerSync
         if ($uid === '') {
             $uid = self::extractUid($tpl);
         }
-        if ($uid === '') {
-            return 'Missing uid for intent (required for managed scheduler entries)';
-        }
+        // UID is optional here; legacy FPP entries do not have one yet.
 
         $startRaw = self::coalesceString($tpl, ['start'], '');
         $endRaw   = self::coalesceString($tpl, ['end'], '');
@@ -360,7 +358,9 @@ final class SchedulerSync
             'playlist'         => '',
             'command'          => '',
         ];
-        $entry['uid'] = $uid;
+        if ($uid !== '') {
+            $entry['uid'] = $uid;
+        }
 
         if ($type === FPPSemantics::TYPE_PLAYLIST) {
             $entry['playlist']  = $target;

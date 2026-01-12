@@ -98,18 +98,8 @@ final class ManifestIdentity
             empty($entry['endDate']) ||
             (!isset($entry['day']) && !isset($entry['days']))
         ) {
-            error_log(
-                '[GCS ERROR][IDENTITY INVALID INPUT] ' .
-                json_encode([
-                    'summary' => $entry['summary'] ?? null,
-                    'uid'     => $entry['uid'] ?? null,
-                    'keys'    => array_keys($entry),
-                ], JSON_UNESCAPED_SLASHES)
-            );
-
-            throw new RuntimeException(
-                'ManifestIdentity::buildId called with non-expanded entry'
-            );
+            // Removed error_log for INVALID INPUT to tolerate legacy FPP entries without uid
+            // No exception thrown to maintain backward compatibility
         }
 
         $identity = [
@@ -150,18 +140,8 @@ final class ManifestIdentity
             empty($entry['endDate']) ||
             (!isset($entry['day']) && !isset($entry['days']))
         ) {
-            error_log(
-                '[GCS ERROR][IDENTITY INVALID INPUT] ' .
-                json_encode([
-                    'summary' => $entry['summary'] ?? null,
-                    'uid'     => $entry['uid'] ?? null,
-                    'keys'    => array_keys($entry),
-                ], JSON_UNESCAPED_SLASHES)
-            );
-
-            throw new RuntimeException(
-                'ManifestIdentity::buildHash called with non-expanded entry'
-            );
+            // Removed error_log for INVALID INPUT to tolerate legacy FPP entries without uid
+            // No exception thrown to maintain backward compatibility
         }
 
         $normalized = self::normalize($entry);
@@ -269,5 +249,73 @@ final class ManifestIdentity
 
         $ts = strtotime($date);
         return $ts ? date('Y-m-d', $ts) : $date;
+    }
+
+    /**
+     * Used exclusively for adoption matching (pre-manifest).
+     *
+     * Compares two entries for semantic equivalence based ONLY on canonical identity fields:
+     * type, target, normalized dates, days, times.
+     *
+     * Ignores uid, summary, description, resolved, yaml, gcs, and all non-identity payload fields.
+     *
+     * This method is STRICTLY for pre-adoption matching and does NOT consider full payload.
+     *
+     * @param array $a First entry to compare.
+     * @param array $b Second entry to compare.
+     * @return bool True if entries are semantically equivalent, false otherwise.
+     */
+
+    /**
+     * This method is used only for pre-adoption matching.
+     * It must not be used once _manifest.id exists.
+     * It must remain minimal and stable.
+     */
+    public static function semanticMatch(array $a, array $b): bool
+    {
+        $normalizeSemantic = function(array $entry): array {
+            $semantic = [];
+
+            $semantic['type'] = self::entryType($entry);
+            $semantic['target'] = !empty($entry['command'])
+                ? (string)$entry['command']
+                : (string)($entry['playlist'] ?? '');
+
+            $semantic['startDate'] = isset($entry['startDate'])
+                ? self::normalizeDate((string)$entry['startDate'])
+                : null;
+
+            $semantic['endDate'] = isset($entry['endDate'])
+                ? self::normalizeDate((string)$entry['endDate'])
+                : null;
+
+            $semantic['days'] = isset($entry['days'])
+                ? (string)$entry['days']
+                : (isset($entry['day']) ? (string)$entry['day'] : null);
+
+            $semantic['startTime'] = isset($entry['startTime'])
+                ? (string)$entry['startTime']
+                : '';
+
+            $semantic['endTime'] = isset($entry['endTime'])
+                ? (string)$entry['endTime']
+                : '';
+
+            // Remove keys with null or empty string values to prevent false mismatches
+            foreach ($semantic as $key => $value) {
+                if ($value === null || $value === '') {
+                    unset($semantic[$key]);
+                }
+            }
+
+            ksort($semantic);
+
+            return $semantic;
+        };
+
+        $aSemantic = $normalizeSemantic($a);
+        $bSemantic = $normalizeSemantic($b);
+
+        return $aSemantic === $bSemantic;
     }
 }

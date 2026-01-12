@@ -8,9 +8,10 @@ declare(strict_types=1);
  * existing scheduler state.
  *
  * Identity model:
- * - Desired entries MUST include a planner-attached `_manifest` array with a non-empty `id` string.
+ * - Desired entries MAY include a planner-attached `_manifest` array with a non-empty `id` string.
  * - Existing entries are considered plugin-managed ONLY if they include `_manifest.id`.
- * - Unmanaged existing entries (typical FPP schedules) are still read by SchedulerState but are ignored by the diff.
+ * - Existing entries without `_manifest.id` are eligible for adoption via semantic matching.
+ * - Semantic matching is used only when `_manifest.id` is absent.
  *
  * Notes:
  * - This file intentionally does NOT introduce new dependencies (no new methods
@@ -35,23 +36,27 @@ final class SchedulerDiff
     public function compute(): SchedulerDiffResult
     {
         // Index existing managed scheduler entries by manifest id.
-        $existingById = [];
-        foreach ($this->state->getEntries() as $entry) {
+        $existingManagedById = [];
+        $existingUnmanaged = [];
+        foreach ($this->state->getEntries() as $idx => $entry) {
             if (!is_array($entry)) {
                 continue;
             }
             $id = self::extractManifestIdFromExisting($entry);
             if ($id === null) {
-                continue;
-            }
-            if (!isset($existingById[$id])) {
-                $existingById[$id] = $entry;
+                // Preserve original index so consumption tracking is stable.
+                $existingUnmanaged[$idx] = $entry;
+            } else {
+                if (!isset($existingManagedById[$id])) {
+                    $existingManagedById[$id] = $entry;
+                }
             }
         }
 
         $toCreate = [];
         $toUpdate = [];
         $seenIds  = [];
+        $consumedUnmanaged = [];
 
         // Process desired scheduler entries.
         foreach ($this->desired as $desiredEntry) {
@@ -59,36 +64,74 @@ final class SchedulerDiff
                 continue;
             }
 
+            // If a manifest bundle is present, it must contain a valid non-empty id.
+            if (isset($desiredEntry['_manifest']) && is_array($desiredEntry['_manifest'])) {
+                if (self::extractManifestIdFromDesired($desiredEntry) === null) {
+                    // Planner emitted a malformed manifest; do not treat this as an adoption candidate.
+                    continue;
+                }
+            }
+
             $id = self::extractManifestIdFromDesired($desiredEntry);
-            if ($id === null) {
-                // Desired entries without manifest identity are ignored.
-                continue;
-            }
 
-            // Planner should not emit duplicates; if it does, keep first to avoid hard failure.
-            if (isset($seenIds[$id])) {
-                continue;
-            }
-            $seenIds[$id] = true;
+            if ($id !== null) {
+                // Planner should not emit duplicates; if it does, keep first to avoid hard failure.
+                if (isset($seenIds[$id])) {
+                    continue;
+                }
+                $seenIds[$id] = true;
 
-            if (!isset($existingById[$id])) {
-                $toCreate[] = $desiredEntry;
-                continue;
-            }
+                if (!isset($existingManagedById[$id])) {
+                    $toCreate[] = $desiredEntry;
+                    continue;
+                }
 
-            $existing = $existingById[$id];
+                $existing = $existingManagedById[$id];
 
-            if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
-                $toUpdate[] = [
-                    'existing' => $existing,
-                    'desired'  => $desiredEntry,
-                ];
+                // Managed entries are compared strictly by canonical fields;
+                // semantic matching MUST NOT be used once a manifest id exists.
+                if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
+                    $toUpdate[] = [
+                        'existing' => $existing,
+                        'desired'  => $desiredEntry,
+                    ];
+                }
+            } else {
+                // Desired entry with no manifest bundle at all → adoption candidate.
+                if (isset($desiredEntry['_manifest'])) {
+                    // If _manifest exists here, it is missing/empty id (guarded above) or malformed; skip.
+                    continue;
+                }
+
+                $matched = false;
+
+                foreach ($existingUnmanaged as $key => $existing) {
+                    if (isset($consumedUnmanaged[$key])) {
+                        continue;
+                    }
+
+                    // Semantic equivalence check (UID intentionally ignored)
+                    if (ManifestIdentity::semanticMatch($existing, $desiredEntry)) {
+                        $toUpdate[] = [
+                            'existing' => $existing,
+                            'desired'  => $desiredEntry,
+                        ];
+                        $consumedUnmanaged[$key] = true;
+                        $matched = true;
+                        break;
+                    }
+                }
+
+                if (!$matched) {
+                    // No semantic match → new schedule entry
+                    $toCreate[] = $desiredEntry;
+                }
             }
         }
 
         // Any existing managed entry not present in desired must be deleted.
         $toDelete = [];
-        foreach ($existingById as $id => $entry) {
+        foreach ($existingManagedById as $id => $entry) {
             if (!isset($seenIds[$id])) {
                 $toDelete[] = $entry;
             }
