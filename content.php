@@ -152,6 +152,10 @@ if ($endpoint !== '') {
             try {
                 error_log('[GCS DEBUG][ADOPT_PREVIEW] start');
 
+                // Enable adopt_preview mode for the planner
+                $cfg['mode'] = 'adopt_preview';
+                $cfg['runtime']['adopt_preview'] = true;
+
                 $plan = SchedulerPlanner::plan($cfg);
                 error_log('[GCS DEBUG][ADOPT_PREVIEW] planner completed');
 
