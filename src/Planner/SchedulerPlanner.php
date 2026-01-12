@@ -371,8 +371,20 @@ final class SchedulerPlanner
 
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
 
+            $isPreview = (($config['mode'] ?? '') === 'adopt_preview');
+
             // ManifestIdentity now returns ARRAY ONLY
             if (!is_array($manifest) || empty($manifest['id']) || empty($manifest['hash'])) {
+                if ($isPreview) {
+                    if ($debug) {
+                        self::dbg($config, 'manifest_identity_skipped_preview', [
+                            'uid'     => (string)($bundle['base']['uid'] ?? ''),
+                            'summary' => (string)($bundle['base']['template']['summary'] ?? ''),
+                        ]);
+                    }
+                    // Skip manifest attachment during preview
+                    continue;
+                }
                 throw new \RuntimeException('Invariant violation: invalid manifest identity');
             }
 
