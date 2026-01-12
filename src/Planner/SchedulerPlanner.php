@@ -373,6 +373,24 @@ final class SchedulerPlanner
             // Overrides would be emitted here (above base) when enabled.
 
             // ------------------------------------------------------------------
+            // Canonical identity normalization (single source of truth)
+            // ManifestIdentity requires startDate, endDate, and days.
+            // These are derived mechanically from range exactly once here.
+            // ------------------------------------------------------------------
+            if (isset($bundle['base']['range']) && is_array($bundle['base']['range'])) {
+                $r = $bundle['base']['range'];
+
+                if (!isset($bundle['base']['startDate']) && isset($r['start'])) {
+                    $bundle['base']['startDate'] = (string)$r['start'];
+                }
+                if (!isset($bundle['base']['endDate']) && isset($r['end'])) {
+                    $bundle['base']['endDate'] = (string)$r['end'];
+                }
+                if (!isset($bundle['base']['days']) && isset($r['days'])) {
+                    $bundle['base']['days'] = (string)$r['days'];
+                }
+            }
+            // ------------------------------------------------------------------
             // Build manifest identity ONCE at planning time (immutable thereafter)
             // ------------------------------------------------------------------
             // CONTRACT:
