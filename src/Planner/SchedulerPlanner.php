@@ -51,6 +51,15 @@ final class SchedulerPlanner
         // Adopt preview detection MUST be mechanical and controller-driven.
         // We do NOT infer from calendar content or entry "roles".
         $isPreview = self::isAdoptPreview($config);
+        if ($debug) {
+            self::dbg($config, 'adopt_preview_mode', [
+                'isPreview'       => $isPreview,
+                'mode'            => $config['mode'] ?? null,
+                'action'          => $config['action'] ?? null,
+                'runtime_mode'    => $config['runtime']['mode'] ?? null,
+                'runtime_preview' => $config['runtime']['adopt_preview'] ?? null,
+            ]);
+        }
 
         if ($debug) {
             self::dbgReset();
