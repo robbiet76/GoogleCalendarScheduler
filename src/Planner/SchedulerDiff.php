@@ -125,10 +125,18 @@ final class SchedulerDiff
                 continue;
             }
 
-            // If a manifest bundle is present, it must contain a valid non-empty id.
+            // If a manifest bundle is present, it may contain either an adopted `id` (managed) OR a planner `uid` (adoption candidate).
             if (isset($desiredEntry['_manifest']) && is_array($desiredEntry['_manifest'])) {
-                if (self::extractManifestIdFromDesired($desiredEntry) === null) {
-                    // Planner emitted a malformed manifest; do not treat this as an adoption candidate.
+                $manifestId  = self::extractManifestIdFromDesired($desiredEntry);
+                $manifestUid = $desiredEntry['_manifest']['uid'] ?? null;
+
+                // Drop only if BOTH id and uid are missing/invalid.
+                if ($manifestId === null && (!is_string($manifestUid) || trim($manifestUid) === '')) {
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][DROP DESIRED][NO_ID_NO_UID] ' . json_encode([
+                            'manifest' => $desiredEntry['_manifest'],
+                        ]));
+                    }
                     continue;
                 }
             }
@@ -336,6 +344,14 @@ final class SchedulerDiff
                 $toDelete[] = $entry;
             }
         }
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][DIFF][SUMMARY] ' . json_encode([
+                'desired' => count($this->desired),
+                'creates' => count($toCreate),
+                'updates' => count($toUpdate),
+                'deletes' => count($toDelete),
+            ]));
+        }
 
         return new SchedulerDiffResult($toCreate, $toUpdate, $toDelete);
     }
@@ -406,8 +422,12 @@ final class SchedulerDiff
             if (!isset($entry['endDate']) && isset($range['end']) && is_string($range['end'])) {
                 $entry['endDate'] = $range['end'];
             }
-            if (!isset($entry['days']) && !isset($entry['day']) && isset($range['days']) && is_string($range['days'])) {
-                $entry['days'] = $range['days'];
+            if (!isset($entry['days']) && !isset($entry['day'])) {
+                if (isset($range['days']) && is_string($range['days'])) {
+                    $entry['days'] = $range['days'];
+                } elseif (isset($range['day']) && is_string($range['day'])) {
+                    $entry['day'] = $range['day'];
+                }
             }
         }
 
