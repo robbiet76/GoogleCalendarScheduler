@@ -126,6 +126,26 @@ final class ManifestIdentity
      */
     public static function buildId(array $entry): string
     {
+        // DEBUG: validate required identity fields
+        $missing = [];
+        foreach (['startDate', 'endDate'] as $k) {
+            if (empty($entry[$k])) {
+                $missing[] = $k;
+            }
+        }
+        if (!isset($entry['day']) && !isset($entry['days'])) {
+            $missing[] = 'day/days';
+        }
+
+        if (!empty($missing)) {
+            error_log('[GCS DEBUG][IDENTITY INVALID INPUT] ' . json_encode([
+                'summary' => $entry['summary'] ?? null,
+                'uid' => $entry['uid'] ?? null,
+                'missing' => $missing,
+                'keys' => array_keys($entry),
+            ], JSON_UNESCAPED_SLASHES));
+        }
+
         if (
             empty($entry['startDate']) ||
             empty($entry['endDate']) ||
@@ -179,6 +199,11 @@ final class ManifestIdentity
             empty($entry['playlist']) &&
             empty($entry['command'])
         ) {
+            error_log('[GCS DEBUG][IDENTITY HASH SKIPPED] ' . json_encode([
+                'summary' => $entry['summary'] ?? null,
+                'uid' => $entry['uid'] ?? null,
+                'keys' => array_keys($entry),
+            ], JSON_UNESCAPED_SLASHES));
             return '';
         }
 
@@ -363,8 +388,8 @@ final class ManifestIdentity
 
         if (defined('GCS_DEBUG') && GCS_DEBUG) {
             error_log('[GCS DEBUG][SEMANTIC MATCH ATTEMPT] ' . json_encode([
-                'a_uid' => $a['_uid'] ?? null,
-                'b_uid' => $b['_uid'] ?? null,
+                'a_uid' => $a['uid'] ?? null,
+                'b_uid' => $b['uid'] ?? null,
                 'a' => $aSemantic,
                 'b' => $bSemantic,
             ], JSON_UNESCAPED_SLASHES));
@@ -373,8 +398,8 @@ final class ManifestIdentity
         if ($aSemantic === $bSemantic) {
             if (defined('GCS_DEBUG') && GCS_DEBUG) {
                 error_log('[GCS DEBUG][SEMANTIC MATCH SUCCESS] ' . json_encode([
-                    'a_uid' => $a['_uid'] ?? null,
-                    'b_uid' => $b['_uid'] ?? null,
+                    'a_uid' => $a['uid'] ?? null,
+                    'b_uid' => $b['uid'] ?? null,
                 ], JSON_UNESCAPED_SLASHES));
             }
             return true;
@@ -389,8 +414,8 @@ final class ManifestIdentity
                         'field' => $field,
                         'a' => $av,
                         'b' => $bv,
-                        'a_uid' => $a['_uid'] ?? null,
-                        'b_uid' => $b['_uid'] ?? null,
+                        'a_uid' => $a['uid'] ?? null,
+                        'b_uid' => $b['uid'] ?? null,
                     ], JSON_UNESCAPED_SLASHES));
                     break;
                 }
