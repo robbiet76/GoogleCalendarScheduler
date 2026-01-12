@@ -35,6 +35,10 @@ final class SchedulerDiff
 
     public function compute(): SchedulerDiffResult
     {
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][DIFF] compute() start: desired=' . count($this->desired));
+        }
+
         // Index existing managed scheduler entries by manifest id.
         $existingManagedById = [];
         $existingUnmanaged = [];
@@ -62,6 +66,10 @@ final class SchedulerDiff
         foreach ($this->desired as $desiredEntry) {
             if (!is_array($desiredEntry)) {
                 continue;
+            }
+
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][DIFF][DESIRED SHAPE] ' . json_encode(array_keys($desiredEntry)));
             }
 
             if (defined('GCS_DEBUG') && GCS_DEBUG) {
@@ -98,6 +106,14 @@ final class SchedulerDiff
 
                 $existing = $existingManagedById[$id];
 
+                if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                    error_log('[GCS DEBUG][DIFF][COMPARE MANAGED] ' . json_encode([
+                        'id' => $id,
+                        'existing_keys' => array_keys($existing),
+                        'desired_keys' => array_keys($desiredEntry),
+                    ]));
+                }
+
                 // Managed entries are compared strictly by canonical fields;
                 // semantic matching MUST NOT be used once a manifest id exists.
                 if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
@@ -133,6 +149,13 @@ final class SchedulerDiff
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][DIFF][CHECK][ADOPT] ' . json_encode([
                             'existing_index' => $key,
+                        ]));
+                    }
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][SEMANTIC INPUT] ' . json_encode([
+                            'existing_keys' => array_keys($existing),
+                            'desired_keys' => array_keys($desiredEntry),
                         ]));
                     }
 

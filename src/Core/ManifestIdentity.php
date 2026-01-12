@@ -17,24 +17,27 @@ final class ManifestIdentity
     /** @var array<string,string> */
     private static array $identityCache = [];
 
-    private array $ids = [];
-    private array $hashes = [];
-
     /**
      * Build a ManifestIdentity from a single intent.
      *
      * This is a thin adapter used by SchedulerSync so it does not
      * need to know about bulk/series identity construction.
+     *
+     * @param array $intent
+     * @return array{id: string[], hashes: string[]}
      */
-    public static function fromIntent(array $intent): self
+    public static function fromIntent(array $intent): array
     {
         return self::fromSeries([$intent]);
     }
 
     /**
      * Build a ManifestIdentity from a series of intents.
+     *
+     * @param array[] $series
+     * @return array{id: string[], hashes: string[]}
      */
-    public static function fromSeries(array $series): self
+    public static function fromSeries(array $series): array
     {
         $ids = [];
         $hashes = [];
@@ -44,34 +47,58 @@ final class ManifestIdentity
             $hashes[] = self::buildHash($entry);
         }
 
-        $instance = new self();
-        $instance->ids = $ids;
-        $instance->hashes = $hashes;
-
-        return $instance;
+        return [
+            'ids' => $ids,
+            'hashes' => $hashes,
+        ];
     }
 
-    public static function fromArray(array $data): self
+    /**
+     * Build a ManifestIdentity from array data.
+     *
+     * @param array $data
+     * @return array{id: string[], hashes: string[]}
+     */
+    public static function fromArray(array $data): array
     {
-        $instance = new self();
-        $instance->ids = $data['ids'] ?? [];
-        $instance->hashes = $data['hashes'] ?? [];
-        return $instance;
+        return [
+            'ids' => $data['ids'] ?? [],
+            'hashes' => $data['hashes'] ?? [],
+        ];
     }
 
-    public function id(): string
+    /**
+     * Return the primary ID from a manifest array.
+     *
+     * @param array{id: string[], hashes: string[]} $manifest
+     * @return string
+     */
+    public static function primaryId(array $manifest): string
     {
-        return $this->ids[0] ?? '';
+        return $manifest['ids'][0] ?? '';
     }
 
-    public function hash(): string
+    /**
+     * Return the primary hash from a manifest array.
+     *
+     * @param array{id: string[], hashes: string[]} $manifest
+     * @return string
+     */
+    public static function primaryHash(array $manifest): string
     {
-        return $this->hashes[0] ?? '';
+        return $manifest['hashes'][0] ?? '';
     }
 
-    public function sameHashAs(self $other): bool
+    /**
+     * Compare primary hashes of two manifests for equality.
+     *
+     * @param array{id: string[], hashes: string[]} $a
+     * @param array{id: string[], hashes: string[]} $b
+     * @return bool
+     */
+    public static function sameHashAs(array $a, array $b): bool
     {
-        return $this->hash() === $other->hash();
+        return self::primaryHash($a) === self::primaryHash($b);
     }
 
     /**
@@ -79,12 +106,15 @@ final class ManifestIdentity
      *
      * Returns a minimal representation useful for diff diagnostics.
      * This must not affect identity behavior.
+     *
+     * @param array{id: string[], hashes: string[]} $manifest
+     * @return array{id: string, hash: string}
      */
-    public function toDebugArray(): array
+    public static function toDebugArray(array $manifest): array
     {
         return [
-            'id'   => $this->id(),
-            'hash'=> $this->hash(),
+            'id' => self::primaryId($manifest),
+            'hash' => self::primaryHash($manifest),
         ];
     }
 

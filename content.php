@@ -129,12 +129,16 @@ if ($endpoint !== '') {
 
             $plan = SchedulerPlanner::plan($cfg);
 
-            $manifest = ManifestResult::fromPlannerResult($plan);
-            $preview  = PreviewFormatter::format($manifest);
+            $manifest = ManifestResult::fromPlannerResult($plan); // opaque object
+            $previewArr = PreviewFormatter::format($manifest);   // MUST return array
+
+            if (!is_array($previewArr)) {
+                throw new \RuntimeException('PreviewFormatter::format() must return array');
+            }
 
             echo json_encode([
                 'ok'      => true,
-                'preview' => $preview,
+                'preview' => $previewArr,
             ]);
             exit;
         }
@@ -151,15 +155,19 @@ if ($endpoint !== '') {
                 $plan = SchedulerPlanner::plan($cfg);
                 error_log('[GCS DEBUG][ADOPT_PREVIEW] planner completed');
 
-                $manifest = ManifestResult::fromPlannerResult($plan);
+                $manifest = ManifestResult::fromPlannerResult($plan); // opaque object
                 error_log('[GCS DEBUG][ADOPT_PREVIEW] manifest built');
 
-                $preview  = PreviewFormatter::format($manifest);
+                $previewArr = PreviewFormatter::format($manifest);    // MUST return array
                 error_log('[GCS DEBUG][ADOPT_PREVIEW] preview formatted');
+
+                if (!is_array($previewArr)) {
+                    throw new \RuntimeException('PreviewFormatter::format() must return array');
+                }
 
                 echo json_encode([
                     'ok'      => true,
-                    'preview' => $preview,
+                    'preview' => $previewArr,
                 ]);
                 exit;
             } catch (\Throwable $e) {

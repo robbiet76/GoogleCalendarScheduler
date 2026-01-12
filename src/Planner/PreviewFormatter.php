@@ -4,7 +4,7 @@ declare(strict_types=1);
 /**
  * PreviewFormatter
  *
- * Translates a ManifestResult into a UI-safe, human-readable preview.
+ * Translates a manifest diff into a UI-safe, human-readable preview.
  *
  * Responsibilities:
  *  - NO mutation
@@ -12,50 +12,67 @@ declare(strict_types=1);
  *  - NO scheduler.json inspection
  *  - Safe for dry-run / preview mode
  *
- * Output is a flat, ordered list of preview rows.
+ * Operates ONLY on canonical array representations.
  */
 final class PreviewFormatter
 {
-    public static function format(ManifestResult $result): array
+    public static function format(ManifestResult $manifest): array
     {
         $rows = [];
 
-        foreach ($result->creates() as $intent) {
-            $rows[] = self::row('create', $intent);
+        foreach ($manifest->creates() as $entry) {
+            if (!is_array($entry)) {
+                throw new RuntimeException('PreviewFormatter expects array entries only');
+            }
+            $canonical = $entry;
+            $rows[] = self::row('create', $canonical);
         }
 
-        foreach ($result->updates() as $pair) {
-            // updates are { before, after }
-            $rows[] = self::row('update', $pair['after']);
+        foreach ($manifest->updates() as $pair) {
+            if (is_array($pair) && isset($pair['after'])) {
+                $after = $pair['after'];
+                if (!is_array($after)) {
+                    throw new RuntimeException('PreviewFormatter expects array entries only');
+                }
+                $canonical = $after;
+                $rows[] = self::row('update', $canonical);
+            }
         }
 
-        foreach ($result->deletes() as $intent) {
-            $rows[] = self::row('delete', $intent);
+        foreach ($manifest->deletes() as $entry) {
+            if (!is_array($entry)) {
+                throw new RuntimeException('PreviewFormatter expects array entries only');
+            }
+            $canonical = $entry;
+            $rows[] = self::row('delete', $canonical);
         }
 
         return [
-            'version'  => 1,
-            'mode'     => 'preview',
-            'summary'  => $result->summary(),
-            'rows'     => $rows,
-            'messages' => $result->messages(),
+            'version' => 1,
+            'mode'    => 'preview',
+            'summary' => [
+                'creates' => count($manifest->creates()),
+                'updates' => count($manifest->updates()),
+                'deletes' => count($manifest->deletes()),
+            ],
+            'rows' => $rows,
         ];
     }
 
-    private static function row(string $action, $intent): array
+    private static function row(string $action, array $e): array
     {
         return [
-            'action' => $action,               // create | update | delete
-            'type'   => $intent->getType(),    // playlist | sequence | command
-            'target' => $intent->getTarget(),
-
-            'when' => [
-                'day'       => $intent->getDay(),
-                'startTime' => $intent->getStartTime(),
-                'endTime'   => $intent->getEndTime(),
-                'startDate' => $intent->getStartDate(),
-                'endDate'   => $intent->getEndDate(),
+            'action' => $action,
+            'type'   => $e['type']   ?? 'unknown',
+            'target' => $e['target'] ?? '(none)',
+            'when'   => [
+                'day'       => $e['day']       ?? null,
+                'startTime' => $e['startTime'] ?? null,
+                'endTime'   => $e['endTime']   ?? null,
+                'startDate' => $e['startDate'] ?? null,
+                'endDate'   => $e['endDate']   ?? null,
             ],
+            '_manifest' => $e['_manifest'] ?? null,
         ];
     }
 }
