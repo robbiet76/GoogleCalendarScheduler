@@ -14,6 +14,9 @@ declare(strict_types=1);
  */
 final class ManifestIdentity
 {
+    /** @var array<string,string> */
+    private static array $identityCache = [];
+
     private array $ids = [];
     private array $hashes = [];
 
@@ -135,27 +138,39 @@ final class ManifestIdentity
      */
     public static function buildHash(array $entry): string
     {
+        // Skip hashing if entry lacks semantic identity (prevents noise during adoption)
         if (
-            empty($entry['startDate']) ||
-            empty($entry['endDate']) ||
-            (!isset($entry['day']) && !isset($entry['days']))
+            empty($entry['startDate']) &&
+            empty($entry['endDate']) &&
+            empty($entry['startTime']) &&
+            empty($entry['endTime']) &&
+            empty($entry['days']) &&
+            empty($entry['day']) &&
+            empty($entry['playlist']) &&
+            empty($entry['command'])
         ) {
-            // Removed error_log for INVALID INPUT to tolerate legacy FPP entries without uid
-            // No exception thrown to maintain backward compatibility
+            return '';
         }
 
         $normalized = self::normalize($entry);
 
-        // DEBUG: log normalized identity input before hashing
-        error_log(
-            '[GCS DEBUG][IDENTITY HASH INPUT] ' .
-            json_encode($normalized, JSON_UNESCAPED_SLASHES)
-        );
+        $cacheKey = json_encode($normalized, JSON_UNESCAPED_SLASHES);
 
-        return hash(
-            'sha256',
-            json_encode($normalized, JSON_UNESCAPED_SLASHES)
-        );
+        if (isset(self::$identityCache[$cacheKey])) {
+            return self::$identityCache[$cacheKey];
+        }
+
+        // DEBUG: log normalized identity input before hashing
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log(
+                '[GCS DEBUG][IDENTITY HASH INPUT] ' . $cacheKey
+            );
+        }
+
+        $hash = hash('sha256', $cacheKey);
+        self::$identityCache[$cacheKey] = $hash;
+
+        return $hash;
     }
 
     /**
