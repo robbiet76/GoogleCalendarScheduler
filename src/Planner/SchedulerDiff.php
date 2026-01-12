@@ -64,6 +64,12 @@ final class SchedulerDiff
                 continue;
             }
 
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][DIFF][DESIRED] ' . json_encode([
+                    'has_manifest' => isset($desiredEntry['_manifest']),
+                ]));
+            }
+
             // If a manifest bundle is present, it must contain a valid non-empty id.
             if (isset($desiredEntry['_manifest']) && is_array($desiredEntry['_manifest'])) {
                 if (self::extractManifestIdFromDesired($desiredEntry) === null) {
@@ -84,6 +90,10 @@ final class SchedulerDiff
                 if (!isset($existingManagedById[$id])) {
                     $toCreate[] = $desiredEntry;
                     continue;
+                }
+
+                if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                    error_log('[GCS DEBUG][DIFF][MATCH][MANAGED] ' . $id);
                 }
 
                 $existing = $existingManagedById[$id];
@@ -110,6 +120,12 @@ final class SchedulerDiff
                         continue;
                     }
 
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][CHECK][ADOPT] ' . json_encode([
+                            'existing_index' => $key,
+                        ]));
+                    }
+
                     // Semantic equivalence check (UID intentionally ignored)
                     if (ManifestIdentity::semanticMatch($existing, $desiredEntry)) {
                         $toUpdate[] = [
@@ -118,6 +134,11 @@ final class SchedulerDiff
                         ];
                         $consumedUnmanaged[$key] = true;
                         $matched = true;
+
+                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                            error_log('[GCS DEBUG][DIFF][ADOPTED]');
+                        }
+
                         break;
                     }
                 }
@@ -125,6 +146,10 @@ final class SchedulerDiff
                 if (!$matched) {
                     // No semantic match → new schedule entry
                     $toCreate[] = $desiredEntry;
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][CREATE]');
+                    }
                 }
             }
         }
