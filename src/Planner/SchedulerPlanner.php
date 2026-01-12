@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+// NOTE: Planner output must remain arrays-only across controller boundary.
 
 /**
  * SchedulerPlanner
@@ -46,6 +47,11 @@ final class SchedulerPlanner
     public static function plan(array $config): array
     {
         $debug = self::isDebugOrderingEnabled($config);
+
+        // Adopt preview detection MUST be mechanical and controller-driven.
+        // We do NOT infer from calendar content or entry "roles".
+        $isPreview = self::isAdoptPreview($config);
+
         if ($debug) {
             self::dbgReset();
             self::dbg($config, 'enter', [
@@ -371,20 +377,23 @@ final class SchedulerPlanner
 
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
 
-            $isPreview = (($config['mode'] ?? '') === 'adopt_preview');
+            // ManifestIdentity returns ARRAY ONLY.
+            // In adopt_preview, id/hash may be intentionally null (not adopted yet).
+            $hasIdentity = (is_array($manifest) && array_key_exists('id', $manifest) && array_key_exists('hash', $manifest));
+            $idOk = ($hasIdentity && is_string($manifest['id']) && $manifest['id'] !== '');
+            $hashOk = ($hasIdentity && is_string($manifest['hash']) && $manifest['hash'] !== '');
 
-            // ManifestIdentity now returns ARRAY ONLY
-            if (!is_array($manifest) || empty($manifest['id']) || empty($manifest['hash'])) {
+            if (!$idOk || !$hashOk) {
                 if ($isPreview) {
                     if ($debug) {
                         self::dbg($config, 'manifest_identity_incomplete_preview', [
                             'uid'     => (string)($bundle['base']['uid'] ?? ''),
                             'summary' => (string)($bundle['base']['template']['summary'] ?? ''),
-                            'raw'     => $manifest,
+                            'id'      => $hasIdentity ? $manifest['id'] : null,
+                            'hash'    => $hasIdentity ? $manifest['hash'] : null,
                         ]);
                     }
-
-                    // Preview-only: attach placeholder manifest and continue planning
+                    // Keep entry; attach explicit nulls for preview.
                     $manifest = [
                         'id'   => null,
                         'hash' => null,
@@ -397,8 +406,8 @@ final class SchedulerPlanner
             if ($debug) {
                 self::dbg($config, 'manifest_identity', [
                     'uid'    => (string)($bundle['base']['uid'] ?? ''),
-                    'id'     => $manifest['id'],
-                    'hash'   => $manifest['hash'],
+                    'id'     => $manifest['id'] ?? null,
+                    'hash'   => $manifest['hash'] ?? null,
                     'range'  => $bundle['base']['range'] ?? null,
                     'type'   => $bundle['base']['template']['type'] ?? null,
                     'target' => $bundle['base']['template']['target'] ?? null,
@@ -413,8 +422,8 @@ final class SchedulerPlanner
             // Attach manifest AFTER entry materialization so it is preserved
             $entry['_manifest'] = [
                 'uid'  => (string) ($bundle['base']['uid'] ?? ''),
-                'id'   => $manifest['id'],
-                'hash' => $manifest['hash'],
+                'id'   => $manifest['id'] ?? null,
+                'hash' => $manifest['hash'] ?? null,
             ];
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
@@ -486,6 +495,28 @@ final class SchedulerPlanner
         }
         $env = getenv('GCS_DEBUG_ORDERING');
         return ($env !== false && $env !== '' && $env !== '0');
+    }
+
+    /**
+     * Controller-driven adopt preview detection.
+     * We accept a small set of explicit config keys so the controller boundary
+     * is not brittle (no guessing from schedule content).
+     */
+    private static function isAdoptPreview(array $cfg): bool
+    {
+        if (($cfg['mode'] ?? '') === 'adopt_preview') {
+            return true;
+        }
+        if (($cfg['action'] ?? '') === 'adopt_preview') {
+            return true;
+        }
+        if (($cfg['runtime']['mode'] ?? '') === 'adopt_preview') {
+            return true;
+        }
+        if (!empty($cfg['runtime']['adopt_preview'])) {
+            return true;
+        }
+        return false;
     }
 
     private static function dbgReset(): void
