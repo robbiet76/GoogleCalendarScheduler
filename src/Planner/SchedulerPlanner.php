@@ -377,15 +377,21 @@ final class SchedulerPlanner
             if (!is_array($manifest) || empty($manifest['id']) || empty($manifest['hash'])) {
                 if ($isPreview) {
                     if ($debug) {
-                        self::dbg($config, 'manifest_identity_skipped_preview', [
+                        self::dbg($config, 'manifest_identity_incomplete_preview', [
                             'uid'     => (string)($bundle['base']['uid'] ?? ''),
                             'summary' => (string)($bundle['base']['template']['summary'] ?? ''),
+                            'raw'     => $manifest,
                         ]);
                     }
-                    // Skip manifest attachment during preview
-                    continue;
+
+                    // Preview-only: attach placeholder manifest and continue planning
+                    $manifest = [
+                        'id'   => null,
+                        'hash' => null,
+                    ];
+                } else {
+                    throw new \RuntimeException('Invariant violation: invalid manifest identity');
                 }
-                throw new \RuntimeException('Invariant violation: invalid manifest identity');
             }
 
             if ($debug) {
