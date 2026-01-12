@@ -367,14 +367,20 @@ final class SchedulerPlanner
             if (!isset($bundle['base']['uid']) || (string)$bundle['base']['uid'] === '') {
                 throw new \RuntimeException('Invariant violation: missing uid on base intent before manifest identity');
             }
-            $bundle['base']['uid'] = (string)$bundle['base']['uid'];
+            $bundle['base']['uid'] = (string) $bundle['base']['uid'];
 
             $manifest = ManifestIdentity::fromIntent($bundle['base']);
+
+            // ManifestIdentity now returns ARRAY ONLY
+            if (!is_array($manifest) || empty($manifest['id']) || empty($manifest['hash'])) {
+                throw new \RuntimeException('Invariant violation: invalid manifest identity');
+            }
+
             if ($debug) {
                 self::dbg($config, 'manifest_identity', [
                     'uid'    => (string)($bundle['base']['uid'] ?? ''),
-                    'id'     => $manifest->id(),
-                    'hash'   => $manifest->hash(),
+                    'id'     => $manifest['id'],
+                    'hash'   => $manifest['hash'],
                     'range'  => $bundle['base']['range'] ?? null,
                     'type'   => $bundle['base']['template']['type'] ?? null,
                     'target' => $bundle['base']['template']['target'] ?? null,
@@ -388,9 +394,9 @@ final class SchedulerPlanner
 
             // Attach manifest AFTER entry materialization so it is preserved
             $entry['_manifest'] = [
-                'uid'  => (string)($bundle['base']['uid'] ?? ''),
-                'id'   => $manifest->id(),
-                'hash' => $manifest->hash(),
+                'uid'  => (string) ($bundle['base']['uid'] ?? ''),
+                'id'   => $manifest['id'],
+                'hash' => $manifest['hash'],
             ];
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
