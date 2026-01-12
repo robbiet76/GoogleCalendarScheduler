@@ -238,6 +238,18 @@ final class SchedulerDiff
                     $desiredNorm = self::normalizeIdentityInput($desiredEntry);
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT RAW] ' . json_encode([
+                            'existing_raw' => $existing,
+                            'desired_raw'  => $desiredEntry,
+                        ], JSON_PRETTY_PRINT));
+
+                        error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT NORMALIZED] ' . json_encode([
+                            'existing_norm' => $existingNorm,
+                            'desired_norm'  => $desiredNorm,
+                        ], JSON_PRETTY_PRINT));
+                    }
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][DIFF][SEMANTIC NORMALIZED] ' . json_encode([
                             'existing_index' => $key,
                             'existing_has_startDate' => isset($existingNorm['startDate']),
@@ -268,6 +280,12 @@ final class SchedulerDiff
                     }
 
                     $matchResult = ManifestIdentity::semanticMatch($existingNorm, $desiredNorm);
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][ADOPT][IDENTITY RESULT] ' . json_encode([
+                            'result' => $matchResult,
+                        ]));
+                    }
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         $desiredSummary = $desiredEntry['summary'] ?? null;

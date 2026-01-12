@@ -343,6 +343,14 @@ final class ManifestIdentity
      */
     public static function semanticMatch(array $a, array $b): bool
     {
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][SEMANTIC MATCH RAW INPUT] ' . json_encode([
+                'a_keys' => array_keys($a),
+                'b_keys' => array_keys($b),
+                'a_raw' => $a,
+                'b_raw' => $b,
+            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+        }
         $normalizeSemantic = function(array $entry): array {
             $semantic = [];
 
@@ -422,6 +430,9 @@ final class ManifestIdentity
             }
         }
 
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][SEMANTIC MATCH FINAL RESULT] no match');
+        }
         return false;
     }
 }
