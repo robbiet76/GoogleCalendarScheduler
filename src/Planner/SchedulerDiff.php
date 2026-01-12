@@ -121,13 +121,40 @@ final class SchedulerDiff
                     }
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        $existingSummary = $existing['summary'] ?? null;
+                        $desiredSummary = $desiredEntry['summary'] ?? null;
+                        error_log('[GCS DEBUG][DIFF][SEMANTIC TRY] ' . json_encode([
+                            'existing_index' => $key,
+                            'existing_summary' => $existingSummary,
+                            'desired_summary' => $desiredSummary,
+                        ]));
+                    }
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][DIFF][CHECK][ADOPT] ' . json_encode([
                             'existing_index' => $key,
                         ]));
                     }
 
                     // Semantic equivalence check (UID intentionally ignored)
-                    if (ManifestIdentity::semanticMatch($existing, $desiredEntry)) {
+                    $matchResult = ManifestIdentity::semanticMatch($existing, $desiredEntry);
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        $desiredSummary = $desiredEntry['summary'] ?? null;
+                        if ($matchResult) {
+                            error_log('[GCS DEBUG][DIFF][SEMANTIC MATCH] ' . json_encode([
+                                'existing_index' => $key,
+                                'desired_summary' => $desiredSummary,
+                            ]));
+                        } else {
+                            error_log('[GCS DEBUG][DIFF][SEMANTIC NO MATCH] ' . json_encode([
+                                'existing_index' => $key,
+                                'desired_summary' => $desiredSummary,
+                            ]));
+                        }
+                    }
+
+                    if ($matchResult) {
                         $toUpdate[] = [
                             'existing' => $existing,
                             'desired'  => $desiredEntry,

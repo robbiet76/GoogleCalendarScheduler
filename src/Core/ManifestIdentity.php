@@ -331,6 +331,42 @@ final class ManifestIdentity
         $aSemantic = $normalizeSemantic($a);
         $bSemantic = $normalizeSemantic($b);
 
-        return $aSemantic === $bSemantic;
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][SEMANTIC MATCH ATTEMPT] ' . json_encode([
+                'a_uid' => $a['_uid'] ?? null,
+                'b_uid' => $b['_uid'] ?? null,
+                'a' => $aSemantic,
+                'b' => $bSemantic,
+            ], JSON_UNESCAPED_SLASHES));
+        }
+
+        if ($aSemantic === $bSemantic) {
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][SEMANTIC MATCH SUCCESS] ' . json_encode([
+                    'a_uid' => $a['_uid'] ?? null,
+                    'b_uid' => $b['_uid'] ?? null,
+                ], JSON_UNESCAPED_SLASHES));
+            }
+            return true;
+        }
+
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            foreach (array_unique(array_merge(array_keys($aSemantic), array_keys($bSemantic))) as $field) {
+                $av = $aSemantic[$field] ?? null;
+                $bv = $bSemantic[$field] ?? null;
+                if ($av !== $bv) {
+                    error_log('[GCS DEBUG][SEMANTIC MATCH FAIL] ' . json_encode([
+                        'field' => $field,
+                        'a' => $av,
+                        'b' => $bv,
+                        'a_uid' => $a['_uid'] ?? null,
+                        'b_uid' => $b['_uid'] ?? null,
+                    ], JSON_UNESCAPED_SLASHES));
+                    break;
+                }
+            }
+        }
+
+        return false;
     }
 }
