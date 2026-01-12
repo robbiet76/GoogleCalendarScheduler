@@ -55,6 +55,14 @@ final class SchedulerDiff
             return $hasDates && $hasTimes && $hasTarget;
         };
 
+        $hasPlannerManifestUid = static function (array $e): bool {
+            if (!isset($e['_manifest']) || !is_array($e['_manifest'])) {
+                return false;
+            }
+            $uid = $e['_manifest']['uid'] ?? null;
+            return is_string($uid) && trim($uid) != '';
+        };
+
         // Index existing managed scheduler entries by manifest id.
         $existingManagedById = [];
         $existingUnmanaged = [];
@@ -105,6 +113,18 @@ final class SchedulerDiff
                 ]));
             }
 
+            // Guardrail: diff only operates on normalized schedule-entry-shaped arrays.
+            // If the planner payload includes wrapper rows (inventory/templates/preview envelopes), skip them.
+            if (!$isNormalizedScheduleEntry($desiredEntry)) {
+                if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                    error_log('[GCS DEBUG][DIFF][DESIRED SKIP NON_NORMALIZED] ' . json_encode([
+                        'keys' => array_keys($desiredEntry),
+                        'has_manifest' => isset($desiredEntry['_manifest']),
+                    ]));
+                }
+                continue;
+            }
+
             // If a manifest bundle is present, it must contain a valid non-empty id.
             if (isset($desiredEntry['_manifest']) && is_array($desiredEntry['_manifest'])) {
                 if (self::extractManifestIdFromDesired($desiredEntry) === null) {
@@ -150,9 +170,20 @@ final class SchedulerDiff
                     ];
                 }
             } else {
-                // Desired entry with no manifest bundle at all → adoption candidate.
-                if (isset($desiredEntry['_manifest'])) {
-                    // If _manifest exists here, it is missing/empty id (guarded above) or malformed; skip.
+                // Adoption candidates are planner-emitted desired schedule entries that have a stable planner UID.
+                // We never attempt adoption/semantic matching for inventory/template rows.
+                if (!$hasPlannerManifestUid($desiredEntry)) {
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][ADOPT SKIP NO_PLANNER_UID] ' . json_encode([
+                            'keys' => array_keys($desiredEntry),
+                            'has_manifest' => isset($desiredEntry['_manifest']),
+                        ]));
+                    }
+                    // Without a planner UID, we cannot safely adopt; treat as create.
+                    $toCreate[] = $desiredEntry;
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][CREATE][NO_PLANNER_UID]');
+                    }
                     continue;
                 }
 
@@ -218,6 +249,22 @@ final class SchedulerDiff
                             'existing_keys' => array_keys($existingNorm),
                             'desired_keys'  => array_keys($desiredNorm),
                         ]));
+                    }
+
+                    $existingHasIdentity = isset($existingNorm['startDate'], $existingNorm['endDate']) && (isset($existingNorm['days']) || isset($existingNorm['day']));
+                    $desiredHasIdentity  = isset($desiredNorm['startDate'], $desiredNorm['endDate']) && (isset($desiredNorm['days']) || isset($desiredNorm['day']));
+
+                    if (!$existingHasIdentity || !$desiredHasIdentity) {
+                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                            error_log('[GCS DEBUG][DIFF][SEMANTIC SKIP INCOMPLETE_IDENTITY] ' . json_encode([
+                                'existing_index' => $key,
+                                'existingHasIdentity' => $existingHasIdentity,
+                                'desiredHasIdentity' => $desiredHasIdentity,
+                                'existing_keys' => array_keys($existingNorm),
+                                'desired_keys'  => array_keys($desiredNorm),
+                            ]));
+                        }
+                        continue;
                     }
 
                     $matchResult = ManifestIdentity::semanticMatch($existingNorm, $desiredNorm);
