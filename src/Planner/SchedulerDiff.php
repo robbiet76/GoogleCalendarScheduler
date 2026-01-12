@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+// SchedulerDiff.php
 
 /**
  * SchedulerDiff
@@ -202,7 +203,24 @@ final class SchedulerDiff
                     }
 
                     // Semantic equivalence check (UID intentionally ignored)
-                    $matchResult = ManifestIdentity::semanticMatch($existing, $desiredEntry);
+                    $existingNorm = self::normalizeIdentityInput($existing);
+                    $desiredNorm = self::normalizeIdentityInput($desiredEntry);
+
+                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                        error_log('[GCS DEBUG][DIFF][SEMANTIC NORMALIZED] ' . json_encode([
+                            'existing_index' => $key,
+                            'existing_has_startDate' => isset($existingNorm['startDate']),
+                            'existing_has_endDate'   => isset($existingNorm['endDate']),
+                            'existing_has_days'      => (isset($existingNorm['days']) || isset($existingNorm['day'])),
+                            'desired_has_startDate'  => isset($desiredNorm['startDate']),
+                            'desired_has_endDate'    => isset($desiredNorm['endDate']),
+                            'desired_has_days'       => (isset($desiredNorm['days']) || isset($desiredNorm['day'])),
+                            'existing_keys' => array_keys($existingNorm),
+                            'desired_keys'  => array_keys($desiredNorm),
+                        ]));
+                    }
+
+                    $matchResult = ManifestIdentity::semanticMatch($existingNorm, $desiredNorm);
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         $desiredSummary = $desiredEntry['summary'] ?? null;
@@ -294,6 +312,41 @@ final class SchedulerDiff
 
         // If there is no manifest bundle, this is an unmanaged (plain FPP) entry.
         return null;
+    }
+
+    /**
+     * Normalize an entry into the canonical identity shape expected by ManifestIdentity.
+     *
+     * Canonical keys:
+     * - startDate, endDate
+     * - days (or day)
+     *
+     * Planner often carries these inside range:{start,end,days}.
+     *
+     * @param array<string,mixed> $entry
+     * @return array<string,mixed>
+     */
+    private static function normalizeIdentityInput(array $entry): array
+    {
+        // If already canonical, leave it alone.
+        $hasDates = isset($entry['startDate']) || isset($entry['endDate']);
+        $hasDays = isset($entry['days']) || isset($entry['day']);
+
+        if ((!$hasDates || !$hasDays) && isset($entry['range']) && is_array($entry['range'])) {
+            $range = $entry['range'];
+
+            if (!isset($entry['startDate']) && isset($range['start']) && is_string($range['start'])) {
+                $entry['startDate'] = $range['start'];
+            }
+            if (!isset($entry['endDate']) && isset($range['end']) && is_string($range['end'])) {
+                $entry['endDate'] = $range['end'];
+            }
+            if (!isset($entry['days']) && !isset($entry['day']) && isset($range['days']) && is_string($range['days'])) {
+                $entry['days'] = $range['days'];
+            }
+        }
+
+        return $entry;
     }
 
     /**
