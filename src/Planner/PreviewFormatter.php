@@ -61,10 +61,12 @@ final class PreviewFormatter
 
     private static function row(string $action, array $e): array
     {
+        $identity = $e['_manifest']['identity'] ?? [];
+
         return [
             'action' => $action,
-            'type'   => $e['type']   ?? 'unknown',
-            'target' => $e['target'] ?? '(none)',
+            'type'   => $identity['type'] ?? 'unknown',
+            'target' => $identity['target'] ?? '(none)',
             'when'   => [
                 'days'      => $e['days']      ?? ($e['day'] ?? null),
                 'startTime' => $e['startTime'] ?? null,
