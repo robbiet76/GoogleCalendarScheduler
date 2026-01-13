@@ -18,103 +18,112 @@ final class ManifestIdentity
     private static array $identityCache = [];
 
     /**
-     * Build a ManifestIdentity from a single intent.
+     * Extract canonical identity fields from an entry.
      *
-     * This is a thin adapter used by SchedulerSync so it does not
-     * need to know about bulk/series identity construction.
-     *
-     * @param array $intent
-     * @return array{id: string[], hashes: string[]}
+     * This method MUST be the only place identity fields are derived.
+     * It is intentionally strict and does not tolerate incomplete identity.
      */
-    public static function fromIntent(array $intent): array
+    private static function extractIdentity(array $entry): array
     {
-        return self::fromSeries([$intent]);
+        $identity = [];
+
+        $identity['type'] = self::entryType($entry);
+
+        $identity['target'] = !empty($entry['command'])
+            ? (string)$entry['command']
+            : (string)($entry['playlist'] ?? '');
+
+        // Dates: accept direct fields, otherwise accept range-derived fields
+        $startDate = $entry['startDate'] ?? ($entry['range']['start'] ?? null);
+        $endDate   = $entry['endDate'] ?? ($entry['range']['end'] ?? null);
+
+        if ($startDate !== null && $startDate !== '') {
+            $identity['startDate'] = self::normalizeDate((string)$startDate);
+        }
+        if ($endDate !== null && $endDate !== '') {
+            $identity['endDate'] = self::normalizeDate((string)$endDate);
+        }
+
+        // Days: accept explicit days/day, otherwise accept range.days
+        if (array_key_exists('days', $entry) && $entry['days'] !== null && $entry['days'] !== '') {
+            $identity['days'] = (string)$entry['days'];
+        } elseif (array_key_exists('day', $entry) && $entry['day'] !== null && $entry['day'] !== '') {
+            $identity['days'] = (string)$entry['day'];
+        } elseif (isset($entry['range']['days']) && $entry['range']['days'] !== '') {
+            $identity['days'] = (string)$entry['range']['days'];
+        }
+
+        // Times
+        $identity['startTime'] = (string)($entry['startTime'] ?? '');
+        $identity['endTime']   = (string)($entry['endTime'] ?? '');
+
+        // Remove empty fields
+        foreach ($identity as $k => $v) {
+            if ($v === '' || $v === null) {
+                unset($identity[$k]);
+            }
+        }
+
+        ksort($identity);
+        return $identity;
     }
 
     /**
-     * Build a ManifestIdentity from a series of intents.
+     * Validate that the identity contains all required fields.
      *
-     * @param array[] $series
-     * @return array{id: string[], hashes: string[]}
+     * Required:
+     * - type
+     * - target
+     * - startDate
+     * - endDate
+     * - days
+     * - startTime
+     * - endTime
      */
-    public static function fromSeries(array $series): array
+    private static function validateIdentity(array $identity): array
     {
-        $ids = [];
-        $hashes = [];
+        $required = ['type', 'target', 'startDate', 'endDate', 'days', 'startTime', 'endTime'];
+        $missing = [];
 
-        foreach ($series as $entry) {
-            $ids[] = self::buildId($entry);
-            $hashes[] = self::buildHash($entry);
+        foreach ($required as $k) {
+            if (!array_key_exists($k, $identity) || $identity[$k] === '' || $identity[$k] === null) {
+                $missing[] = $k;
+            }
         }
 
         return [
-            'ids' => $ids,
-            'hashes' => $hashes,
+            'ok' => empty($missing),
+            'missing' => $missing,
         ];
     }
 
     /**
-     * Build a ManifestIdentity from array data.
+     * Build and validate canonical identity for an entry.
      *
-     * @param array $data
-     * @return array{id: string[], hashes: string[]}
+     * This is the ONLY public way to obtain canonical identity fields.
+     * Callers must treat ok=false as a hard stop and must not schedule/diff/adopt.
+     *
+     * @return array{ok: bool, identity: array<string,string>, missing: string[]}
      */
-    public static function fromArray(array $data): array
+    public static function buildIdentity(array $entry): array
     {
+        $identity = self::extractIdentity($entry);
+        $v = self::validateIdentity($identity);
+
+        if (!$v['ok']) {
+            error_log('[GCS][IDENTITY INVALID] ' . json_encode([
+                'summary' => $entry['summary'] ?? null,
+                'uid' => $entry['uid'] ?? null,
+                'missing' => $v['missing'],
+                'entry_keys' => array_keys($entry),
+                'identity' => $identity,
+            ], JSON_UNESCAPED_SLASHES));
+        }
+
         return [
-            'ids' => $data['ids'] ?? [],
-            'hashes' => $data['hashes'] ?? [],
-        ];
-    }
-
-    /**
-     * Return the primary ID from a manifest array.
-     *
-     * @param array{id: string[], hashes: string[]} $manifest
-     * @return string
-     */
-    public static function primaryId(array $manifest): string
-    {
-        return $manifest['ids'][0] ?? '';
-    }
-
-    /**
-     * Return the primary hash from a manifest array.
-     *
-     * @param array{id: string[], hashes: string[]} $manifest
-     * @return string
-     */
-    public static function primaryHash(array $manifest): string
-    {
-        return $manifest['hashes'][0] ?? '';
-    }
-
-    /**
-     * Compare primary hashes of two manifests for equality.
-     *
-     * @param array{id: string[], hashes: string[]} $a
-     * @param array{id: string[], hashes: string[]} $b
-     * @return bool
-     */
-    public static function sameHashAs(array $a, array $b): bool
-    {
-        return self::primaryHash($a) === self::primaryHash($b);
-    }
-
-    /**
-     * Debug-only helper.
-     *
-     * Returns a minimal representation useful for diff diagnostics.
-     * This must not affect identity behavior.
-     *
-     * @param array{id: string[], hashes: string[]} $manifest
-     * @return array{id: string, hash: string}
-     */
-    public static function toDebugArray(array $manifest): array
-    {
-        return [
-            'id' => self::primaryId($manifest),
-            'hash' => self::primaryHash($manifest),
+            'ok' => (bool)$v['ok'],
+            'identity' => $identity,
+            'missing' => $v['missing'],
         ];
     }
 
@@ -126,58 +135,14 @@ final class ManifestIdentity
      */
     public static function buildId(array $entry): string
     {
-        // DEBUG: validate required identity fields
-        $missing = [];
-        foreach (['startDate', 'endDate'] as $k) {
-            if (empty($entry[$k])) {
-                $missing[] = $k;
-            }
+        $res = self::buildIdentity($entry);
+        if (!$res['ok']) {
+            return '';
         }
-        if (!isset($entry['day']) && !isset($entry['days'])) {
-            $missing[] = 'day/days';
-        }
-
-        if (!empty($missing)) {
-            error_log('[GCS DEBUG][IDENTITY INVALID INPUT] ' . json_encode([
-                'summary' => $entry['summary'] ?? null,
-                'uid' => $entry['uid'] ?? null,
-                'missing' => $missing,
-                'keys' => array_keys($entry),
-            ], JSON_UNESCAPED_SLASHES));
-        }
-
-        if (
-            empty($entry['startDate']) ||
-            empty($entry['endDate']) ||
-            (!isset($entry['day']) && !isset($entry['days']))
-        ) {
-            // Removed error_log for INVALID INPUT to tolerate legacy FPP entries without uid
-            // No exception thrown to maintain backward compatibility
-        }
-
-        $identity = [
-            'type'       => self::entryType($entry),
-            'target'     => !empty($entry['command'])
-                ? (string)$entry['command']
-                : (string)($entry['playlist'] ?? ''),
-            'startTime'  => (string)($entry['startTime'] ?? ''),
-            'endTime'    => (string)($entry['endTime'] ?? ''),
-            'days'       => isset($entry['days'])
-                ? (string)$entry['days']
-                : (isset($entry['day']) ? (string)$entry['day'] : null),
-            'startDate'  => isset($entry['startDate'])
-                ? self::normalizeDate((string)$entry['startDate'])
-                : null,
-            'endDate'    => isset($entry['endDate'])
-                ? self::normalizeDate((string)$entry['endDate'])
-                : null,
-        ];
-
-        ksort($identity);
 
         return hash(
             'sha256',
-            json_encode($identity, JSON_UNESCAPED_SLASHES)
+            json_encode($res['identity'], JSON_UNESCAPED_SLASHES)
         );
     }
 
@@ -188,28 +153,12 @@ final class ManifestIdentity
      */
     public static function buildHash(array $entry): string
     {
-        // Skip hashing if entry lacks semantic identity (prevents noise during adoption)
-        if (
-            empty($entry['startDate']) &&
-            empty($entry['endDate']) &&
-            empty($entry['startTime']) &&
-            empty($entry['endTime']) &&
-            empty($entry['days']) &&
-            empty($entry['day']) &&
-            empty($entry['playlist']) &&
-            empty($entry['command'])
-        ) {
-            error_log('[GCS DEBUG][IDENTITY HASH SKIPPED] ' . json_encode([
-                'summary' => $entry['summary'] ?? null,
-                'uid' => $entry['uid'] ?? null,
-                'keys' => array_keys($entry),
-            ], JSON_UNESCAPED_SLASHES));
+        $res = self::buildIdentity($entry);
+        if (!$res['ok']) {
             return '';
         }
 
-        $normalized = self::normalize($entry);
-
-        $cacheKey = json_encode($normalized, JSON_UNESCAPED_SLASHES);
+        $cacheKey = json_encode($res['identity'], JSON_UNESCAPED_SLASHES);
 
         if (isset(self::$identityCache[$cacheKey])) {
             return self::$identityCache[$cacheKey];
@@ -226,6 +175,114 @@ final class ManifestIdentity
         self::$identityCache[$cacheKey] = $hash;
 
         return $hash;
+    }
+
+    /**
+     * Build a ManifestIdentity from a single intent.
+     *
+     * This is a thin adapter used by SchedulerSync so it does not
+     * need to know about bulk/series identity construction.
+     *
+     * @param array $intent
+     * @return array{ids: string[], hashes: string[]}
+     */
+    public static function fromIntent(array $intent): array
+    {
+        return self::fromSeries([$intent]);
+    }
+
+    /**
+     * Build a ManifestIdentity from a series of intents.
+     *
+     * @param array[] $series
+     * @return array{ids: string[], hashes: string[]}
+     */
+    public static function fromSeries(array $series): array
+    {
+        $ids = [];
+        $hashes = [];
+
+        foreach ($series as $entry) {
+            $id = self::buildId($entry);
+            $hash = self::buildHash($entry);
+
+            if ($id === '' || $hash === '') {
+                continue;
+            }
+
+            $ids[] = $id;
+            $hashes[] = $hash;
+        }
+
+        return [
+            'ids' => $ids,
+            'hashes' => $hashes,
+        ];
+    }
+
+    /**
+     * Build a ManifestIdentity from array data.
+     *
+     * @param array $data
+     * @return array{ids: string[], hashes: string[]}
+     */
+    public static function fromArray(array $data): array
+    {
+        return [
+            'ids' => $data['ids'] ?? [],
+            'hashes' => $data['hashes'] ?? [],
+        ];
+    }
+
+    /**
+     * Return the primary ID from a manifest array.
+     *
+     * @param array{ids: string[], hashes: string[]} $manifest
+     * @return string
+     */
+    public static function primaryId(array $manifest): string
+    {
+        return $manifest['ids'][0] ?? '';
+    }
+
+    /**
+     * Return the primary hash from a manifest array.
+     *
+     * @param array{ids: string[], hashes: string[]} $manifest
+     * @return string
+     */
+    public static function primaryHash(array $manifest): string
+    {
+        return $manifest['hashes'][0] ?? '';
+    }
+
+    /**
+     * Compare primary hashes of two manifests for equality.
+     *
+     * @param array{ids: string[], hashes: string[]} $a
+     * @param array{ids: string[], hashes: string[]} $b
+     * @return bool
+     */
+    public static function sameHashAs(array $a, array $b): bool
+    {
+        return self::primaryHash($a) === self::primaryHash($b);
+    }
+
+    /**
+     * Debug-only helper.
+     *
+     * Returns a minimal representation useful for diff diagnostics.
+     * This must not affect identity behavior.
+     *
+     * @param array{ids: string[], hashes: string[]} $manifest
+     * @return array{id: string, hash: string}
+     */
+    public static function toDebugArray(array $manifest): array
+    {
+        return [
+            'id' => self::primaryId($manifest),
+            'hash' => self::primaryHash($manifest),
+        ];
     }
 
     /**
@@ -319,120 +376,5 @@ final class ManifestIdentity
 
         $ts = strtotime($date);
         return $ts ? date('Y-m-d', $ts) : $date;
-    }
-
-    /**
-     * Used exclusively for adoption matching (pre-manifest).
-     *
-     * Compares two entries for semantic equivalence based ONLY on canonical identity fields:
-     * type, target, normalized dates, days, times.
-     *
-     * Ignores uid, summary, description, resolved, yaml, gcs, and all non-identity payload fields.
-     *
-     * This method is STRICTLY for pre-adoption matching and does NOT consider full payload.
-     *
-     * @param array $a First entry to compare.
-     * @param array $b Second entry to compare.
-     * @return bool True if entries are semantically equivalent, false otherwise.
-     */
-
-    /**
-     * This method is used only for pre-adoption matching.
-     * It must not be used once _manifest.id exists.
-     * It must remain minimal and stable.
-     */
-    public static function semanticMatch(array $a, array $b): bool
-    {
-        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-            error_log('[GCS DEBUG][SEMANTIC MATCH RAW INPUT] ' . json_encode([
-                'a_keys' => array_keys($a),
-                'b_keys' => array_keys($b),
-                'a_raw' => $a,
-                'b_raw' => $b,
-            ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
-        }
-        $normalizeSemantic = function(array $entry): array {
-            $semantic = [];
-
-            $semantic['type'] = self::entryType($entry);
-            $semantic['target'] = !empty($entry['command'])
-                ? (string)$entry['command']
-                : (string)($entry['playlist'] ?? '');
-
-            $semantic['startDate'] = isset($entry['startDate'])
-                ? self::normalizeDate((string)$entry['startDate'])
-                : null;
-
-            $semantic['endDate'] = isset($entry['endDate'])
-                ? self::normalizeDate((string)$entry['endDate'])
-                : null;
-
-            $semantic['days'] = isset($entry['days'])
-                ? (string)$entry['days']
-                : (isset($entry['day']) ? (string)$entry['day'] : null);
-
-            $semantic['startTime'] = isset($entry['startTime'])
-                ? (string)$entry['startTime']
-                : '';
-
-            $semantic['endTime'] = isset($entry['endTime'])
-                ? (string)$entry['endTime']
-                : '';
-
-            // Remove keys with null or empty string values to prevent false mismatches
-            foreach ($semantic as $key => $value) {
-                if ($value === null || $value === '') {
-                    unset($semantic[$key]);
-                }
-            }
-
-            ksort($semantic);
-
-            return $semantic;
-        };
-
-        $aSemantic = $normalizeSemantic($a);
-        $bSemantic = $normalizeSemantic($b);
-
-        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-            error_log('[GCS DEBUG][SEMANTIC MATCH ATTEMPT] ' . json_encode([
-                'a_uid' => $a['uid'] ?? null,
-                'b_uid' => $b['uid'] ?? null,
-                'a' => $aSemantic,
-                'b' => $bSemantic,
-            ], JSON_UNESCAPED_SLASHES));
-        }
-
-        if ($aSemantic === $bSemantic) {
-            if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                error_log('[GCS DEBUG][SEMANTIC MATCH SUCCESS] ' . json_encode([
-                    'a_uid' => $a['uid'] ?? null,
-                    'b_uid' => $b['uid'] ?? null,
-                ], JSON_UNESCAPED_SLASHES));
-            }
-            return true;
-        }
-
-        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-            foreach (array_unique(array_merge(array_keys($aSemantic), array_keys($bSemantic))) as $field) {
-                $av = $aSemantic[$field] ?? null;
-                $bv = $bSemantic[$field] ?? null;
-                if ($av !== $bv) {
-                    error_log('[GCS DEBUG][SEMANTIC MATCH FAIL] ' . json_encode([
-                        'field' => $field,
-                        'a' => $av,
-                        'b' => $bv,
-                        'a_uid' => $a['uid'] ?? null,
-                        'b_uid' => $b['uid'] ?? null,
-                    ], JSON_UNESCAPED_SLASHES));
-                    break;
-                }
-            }
-        }
-
-        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-            error_log('[GCS DEBUG][SEMANTIC MATCH FINAL RESULT] no match');
-        }
-        return false;
     }
 }
