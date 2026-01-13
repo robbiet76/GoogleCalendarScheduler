@@ -32,12 +32,68 @@ final class HolidayResolver
      * ============================================================ */
 
     /**
+     * Determine whether a value is a known holiday token.
+     *
+     * Identity-safe:
+     * - Does NOT resolve dates
+     * - Does NOT depend on year
+     *
+     * @param string $value
+     * @return bool
+     */
+    public static function isHolidayToken(string $value): bool
+    {
+        $index = self::getHolidayIndex();
+        return isset($index[$value]);
+    }
+
+    /**
+     * Attempt to lift a concrete Y-m-d date into a holiday shortName.
+     *
+     * Identity-safe:
+     * - Concrete -> symbolic only
+     * - Never resolves symbols into dates
+     * - Deterministic for a given year
+     *
+     * Intended for ManifestIdentity normalization.
+     *
+     * @param string $ymd Date string in Y-m-d format
+     * @return string|null Holiday shortName or null if not a holiday
+     */
+    public static function dateToHoliday(string $ymd): ?string
+    {
+        if (!preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $ymd)) {
+            return null;
+        }
+
+        try {
+            $dt = new DateTime($ymd);
+        } catch (\Exception $e) {
+            return null;
+        }
+
+        $year = (int)$dt->format('Y');
+
+        foreach (self::getHolidayIndex() as $shortName => $_def) {
+            $resolved = self::dateFromHoliday($shortName, $year);
+            if ($resolved instanceof DateTime && $resolved->format('Y-m-d') === $ymd) {
+                return $shortName;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Resolve a holiday shortName to a DateTime.
      *
      * @param string $shortName Holiday identifier from schedule.json
      * @param int    $year      Target year
      *
      * @return DateTime|null
+     *
+     * ⚠️ Runtime-only:
+     * MUST NOT be used by ManifestIdentity or identity comparison.
      */
     public static function dateFromHoliday(string $shortName, int $year): ?DateTime
     {

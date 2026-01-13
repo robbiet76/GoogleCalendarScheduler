@@ -9,6 +9,7 @@ declare(strict_types=1);
  *
  * ARCHITECTURE (Manifest-based):
  * - Identity matching is completed BEFORE this comparator is invoked
+ * - Identity fields (dates/days/times/target/type) MUST NOT be compared here
  * - Both inputs are raw scheduler-entry arrays
  * - This class decides UPDATE vs NO-OP only
  *
@@ -22,31 +23,11 @@ declare(strict_types=1);
 final class SchedulerComparator
 {
     /**
-     * Canonical semantic fields.
+     * Canonical non-identity behavioral fields.
      *
-     * These fields fully define the functional behavior of a scheduler entry.
-     * If ANY of these differ, the entry must be updated.
-     *
-     * IMPORTANT:
-     * - Payload is compared as a whole (opaque)
-     * - No derived fields
-     * - Order does not matter
+     * Identity fields are NEVER compared here.
      */
-    private const CANONICAL_FIELDS = [
-        'type',
-        'target',
-        'startDate',
-        'endDate',
-        'day',
-        'startTime',
-        'endTime',
-        'playlist',
-        'sequence',
-        'repeat',
-        'stopType',
-        'command',
-        'payload',
-    ];
+    private const BASE_FIELDS = ['enabled', 'repeat', 'stopType'];
 
     /**
      * Determine whether two scheduler entries are functionally equivalent.
@@ -58,12 +39,82 @@ final class SchedulerComparator
      */
     public static function isEquivalent(array $existing, array $desired): bool
     {
-        foreach (self::CANONICAL_FIELDS as $field) {
+        // Compare base behavioral fields (always applicable)
+        foreach (self::BASE_FIELDS as $field) {
             if (($existing[$field] ?? null) !== ($desired[$field] ?? null)) {
+                self::debugMismatch($field, $existing[$field] ?? null, $desired[$field] ?? null);
                 return false;
             }
         }
 
+        // Decide command vs non-command without relying on FPP state.
+        // Commands have a command-specific payload block; playlists/sequences do not.
+        $isCommand = (($desired['type'] ?? null) === 'command') || array_key_exists('payload', $desired);
+
+        // Non-command (playlist/sequence): BASE_FIELDS are sufficient.
+        if (!$isCommand) {
+            return true;
+        }
+
+        // Command: compare payload structurally without interpretation.
+        $existingPayload = $existing['payload'] ?? null;
+        $desiredPayload  = $desired['payload'] ?? null;
+
+        if (!self::payloadsEqual($existingPayload, $desiredPayload)) {
+            self::debugMismatch('payload', $existingPayload, $desiredPayload);
+            return false;
+        }
+
         return true;
+    }
+
+    /**
+     * Compare payloads structurally without interpretation.
+     *
+     * - null and null are equal
+     * - arrays are compared with recursively-sorted keys
+     * - scalars are compared with strict equality
+     */
+    private static function payloadsEqual($a, $b): bool
+    {
+        if ($a === null && $b === null) {
+            return true;
+        }
+
+        if (!is_array($a) || !is_array($b)) {
+            return $a === $b;
+        }
+
+        self::ksortRecursive($a);
+        self::ksortRecursive($b);
+
+        return $a === $b;
+    }
+
+    /**
+     * Recursively sort array keys for stable comparison.
+     */
+    private static function ksortRecursive(array &$array): void
+    {
+        ksort($array);
+        foreach ($array as &$value) {
+            if (is_array($value)) {
+                self::ksortRecursive($value);
+            }
+        }
+    }
+
+    /**
+     * Debug helper for mismatch logging.
+     */
+    private static function debugMismatch(string $field, $existing, $desired): void
+    {
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][COMPARATOR MISMATCH] ' . json_encode([
+                'field' => $field,
+                'existing' => $existing,
+                'desired' => $desired,
+            ], JSON_UNESCAPED_SLASHES));
+        }
     }
 }

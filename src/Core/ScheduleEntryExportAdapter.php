@@ -131,21 +131,12 @@ final class ScheduleEntryExportAdapter
         }
 
         if ($type === FPPSemantics::TYPE_COMMAND) {
-            // Keep YAML minimal and within our supported subset (no nested arrays)
-            $yaml['command'] = $command;
+            // Command payload must be opaque and round-trippable.
+            // Scheduler must not interpret command-specific options.
+            $payload = FPPSemantics::buildCommandPayload($entry);
 
-            $args = $entry['args'] ?? [];
-            if (is_array($args) && count($args) > 0) {
-                $yaml['args'] = implode(',', array_map('strval', array_values($args)));
-            }
-
-            // Multisync metadata (for round-trip symmetry)
-            if (!empty($entry['multisyncCommand'])) {
-                $yaml['multisync'] = true;
-                $hosts = trim((string)($entry['multisyncHosts'] ?? ''));
-                if ($hosts !== '') {
-                    $yaml['hosts'] = $hosts;
-                }
+            if (!empty($payload)) {
+                $yaml['payload'] = $payload;
             }
         }
 

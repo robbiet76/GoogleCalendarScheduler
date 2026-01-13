@@ -154,9 +154,7 @@ final class DiffPreviewer
     {
         $out = [];
         foreach ($rows as $row) {
-            if ($row instanceof ExistingScheduleEntry) {
-                $out[] = self::normalizeEntryRow($row->raw(), 'delete');
-            } elseif (is_array($row)) {
+            if (is_array($row)) {
                 $out[] = self::normalizeEntryRow($row, 'delete');
             }
         }
@@ -168,8 +166,6 @@ final class DiffPreviewer
      */
     private static function normalizeEntryRow(array $entry, string $type): array
     {
-        $uid = SchedulerIdentity::extractKey($entry);
-
         return [
             'type'      => $type,
             'mode'      => !empty($entry['command']) ? 'command' : 'playlist',
@@ -178,7 +174,6 @@ final class DiffPreviewer
             'endDate'   => $entry['endDate'] ?? null,
             'startTime' => $entry['startTime'] ?? null,
             'endTime'   => $entry['endTime'] ?? null,
-            'uid'       => $uid,
         ];
     }
 }

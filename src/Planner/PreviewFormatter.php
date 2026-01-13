@@ -66,13 +66,23 @@ final class PreviewFormatter
             'type'   => $e['type']   ?? 'unknown',
             'target' => $e['target'] ?? '(none)',
             'when'   => [
-                'day'       => $e['day']       ?? null,
+                'days'      => $e['days']      ?? ($e['day'] ?? null),
                 'startTime' => $e['startTime'] ?? null,
                 'endTime'   => $e['endTime']   ?? null,
-                'startDate' => $e['startDate'] ?? null,
-                'endDate'   => $e['endDate']   ?? null,
+                'startDate' => self::formatDateForPreview($e['startDate'] ?? null),
+                'endDate'   => self::formatDateForPreview($e['endDate'] ?? null),
             ],
             '_manifest' => $e['_manifest'] ?? null,
         ];
+    }
+
+    private static function formatDateForPreview($value): mixed
+    {
+        if (is_array($value)) {
+            // Dual-date identity: prefer symbolic for readability, fall back to hard
+            return $value['symbolic'] ?? $value['hard'] ?? null;
+        }
+
+        return $value;
     }
 }

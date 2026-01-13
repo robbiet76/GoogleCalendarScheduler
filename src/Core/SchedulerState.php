@@ -20,11 +20,12 @@ declare(strict_types=1);
  */
 final class SchedulerState
 {
-    /** @var array<int,ExistingScheduleEntry> */
+    // Intentionally array-only to prevent identity or semantic logic leakage
+    /** @var array<int,array> */
     private array $entries;
 
     /**
-     * @param array<int,ExistingScheduleEntry> $entries
+     * @param array<int,array> $entries
      */
     public function __construct(array $entries)
     {
@@ -34,7 +35,7 @@ final class SchedulerState
     /**
      * Retrieve all existing scheduler entries.
      *
-     * @return array<int,ExistingScheduleEntry>
+     * @return array<int,array>
      */
     public function getEntries(): array
     {

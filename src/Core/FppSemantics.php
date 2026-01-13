@@ -350,8 +350,17 @@ final class FPPSemantics
 
     /* =====================================================================
      * Date resolution (sentinel + holidays)
+     *
+     * IMPORTANT:
+     * - resolveDate() is EXPORT/PLANNING oriented and returns a single hard Y-m-d.
+     * - Identity construction must NOT depend on resolveDate(); use interpretDateToken()
+     *   which preserves symbolic/hard duality for ManifestIdentity.
+     *
+     * IDENTITY-SAFETY CONTRACT:
+     * - This method MUST NOT be used for identity construction.
+     * - It is strictly forbidden to call resolveDate() from ManifestIdentity, SchedulerDiff, or SchedulerPlanner.
+     * - Only use this for export/planning flows where a concrete Y-m-d is required.
      * ===================================================================== */
-
     public static function resolveDate(
         string $raw,
         ?string $fallbackDate,
@@ -375,65 +384,9 @@ final class FPPSemantics
             return $raw;
         }
 
-        // Holiday (resolved via FPP locale)
+        // Holiday (resolved via FPP locale) - EXPORT/PLANNING ONLY
         if ($raw !== '') {
-            $currentYear = (int)date('Y');
-            $today = new DateTime('today');
-
-            // Primary year hint:
-            // - If we have a fallback (typically the other bound of a range), anchor to that year.
-            // - Otherwise anchor to the current year, but apply a “season” heuristic for late-year holidays
-            //   when running early in the year (prevents Thanksgiving/Christmas season drifting a year ahead).
-            $yearHint = $fallbackDate
-                ? (int)substr($fallbackDate, 0, 4)
-                : $currentYear;
-
-            error_log(
-                '[GCS DEBUG][FPPSemantics::resolveDate] attempting holiday resolve ' .
-                $raw . ' using yearHint=' . $yearHint
-            );
-
-            $dt = HolidayResolver::dateFromHoliday($raw, $yearHint);
-
-            // If no fallbackDate (standalone holiday), and the resolved date is “far in the future”,
-            // prefer the previous year (typical holiday season behavior in Jan/Feb).
-            if (!$fallbackDate && ($dt instanceof DateTime)) {
-                $futureCutoff = (clone $today)->modify('+180 days');
-                if ($dt > $futureCutoff) {
-                    $altYear = $yearHint - 1;
-                    error_log(
-                        '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' . $raw .
-                        ' resolved far-future (' . $dt->format('Y-m-d') .
-                        '), retrying with yearHint=' . $altYear
-                    );
-                    $alt = HolidayResolver::dateFromHoliday($raw, $altYear);
-                    if ($alt instanceof DateTime) {
-                        $dt = $alt;
-                        $yearHint = $altYear;
-                    }
-                }
-            }
-
-            // If we DO have a fallbackDate (range bound), ensure monotonicity:
-            // if the resolved holiday is before the fallbackDate, roll forward one year.
-            if ($fallbackDate && ($dt instanceof DateTime)) {
-                $fb = DateTime::createFromFormat('Y-m-d', $fallbackDate);
-                if ($fb instanceof DateTime && $dt < $fb) {
-                    $altYear = $yearHint + 1;
-                    error_log(
-                        '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' . $raw .
-                        ' resolved before fallback (' . $dt->format('Y-m-d') .
-                        ' < ' . $fb->format('Y-m-d') .
-                        '), retrying with yearHint=' . $altYear
-                    );
-                    $alt = HolidayResolver::dateFromHoliday($raw, $altYear);
-                    if ($alt instanceof DateTime) {
-                        $dt = $alt;
-                        $yearHint = $altYear;
-                    }
-                }
-            }
-
+            $dt = self::resolveHolidayToDate($raw, $fallbackDate, $context);
             if ($dt instanceof DateTime) {
                 error_log(
                     '[GCS DEBUG][FPPSemantics::resolveDate] holiday ' .
@@ -449,5 +402,191 @@ final class FPPSemantics
         );
         $warnings[] = "Export: {$context} '{$raw}' invalid.";
         return null;
+    }
+
+    /**
+     * IDENTITY-SAFETY CONTRACT:
+     * ------------------------------------------------------------
+     * This is the ONLY approved entry point for date handling in ManifestIdentity.
+     * - SchedulerPlanner must pass raw date tokens here without prior resolution.
+     * - No other file may attempt to infer symbolic or hard dates for identity.
+     * - This method enforces the preservation of symbolic/hard duality for identity purposes.
+     *
+     * Interpret a date token for IDENTITY construction.
+     *
+     * This preserves symbolic/hard duality for ManifestIdentity:
+     * - If raw is a holiday name (e.g. "Christmas"), return symbolic only.
+     * - If raw is a hard date, return hard date AND (when possible) its symbolic holiday.
+     * - Sentinel dates preserve their month/day intent and normalize the year for hard comparison.
+     *
+     * Returned structure:
+     * [
+     *   'raw'      => string,
+     *   'hard'     => ?string,   // Y-m-d when present
+     *   'symbolic' => ?string,   // Holiday name when present
+     *   'source'   => 'holiday'|'date'|'sentinel',
+     * ]
+     *
+     * NOTE: This function must NOT invent a hard date from a symbolic holiday.
+     */
+    public static function interpretDateToken(
+        string $raw,
+        ?string $fallbackDate,
+        array &$warnings,
+        string $context
+    ): ?array {
+        $raw = trim($raw);
+
+        if ($raw === '') {
+            $warnings[] = "Identity: {$context} empty date.";
+            return null;
+        }
+
+        // Hard date input
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) {
+            $hard = $raw;
+            $source = 'date';
+
+            if (self::isSentinelDate($raw)) {
+                // Normalize sentinel year for comparison, preserving month/day intent.
+                $year = (int)date('Y');
+                $hard = sprintf('%04d-%s', $year, substr($raw, 5));
+                $source = 'sentinel';
+            }
+
+            // If this hard date matches a known holiday, include symbolic too.
+            // Canonical identity-safe lift: hard date -> symbolic holiday (if defined)
+            $symbolic = HolidayResolver::dateToHoliday($hard);
+            if (!is_string($symbolic) || trim($symbolic) === '') {
+                $symbolic = null;
+            }
+
+            return [
+                'raw'      => $raw,
+                'hard'     => $hard,
+                'symbolic' => $symbolic,
+                'source'   => $source,
+            ];
+        }
+
+        // Holiday token input (symbolic). Identity must preserve symbol and must NOT invent hard date.
+        // (Export/planning may still call resolveDate() to compute a concrete Y-m-d.)
+        return [
+            'raw'      => $raw,
+            'hard'     => null,
+            'symbolic' => $raw,
+            'source'   => 'holiday',
+        ];
+    }
+
+    /**
+     * Export/planning helper: resolve a holiday name to a concrete date using heuristics.
+     * Identity code must NOT call this.
+     */
+    private static function resolveHolidayToDate(
+        string $holiday,
+        ?string $fallbackDate,
+        string $context
+    ): ?DateTime {
+        $holiday = trim($holiday);
+        if ($holiday === '') {
+            return null;
+        }
+
+        $currentYear = (int)date('Y');
+        $today = new DateTime('today');
+
+        // Primary year hint:
+        // - If we have a fallback (typically the other bound of a range), anchor to that year.
+        // - Otherwise anchor to the current year, but apply a “season” heuristic for late-year holidays
+        //   when running early in the year (prevents Thanksgiving/Christmas season drifting a year ahead).
+        $yearHint = $fallbackDate
+            ? (int)substr($fallbackDate, 0, 4)
+            : $currentYear;
+
+        error_log(
+            '[GCS DEBUG][FPPSemantics::resolveHolidayToDate] context=' . $context .
+            ' holiday=' . $holiday . ' yearHint=' . $yearHint .
+            ' fallbackDate=' . ($fallbackDate ?? '(null)')
+        );
+
+        $dt = HolidayResolver::dateFromHoliday($holiday, $yearHint);
+
+        // If no fallbackDate (standalone holiday), and the resolved date is “far in the future”,
+        // prefer the previous year (typical holiday season behavior in Jan/Feb).
+        if (!$fallbackDate && ($dt instanceof DateTime)) {
+            $futureCutoff = (clone $today)->modify('+180 days');
+            if ($dt > $futureCutoff) {
+                $altYear = $yearHint - 1;
+                error_log(
+                    '[GCS DEBUG][FPPSemantics::resolveHolidayToDate] holiday ' . $holiday .
+                    ' resolved far-future (' . $dt->format('Y-m-d') .
+                    '), retrying with yearHint=' . $altYear
+                );
+                $alt = HolidayResolver::dateFromHoliday($holiday, $altYear);
+                if ($alt instanceof DateTime) {
+                    $dt = $alt;
+                    $yearHint = $altYear;
+                }
+            }
+        }
+
+        // If we DO have a fallbackDate (range bound), ensure monotonicity:
+        // if the resolved holiday is before the fallbackDate, roll forward one year.
+        if ($fallbackDate && ($dt instanceof DateTime)) {
+            $fb = DateTime::createFromFormat('Y-m-d', $fallbackDate);
+            if ($fb instanceof DateTime && $dt < $fb) {
+                $altYear = $yearHint + 1;
+                error_log(
+                    '[GCS DEBUG][FPPSemantics::resolveHolidayToDate] holiday ' . $holiday .
+                    ' resolved before fallback (' . $dt->format('Y-m-d') .
+                    ' < ' . $fb->format('Y-m-d') .
+                    '), retrying with yearHint=' . $altYear
+                );
+                $alt = HolidayResolver::dateFromHoliday($holiday, $altYear);
+                if ($alt instanceof DateTime) {
+                    $dt = $alt;
+                }
+            }
+        }
+
+        return ($dt instanceof DateTime) ? $dt : null;
+    }
+    /* =====================================================================
+     * Command payload semantics
+     * ===================================================================== */
+
+    /**
+     * Build a canonical command payload from a scheduler entry.
+     *
+     * CONTRACT:
+     * - Opaque: this method MUST NOT interpret command meaning
+     * - Stable: same payload content MUST hash identically
+     * - Non-invasive: MUST NOT invent defaults or remove values
+     * - Centralized: ALL command payload construction flows through here
+     *
+     * @param array $entry
+     * @return array<string,mixed>
+     */
+    public static function buildCommandPayload(array $entry): array
+    {
+        $payload = [];
+
+        // Preserve args verbatim if present
+        if (array_key_exists('args', $entry)) {
+            $payload['args'] = $entry['args'];
+        }
+
+        // Preserve existing payload block verbatim if present
+        if (array_key_exists('payload', $entry) && is_array($entry['payload'])) {
+            foreach ($entry['payload'] as $key => $value) {
+                $payload[$key] = $value;
+            }
+        }
+
+        // Ensure stable ordering for hashing / comparison
+        ksort($payload);
+
+        return $payload;
     }
 }

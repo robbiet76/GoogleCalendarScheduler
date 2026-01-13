@@ -39,28 +39,6 @@ final class SchedulerDiff
             error_log('[GCS DEBUG][DIFF] compute() start: desired=' . count($this->desired));
         }
 
-        $isNormalizedScheduleEntry = static function (array $e): bool {
-            // Must look like a schedule entry, not a manifest/preview wrapper.
-            // Required: date range info and time info.
-            if (isset($e['range']) && is_array($e['range'])) {
-                $range = $e['range'];
-                $hasDates = (isset($range['start']) && isset($range['end']) && (isset($range['days']) || isset($range['day'])));
-            } else {
-                $hasDates = (isset($e['startDate']) && isset($e['endDate']) && (isset($e['days']) || isset($e['day'])));
-            }
-            $hasTimes = (isset($e['startTime']) && isset($e['endTime']));
-            // Must have some target/type indicator typical of entries.
-            $hasTarget = (isset($e['playlist']) || isset($e['sequence']) || isset($e['command']) || isset($e['target']) || isset($e['type']));
-            return $hasDates && $hasTimes && $hasTarget;
-        };
-
-        $hasPlannerManifestUid = static function (array $e): bool {
-            if (!isset($e['_manifest']) || !is_array($e['_manifest'])) {
-                return false;
-            }
-            $uid = $e['_manifest']['uid'] ?? null;
-            return is_string($uid) && trim($uid) != '';
-        };
 
         // Index existing managed scheduler entries by manifest id.
         $existingManagedById = [];
@@ -112,33 +90,17 @@ final class SchedulerDiff
                 ]));
             }
 
-            // Guardrail: diff only operates on normalized schedule-entry-shaped arrays.
-            // If the planner payload includes wrapper rows (inventory/templates/preview envelopes), skip them.
-            if (!$isNormalizedScheduleEntry($desiredEntry)) {
+            $identityCheck = ManifestIdentity::buildIdentity($desiredEntry);
+            if (!$identityCheck['ok']) {
                 if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                    error_log('[GCS DEBUG][DIFF][DESIRED SKIP NON_NORMALIZED] ' . json_encode([
+                    error_log('[GCS DEBUG][DIFF][DESIRED SKIP INVALID IDENTITY] ' . json_encode([
+                        'missing' => $identityCheck['missing'],
                         'keys' => array_keys($desiredEntry),
-                        'has_manifest' => isset($desiredEntry['_manifest']),
                     ]));
                 }
                 continue;
             }
 
-            // If a manifest bundle is present, it may contain either an adopted `id` (managed) OR a planner `uid` (adoption candidate).
-            if (isset($desiredEntry['_manifest']) && is_array($desiredEntry['_manifest'])) {
-                $manifestId  = self::extractManifestIdFromDesired($desiredEntry);
-                $manifestUid = $desiredEntry['_manifest']['uid'] ?? null;
-
-                // Drop only if BOTH id and uid are missing/invalid.
-                if ($manifestId === null && (!is_string($manifestUid) || trim($manifestUid) === '')) {
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][DROP DESIRED][NO_ID_NO_UID] ' . json_encode([
-                            'manifest' => $desiredEntry['_manifest'],
-                        ]));
-                    }
-                    continue;
-                }
-            }
 
             $id = self::extractManifestIdFromDesired($desiredEntry);
 
@@ -177,57 +139,54 @@ final class SchedulerDiff
                     ];
                 }
             } else {
-                // Adoption candidates are planner-emitted desired schedule entries that have a stable planner UID.
-                // We never attempt adoption for inventory/template rows.
-                if (!$hasPlannerManifestUid($desiredEntry)) {
+                // Adoption candidates are desired schedule entries that do NOT yet carry a manifest id.
+                // Adoption identity must be derived ONLY via ManifestIdentity.
+                // SchedulerDiff must never resolve/normalize semantics.
+
+                $matched = false;
+
+                $desiredId = ManifestIdentity::buildId($desiredEntry);
+                if ($desiredId === '') {
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][ADOPT SKIP NO_PLANNER_UID] ' . json_encode([
-                            'keys' => array_keys($desiredEntry),
-                            'has_manifest' => isset($desiredEntry['_manifest']),
+                        error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID DESIRED ID] ' . json_encode([
+                            'desired_raw' => $desiredEntry,
                         ]));
                     }
-                    // Without a planner UID, we cannot safely adopt; treat as create.
+                    // Cannot safely adopt; treat as create.
                     $toCreate[] = $desiredEntry;
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][CREATE][NO_PLANNER_UID]');
-                    }
                     continue;
                 }
 
-                $matched = false;
+                // Ensure adopted/created entries become plugin-managed going forward.
+                if (!isset($desiredEntry['_manifest']) || !is_array($desiredEntry['_manifest'])) {
+                    $desiredEntry['_manifest'] = [];
+                }
+                $desiredEntry['_manifest']['id'] = $desiredId;
 
                 foreach ($existingUnmanaged as $key => $existing) {
                     if (isset($consumedUnmanaged[$key])) {
                         continue;
                     }
 
-                    $existingOk = $isNormalizedScheduleEntry($existing);
-                    $desiredOk  = $isNormalizedScheduleEntry($desiredEntry);
-
-                    if (!$existingOk || !$desiredOk) {
+                    $existingIdentity = ManifestIdentity::buildIdentity($existing);
+                    if (!$existingIdentity['ok']) {
                         if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP NON_NORMALIZED] ' . json_encode([
-                                'existing_index' => $key,
-                                'existing_ok' => $existingOk,
-                                'desired_ok' => $desiredOk,
-                                'existing_keys' => array_keys($existing),
-                                'desired_keys' => array_keys($desiredEntry),
+                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID EXISTING IDENTITY] ' . json_encode([
+                                'missing' => $existingIdentity['missing'],
+                                'keys' => array_keys($existing),
                             ]));
                         }
                         continue;
                     }
 
-                    $existingNorm = self::normalizeIdentityInput($existing);
-                    $desiredNorm = self::normalizeIdentityInput($desiredEntry);
+                    $existingId = ManifestIdentity::buildId($existing);
 
-                    $existingId = ManifestIdentity::buildId($existingNorm);
-                    $desiredId  = ManifestIdentity::buildId($desiredNorm);
-
-                    if ($existingId === '' || $desiredId === '') {
+                    if ($existingId === '') {
                         if (defined('GCS_DEBUG') && GCS_DEBUG) {
                             error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID ID] ' . json_encode([
-                                'existing_norm' => $existingNorm,
-                                'desired_norm'  => $desiredNorm,
+                                // Only log raw entries, not normalized
+                                'existing_raw' => $existing,
+                                'desired_raw'  => $desiredEntry,
                             ]));
                         }
                         continue;
@@ -237,11 +196,6 @@ final class SchedulerDiff
                         error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT RAW] ' . json_encode([
                             'existing_raw' => $existing,
                             'desired_raw'  => $desiredEntry,
-                        ], JSON_PRETTY_PRINT));
-
-                        error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT NORMALIZED] ' . json_encode([
-                            'existing_norm' => $existingNorm,
-                            'desired_norm'  => $desiredNorm,
                         ], JSON_PRETTY_PRINT));
                     }
 
@@ -345,44 +299,6 @@ final class SchedulerDiff
         return null;
     }
 
-    /**
-     * Normalize an entry into the canonical identity shape expected by ManifestIdentity.
-     *
-     * Canonical keys:
-     * - startDate, endDate
-     * - days (or day)
-     *
-     * Planner often carries these inside range:{start,end,days}.
-     *
-     * @param array<string,mixed> $entry
-     * @return array<string,mixed>
-     */
-    private static function normalizeIdentityInput(array $entry): array
-    {
-        // If already canonical, leave it alone.
-        $hasDates = isset($entry['startDate']) || isset($entry['endDate']);
-        $hasDays = isset($entry['days']) || isset($entry['day']);
-
-        if ((!$hasDates || !$hasDays) && isset($entry['range']) && is_array($entry['range'])) {
-            $range = $entry['range'];
-
-            if (!isset($entry['startDate']) && isset($range['start']) && is_string($range['start'])) {
-                $entry['startDate'] = $range['start'];
-            }
-            if (!isset($entry['endDate']) && isset($range['end']) && is_string($range['end'])) {
-                $entry['endDate'] = $range['end'];
-            }
-            if (!isset($entry['days']) && !isset($entry['day'])) {
-                if (isset($range['days']) && is_string($range['days'])) {
-                    $entry['days'] = $range['days'];
-                } elseif (isset($range['day']) && is_string($range['day'])) {
-                    $entry['day'] = $range['day'];
-                }
-            }
-        }
-
-        return $entry;
-    }
 
     /**
      * @param array<string,mixed> $manifest

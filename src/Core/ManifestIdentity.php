@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/FPPSemantics.php';
 
 /**
  * ManifestIdentity
@@ -17,6 +18,30 @@ final class ManifestIdentity
     /** @var array<string,string> */
     private static array $identityCache = [];
 
+    /** Normalize a days token into a stable comma-separated string. */
+    private static function normalizeDaysToken(string $days): string
+    {
+        $days = trim($days);
+        if ($days === '') {
+            return '';
+        }
+        // Accept either a single numeric/string day, or a comma-separated list.
+        $parts = preg_split('/\s*,\s*/', $days) ?: [];
+        $out = [];
+        foreach ($parts as $p) {
+            $p = trim((string)$p);
+            if ($p === '') {
+                continue;
+            }
+            // Normalize numeric strings like "07" -> "7"
+            if (ctype_digit($p)) {
+                $p = (string)((int)$p);
+            }
+            $out[] = $p;
+        }
+        return implode(',', $out);
+    }
+
     /**
      * Extract canonical identity fields from an entry.
      *
@@ -26,6 +51,7 @@ final class ManifestIdentity
     private static function extractIdentity(array $entry): array
     {
         $identity = [];
+        $warnings = [];
 
         $identity['type'] = self::entryType($entry);
 
@@ -33,29 +59,45 @@ final class ManifestIdentity
             ? (string)$entry['command']
             : (string)($entry['playlist'] ?? '');
 
-        // Dates: accept direct fields, otherwise accept range-derived fields
-        $startDate = $entry['startDate'] ?? ($entry['range']['start'] ?? null);
-        $endDate   = $entry['endDate'] ?? ($entry['range']['end'] ?? null);
+        // Dates: derive identity-safe dual dates via FPPSemantics
+        $startDateRaw = $entry['startDate'] ?? ($entry['range']['start'] ?? null);
+        $endDateRaw   = $entry['endDate']   ?? ($entry['range']['end']   ?? null);
 
-        if ($startDate !== null && $startDate !== '') {
-            $identity['startDate'] = self::normalizeDate((string)$startDate);
+        if ($startDateRaw !== null && $startDateRaw !== '') {
+            $identity['startDate'] = FPPSemantics::interpretDateToken(
+                (string)$startDateRaw,
+                null,
+                $warnings,
+                'manifest.startDate'
+            );
         }
-        if ($endDate !== null && $endDate !== '') {
-            $identity['endDate'] = self::normalizeDate((string)$endDate);
+
+        if ($endDateRaw !== null && $endDateRaw !== '') {
+            $identity['endDate'] = FPPSemantics::interpretDateToken(
+                (string)$endDateRaw,
+                null,
+                $warnings,
+                'manifest.endDate'
+            );
         }
 
         // Days: accept explicit days/day, otherwise accept range.days
         if (array_key_exists('days', $entry) && $entry['days'] !== null && $entry['days'] !== '') {
-            $identity['days'] = (string)$entry['days'];
+            $identity['days'] = self::normalizeDaysToken((string)$entry['days']);
         } elseif (array_key_exists('day', $entry) && $entry['day'] !== null && $entry['day'] !== '') {
-            $identity['days'] = (string)$entry['day'];
+            $identity['days'] = self::normalizeDaysToken((string)$entry['day']);
         } elseif (isset($entry['range']['days']) && $entry['range']['days'] !== '') {
-            $identity['days'] = (string)$entry['range']['days'];
+            $identity['days'] = self::normalizeDaysToken((string)$entry['range']['days']);
         }
 
         // Times
-        $identity['startTime'] = (string)($entry['startTime'] ?? '');
-        $identity['endTime']   = (string)($entry['endTime'] ?? '');
+        $identity['startTime'] = trim((string)($entry['startTime'] ?? ''));
+        $identity['endTime']   = trim((string)($entry['endTime'] ?? ''));
+
+        // Commands have no duration; force endTime = startTime for identity
+        if ($identity['type'] === 'command' && isset($identity['startTime'])) {
+            $identity['endTime'] = $identity['startTime'];
+        }
 
         // Remove empty fields
         foreach ($identity as $k => $v) {
@@ -91,6 +133,19 @@ final class ManifestIdentity
             }
         }
 
+        foreach (['startDate', 'endDate'] as $dateKey) {
+            if (
+                !isset($identity[$dateKey]) ||
+                !is_array($identity[$dateKey]) ||
+                (
+                    empty($identity[$dateKey]['symbolic']) &&
+                    empty($identity[$dateKey]['hard'])
+                )
+            ) {
+                $missing[] = $dateKey;
+            }
+        }
+
         return [
             'ok' => empty($missing),
             'missing' => $missing,
@@ -103,7 +158,7 @@ final class ManifestIdentity
      * This is the ONLY public way to obtain canonical identity fields.
      * Callers must treat ok=false as a hard stop and must not schedule/diff/adopt.
      *
-     * @return array{ok: bool, identity: array<string,string>, missing: string[]}
+     * @return array{ok: bool, identity: array<string,mixed>, missing: string[]}
      */
     public static function buildIdentity(array $entry): array
     {
@@ -207,6 +262,11 @@ final class ManifestIdentity
             $hash = self::buildHash($entry);
 
             if ($id === '' || $hash === '') {
+                if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                    error_log('[GCS DEBUG][IDENTITY][DROP SERIES ENTRY] ' . json_encode([
+                        'entry_keys' => is_array($entry) ? array_keys($entry) : null,
+                    ], JSON_UNESCAPED_SLASHES));
+                }
                 continue;
             }
 
@@ -304,13 +364,6 @@ final class ManifestIdentity
             $normalized['gcs']
         );
 
-        // Normalize dates
-        foreach (['startDate', 'endDate'] as $key) {
-            if (isset($normalized[$key])) {
-                $normalized[$key] = self::normalizeDate($normalized[$key]);
-            }
-        }
-
         // Normalize numeric fields
         foreach ([
             'enabled',
@@ -357,24 +410,5 @@ final class ManifestIdentity
         }
 
         return 'playlist';
-    }
-
-    /**
-     * Normalize date formats.
-     */
-    private static function normalizeDate(string $date): string
-    {
-        // Already normalized
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) {
-            return $date;
-        }
-
-        // Leave holiday tokens untouched
-        if (!preg_match('/^\d/', $date)) {
-            return $date;
-        }
-
-        $ts = strtotime($date);
-        return $ts ? date('Y-m-d', $ts) : $date;
     }
 }
