@@ -90,16 +90,6 @@ final class SchedulerDiff
                 ]));
             }
 
-            $identityCheck = ManifestIdentity::buildIdentity($desiredEntry);
-            if (!$identityCheck['ok']) {
-                if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                    error_log('[GCS DEBUG][DIFF][DESIRED SKIP INVALID IDENTITY] ' . json_encode([
-                        'missing' => $identityCheck['missing'],
-                        'keys' => array_keys($desiredEntry),
-                    ]));
-                }
-                continue;
-            }
 
 
             $id = self::extractManifestIdFromDesired($desiredEntry);
@@ -168,16 +158,6 @@ final class SchedulerDiff
                         continue;
                     }
 
-                    $existingIdentity = ManifestIdentity::buildIdentity($existing);
-                    if (!$existingIdentity['ok']) {
-                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID EXISTING IDENTITY] ' . json_encode([
-                                'missing' => $existingIdentity['missing'],
-                                'keys' => array_keys($existing),
-                            ]));
-                        }
-                        continue;
-                    }
 
                     $existingId = ManifestIdentity::buildId($existing);
 
