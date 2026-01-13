@@ -63,7 +63,7 @@ final class PreviewFormatter
     {
         $identity = $e['_manifest']['identity'] ?? [];
 
-        return [
+        $row = [
             'action' => $action,
             'type'   => $identity['type'] ?? 'unknown',
             'target' => $identity['target'] ?? '(none)',
@@ -76,6 +76,24 @@ final class PreviewFormatter
             ],
             '_manifest' => $e['_manifest'] ?? null,
         ];
+
+        // ---- Identity completeness (required for adopt / diff) ----
+        // Preview rows MUST include full identity fields verbatim.
+        foreach ([
+            'type',
+            'target',
+            'startDate',
+            'endDate',
+            'days',
+            'startTime',
+            'endTime',
+        ] as $k) {
+            if (isset($e[$k]) && !isset($row[$k])) {
+                $row[$k] = $e[$k];
+            }
+        }
+
+        return $row;
     }
 
     private static function formatDateForPreview($value): mixed
