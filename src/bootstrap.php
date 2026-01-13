@@ -72,7 +72,7 @@ try {
         $warnings
     );
 
-    FppSemantics::setEnvironment($env->toArray());
+    FPPSemantics::setEnvironment($env->toArray());
 
     // Optional: log warnings (recommended)
     foreach ($warnings as $w) {
