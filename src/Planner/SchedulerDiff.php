@@ -5,14 +5,13 @@ declare(strict_types=1);
 /**
  * SchedulerDiff
  *
- * Computes semantic differences between desired scheduler entries and
- * existing scheduler state.
+ * Computes differences between desired scheduler entries and existing scheduler state.
  *
  * Identity model:
  * - Desired entries MAY include a planner-attached `_manifest` array with a non-empty `id` string.
  * - Existing entries are considered plugin-managed ONLY if they include `_manifest.id`.
- * - Existing entries without `_manifest.id` are eligible for adoption via semantic matching.
- * - Semantic matching is used only when `_manifest.id` is absent.
+ * - Existing entries without `_manifest.id` are eligible for adoption via strict identity matching.
+ * - Adoption uses strict ManifestIdentity-derived IDs for both desired and existing entries.
  *
  * Notes:
  * - This file intentionally does NOT introduce new dependencies (no new methods
@@ -179,7 +178,7 @@ final class SchedulerDiff
                 }
             } else {
                 // Adoption candidates are planner-emitted desired schedule entries that have a stable planner UID.
-                // We never attempt adoption/semantic matching for inventory/template rows.
+                // We never attempt adoption for inventory/template rows.
                 if (!$hasPlannerManifestUid($desiredEntry)) {
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][DIFF][ADOPT SKIP NO_PLANNER_UID] ' . json_encode([
@@ -202,35 +201,12 @@ final class SchedulerDiff
                         continue;
                     }
 
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        $existingSummary = $existing['summary'] ?? null;
-                        $desiredSummary = $desiredEntry['summary'] ?? null;
-                        error_log('[GCS DEBUG][DIFF][SEMANTIC TRY] ' . json_encode([
-                            'existing_index' => $key,
-                            'existing_summary' => $existingSummary,
-                            'desired_summary' => $desiredSummary,
-                        ]));
-                    }
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][CHECK][ADOPT] ' . json_encode([
-                            'existing_index' => $key,
-                        ]));
-                    }
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][SEMANTIC INPUT] ' . json_encode([
-                            'existing_keys' => array_keys($existing),
-                            'desired_keys' => array_keys($desiredEntry),
-                        ]));
-                    }
-
                     $existingOk = $isNormalizedScheduleEntry($existing);
                     $desiredOk  = $isNormalizedScheduleEntry($desiredEntry);
 
                     if (!$existingOk || !$desiredOk) {
                         if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][SEMANTIC SKIP NON_NORMALIZED] ' . json_encode([
+                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP NON_NORMALIZED] ' . json_encode([
                                 'existing_index' => $key,
                                 'existing_ok' => $existingOk,
                                 'desired_ok' => $desiredOk,
@@ -241,9 +217,21 @@ final class SchedulerDiff
                         continue;
                     }
 
-                    // Semantic equivalence check (UID intentionally ignored)
                     $existingNorm = self::normalizeIdentityInput($existing);
                     $desiredNorm = self::normalizeIdentityInput($desiredEntry);
+
+                    $existingId = ManifestIdentity::buildId($existingNorm);
+                    $desiredId  = ManifestIdentity::buildId($desiredNorm);
+
+                    if ($existingId === '' || $desiredId === '') {
+                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID ID] ' . json_encode([
+                                'existing_norm' => $existingNorm,
+                                'desired_norm'  => $desiredNorm,
+                            ]));
+                        }
+                        continue;
+                    }
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT RAW] ' . json_encode([
@@ -258,56 +246,18 @@ final class SchedulerDiff
                     }
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][SEMANTIC NORMALIZED] ' . json_encode([
-                            'existing_index' => $key,
-                            'existing_has_startDate' => isset($existingNorm['startDate']),
-                            'existing_has_endDate'   => isset($existingNorm['endDate']),
-                            'existing_has_days'      => (isset($existingNorm['days']) || isset($existingNorm['day'])),
-                            'desired_has_startDate'  => isset($desiredNorm['startDate']),
-                            'desired_has_endDate'    => isset($desiredNorm['endDate']),
-                            'desired_has_days'       => (isset($desiredNorm['days']) || isset($desiredNorm['day'])),
-                            'existing_keys' => array_keys($existingNorm),
-                            'desired_keys'  => array_keys($desiredNorm),
+                        error_log('[GCS DEBUG][DIFF][ADOPT ID COMPARE] ' . json_encode([
+                            'existingId' => $existingId,
+                            'desiredId'  => $desiredId,
                         ]));
                     }
 
-                    $existingHasIdentity = isset($existingNorm['startDate'], $existingNorm['endDate']) && (isset($existingNorm['days']) || isset($existingNorm['day']));
-                    $desiredHasIdentity  = isset($desiredNorm['startDate'], $desiredNorm['endDate']) && (isset($desiredNorm['days']) || isset($desiredNorm['day']));
-
-                    if (!$existingHasIdentity || !$desiredHasIdentity) {
-                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][SEMANTIC SKIP INCOMPLETE_IDENTITY] ' . json_encode([
-                                'existing_index' => $key,
-                                'existingHasIdentity' => $existingHasIdentity,
-                                'desiredHasIdentity' => $desiredHasIdentity,
-                                'existing_keys' => array_keys($existingNorm),
-                                'desired_keys'  => array_keys($desiredNorm),
-                            ]));
-                        }
-                        continue;
-                    }
-
-                    $matchResult = ManifestIdentity::semanticMatch($existingNorm, $desiredNorm);
+                    $matchResult = ($existingId === $desiredId);
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
                         error_log('[GCS DEBUG][ADOPT][IDENTITY RESULT] ' . json_encode([
                             'result' => $matchResult,
                         ]));
-                    }
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        $desiredSummary = $desiredEntry['summary'] ?? null;
-                        if ($matchResult) {
-                            error_log('[GCS DEBUG][DIFF][SEMANTIC MATCH] ' . json_encode([
-                                'existing_index' => $key,
-                                'desired_summary' => $desiredSummary,
-                            ]));
-                        } else {
-                            error_log('[GCS DEBUG][DIFF][SEMANTIC NO MATCH] ' . json_encode([
-                                'existing_index' => $key,
-                                'desired_summary' => $desiredSummary,
-                            ]));
-                        }
                     }
 
                     if ($matchResult) {
@@ -327,7 +277,7 @@ final class SchedulerDiff
                 }
 
                 if (!$matched) {
-                    // No semantic match → new schedule entry
+                    // No identity match → new schedule entry
                     $toCreate[] = $desiredEntry;
 
                     if (defined('GCS_DEBUG') && GCS_DEBUG) {
