@@ -165,13 +165,18 @@ final class ManifestIdentity
         $v = self::validateIdentity($identity);
 
         if (!$v['ok']) {
-            error_log('[GCS][IDENTITY INVALID] ' . json_encode([
-                'summary' => $entry['summary'] ?? null,
-                'uid' => $entry['uid'] ?? null,
-                'missing' => $v['missing'],
-                'entry_keys' => array_keys($entry),
-                'identity' => $identity,
-            ], JSON_UNESCAPED_SLASHES));
+            // Identity validation is authoritative only during diff/apply.
+            // Planner, preview, and inventory paths legitimately operate on
+            // partial structures and must not emit errors.
+            if (defined('GCS_STRICT_IDENTITY') && GCS_STRICT_IDENTITY) {
+                error_log('[GCS][IDENTITY INVALID] ' . json_encode([
+                    'summary' => $entry['summary'] ?? null,
+                    'uid' => $entry['uid'] ?? null,
+                    'missing' => $v['missing'],
+                    'entry_keys' => array_keys($entry),
+                    'identity' => $identity,
+                ], JSON_UNESCAPED_SLASHES));
+            }
         }
 
         return [
