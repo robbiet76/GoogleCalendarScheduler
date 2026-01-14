@@ -168,7 +168,7 @@ final class ManifestIdentity
             // Identity validation is authoritative only during diff/apply.
             // Planner, preview, and inventory paths legitimately operate on
             // partial structures and must not emit errors.
-            if (defined('GCS_STRICT_IDENTITY') && GCS_STRICT_IDENTITY) {
+            if (defined('GCS_STRICT_IDENTITY') && constant('GCS_STRICT_IDENTITY')) {
                 error_log('[GCS][IDENTITY INVALID] ' . json_encode([
                     'summary' => $entry['summary'] ?? null,
                     'uid' => $entry['uid'] ?? null,
