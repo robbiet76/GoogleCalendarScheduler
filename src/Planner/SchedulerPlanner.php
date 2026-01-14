@@ -386,6 +386,17 @@ final class SchedulerPlanner
 
             // REPLACEMENT LOGIC:
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
+            // DEBUG: capture exact identity input before ManifestIdentity
+            error_log('[GCS DEBUG][IDENTITY_INPUT] ' . json_encode([
+                'isPreview' => $isPreview,
+                'type'      => $entry['type']      ?? null,
+                'target'    => $entry['target']    ?? null,
+                'startDate' => $entry['startDate'] ?? null,
+                'endDate'   => $entry['endDate']   ?? null,
+                'startTime' => $entry['startTime'] ?? null,
+                'endTime'   => $entry['endTime']   ?? null,
+                'yaml'      => $entry['yaml']      ?? null,
+            ], JSON_UNESCAPED_SLASHES));
             if (!$entry || !is_array($entry)) {
                 continue;
             }
