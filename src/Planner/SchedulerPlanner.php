@@ -384,25 +384,23 @@ final class SchedulerPlanner
             }
             $bundle['base']['uid'] = (string) $bundle['base']['uid'];
 
-            $manifest = ManifestIdentity::fromIntent($bundle['base']);
+            // REPLACEMENT LOGIC:
+            $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
+            if (!$entry || !is_array($entry)) {
+                continue;
+            }
 
-            // ManifestIdentity returns ARRAY ONLY.
-            // In adopt_preview, id/hash may be intentionally null (not adopted yet).
-            $hasIdentity = (is_array($manifest) && array_key_exists('id', $manifest) && array_key_exists('hash', $manifest));
-            $idOk = ($hasIdentity && is_string($manifest['id']) && $manifest['id'] !== '');
-            $hashOk = ($hasIdentity && is_string($manifest['hash']) && $manifest['hash'] !== '');
+            $manifest = ManifestIdentity::fromScheduleEntry($entry);
 
-            if (!$idOk || !$hashOk) {
+            $hasIdentity = (
+                is_array($manifest) &&
+                isset($manifest['id'], $manifest['hash']) &&
+                is_string($manifest['id']) && $manifest['id'] !== '' &&
+                is_string($manifest['hash']) && $manifest['hash'] !== ''
+            );
+
+            if (!$hasIdentity) {
                 if ($isPreview) {
-                    if ($debug) {
-                        self::dbg($config, 'manifest_identity_incomplete_preview', [
-                            'uid'     => (string)($bundle['base']['uid'] ?? ''),
-                            'summary' => (string)($bundle['base']['template']['summary'] ?? ''),
-                            'id'      => $hasIdentity ? $manifest['id'] : null,
-                            'hash'    => $hasIdentity ? $manifest['hash'] : null,
-                        ]);
-                    }
-                    // Keep entry; attach explicit nulls for preview.
                     $manifest = [
                         'id'   => null,
                         'hash' => null,
@@ -412,27 +410,10 @@ final class SchedulerPlanner
                 }
             }
 
-            if ($debug) {
-                self::dbg($config, 'manifest_identity', [
-                    'uid'    => (string)($bundle['base']['uid'] ?? ''),
-                    'id'     => $manifest['id'] ?? null,
-                    'hash'   => $manifest['hash'] ?? null,
-                    'range'  => $bundle['base']['range'] ?? null,
-                    'type'   => $bundle['base']['template']['type'] ?? null,
-                    'target' => $bundle['base']['template']['target'] ?? null,
-                ]);
-            }
-
-            $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
-            if (!$entry || !is_array($entry)) {
-                continue;
-            }
-
-            // Attach manifest AFTER entry materialization so it is preserved
             $entry['_manifest'] = [
                 'uid'  => (string) ($bundle['base']['uid'] ?? ''),
-                'id'   => $manifest['id'] ?? null,
-                'hash' => $manifest['hash'] ?? null,
+                'id'   => $manifest['id'],
+                'hash' => $manifest['hash'],
             ];
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);

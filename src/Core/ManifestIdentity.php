@@ -237,6 +237,33 @@ final class ManifestIdentity
     }
 
     /**
+     * Build a ManifestIdentity from a single schedule entry.
+     *
+     * This is a compatibility adapter for callers that operate
+     * on concrete scheduler entries instead of planner intents.
+     *
+     * @param array $entry
+     * @return array{ids: string[], hashes: string[]}
+     */
+    public static function fromScheduleEntry(array $entry): array
+    {
+        $id = self::buildId($entry);
+        $hash = self::buildHash($entry);
+
+        if ($id === '' || $hash === '') {
+            return [
+                'ids' => [],
+                'hashes' => [],
+            ];
+        }
+
+        return [
+            'ids' => [$id],
+            'hashes' => [$hash],
+        ];
+    }
+
+    /**
      * Build a ManifestIdentity from a single intent.
      *
      * This is a thin adapter used by SchedulerSync so it does not
