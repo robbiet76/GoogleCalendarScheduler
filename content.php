@@ -187,6 +187,47 @@ if ($endpoint !== '') {
         }
 
         // --------------------------------------------------------------
+        // Adopt existing scheduler entries (WRITE path)
+        // --------------------------------------------------------------
+        if ($endpoint === 'adopt') {
+            gcsJsonHeader();
+
+            try {
+                error_log('[GCS DEBUG][ADOPT] start');
+
+                // Enable adopt mode
+                $cfg['mode'] = 'adopt';
+                $cfg['runtime']['adopt'] = true;
+
+                // Build plan in adopt mode
+                $plan = SchedulerPlanner::plan($cfg);
+                error_log('[GCS DEBUG][ADOPT] planner completed');
+
+                // Apply adoption (writes schedule.json)
+                $applyResult = SchedulerApply::applyFromConfig($cfg);
+                error_log('[GCS DEBUG][ADOPT] apply completed');
+
+                echo json_encode([
+                    'ok'     => true,
+                    'result' => [
+                        'plan'  => $plan,
+                        'apply' => $applyResult,
+                    ],
+                ]);
+                exit;
+            } catch (\Throwable $e) {
+                error_log('[GCS ERROR][ADOPT] ' . $e->getMessage());
+                error_log($e->getTraceAsString());
+
+                echo json_encode([
+                    'ok'    => false,
+                    'error' => $e->getMessage(),
+                ]);
+                exit;
+            }
+        }
+
+        // --------------------------------------------------------------
         // Apply (WRITE path): blocked if dry-run is enabled
         // --------------------------------------------------------------
         if ($endpoint=== 'apply') {
