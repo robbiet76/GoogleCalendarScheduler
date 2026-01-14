@@ -111,16 +111,18 @@ final class HolidayResolver
         // Calculated holiday (FPP uses month/day=0 with a calc block)
         if (isset($def['calc']) && is_array($def['calc'])) {
             $dt = self::resolveCalculatedHoliday($def['calc'], $year);
-            if ($dt instanceof DateTime) {
-                error_log(
-                    '[GCS DEBUG][HolidayResolver] ' .
-                    $shortName . ' ' . $year . ' resolved to ' . $dt->format('Y-m-d')
-                );
-            } else {
-                error_log(
-                    '[GCS DEBUG][HolidayResolver] ' .
-                    $shortName . ' ' . $year . ' failed to resolve'
-                );
+            if (defined('GCS_DEBUG_HOLIDAYS') && GCS_DEBUG_HOLIDAYS) {
+                if ($dt instanceof DateTime) {
+                    error_log(
+                        '[GCS DEBUG][HolidayResolver] ' .
+                        $shortName . ' ' . $year . ' resolved to ' . $dt->format('Y-m-d')
+                    );
+                } else {
+                    error_log(
+                        '[GCS DEBUG][HolidayResolver] ' .
+                        $shortName . ' ' . $year . ' failed to resolve'
+                    );
+                }
             }
             return $dt;
         }
