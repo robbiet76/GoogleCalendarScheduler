@@ -403,19 +403,17 @@ final class SchedulerPlanner
 
             $manifest = ManifestIdentity::fromScheduleEntry($entry);
 
-            $hasIdentity = (
-                is_array($manifest) &&
-                isset($manifest['id'], $manifest['hash']) &&
-                is_string($manifest['id']) && $manifest['id'] !== '' &&
-                is_string($manifest['hash']) && $manifest['hash'] !== ''
-            );
+            $primaryId   = ManifestIdentity::primaryId($manifest);
+            $primaryHash = ManifestIdentity::primaryHash($manifest);
+
+            $hasIdentity =
+                is_string($primaryId)   && $primaryId   !== '' &&
+                is_string($primaryHash) && $primaryHash !== '';
 
             if (!$hasIdentity) {
                 if ($isPreview) {
-                    $manifest = [
-                        'id'   => null,
-                        'hash' => null,
-                    ];
+                    $primaryId   = null;
+                    $primaryHash = null;
                 } else {
                     throw new \RuntimeException('Invariant violation: invalid manifest identity');
                 }
@@ -423,8 +421,8 @@ final class SchedulerPlanner
 
             $entry['_manifest'] = [
                 'uid'  => (string) ($bundle['base']['uid'] ?? ''),
-                'id'   => $manifest['id'],
-                'hash' => $manifest['hash'],
+                'id'   => $primaryId,
+                'hash' => $primaryHash,
             ];
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
