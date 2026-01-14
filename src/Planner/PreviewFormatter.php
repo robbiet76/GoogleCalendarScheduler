@@ -61,12 +61,12 @@ final class PreviewFormatter
 
     private static function row(string $action, array $e): array
     {
-        $identity = $e['_manifest']['identity'] ?? [];
+        $semantic = FPPSemantics::inferTypeAndTargetFromScheduleEntry($e);
 
         $row = [
             'action' => $action,
-            'type'   => $identity['type'] ?? 'unknown',
-            'target' => $identity['target'] ?? '(none)',
+            'type'   => $semantic['type'],
+            'target' => $semantic['target'] ?? '(none)',
             'when'   => [
                 'days'      => $e['days']      ?? ($e['day'] ?? null),
                 'startTime' => $e['startTime'] ?? null,
@@ -76,22 +76,6 @@ final class PreviewFormatter
             ],
             '_manifest' => $e['_manifest'] ?? null,
         ];
-
-        // ---- Identity completeness (required for adopt / diff) ----
-        // Preview rows MUST include full identity fields verbatim.
-        foreach ([
-            'type',
-            'target',
-            'startDate',
-            'endDate',
-            'days',
-            'startTime',
-            'endTime',
-        ] as $k) {
-            if (isset($e[$k]) && !isset($row[$k])) {
-                $row[$k] = $e[$k];
-            }
-        }
 
         return $row;
     }
