@@ -391,11 +391,22 @@ final class SchedulerPlanner
 
             // REPLACEMENT LOGIC:
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
+            // ------------------------------------------------------------------
+            // Establish semantic identity inputs (planner intent first, inference second)
+            // ------------------------------------------------------------------
+            $finalType   = $bundle['base']['template']['type']   ?? null;
+            $finalTarget = $bundle['base']['template']['target'] ?? null;
+
+            if ($finalType === null || $finalTarget === null) {
+                $inferred = FPPSemantics::inferTypeAndTargetFromScheduleEntry($entry);
+                $finalType   = $finalType   ?? $inferred['type'];
+                $finalTarget = $finalTarget ?? $inferred['target'];
+            }
             // DEBUG: capture exact identity input before ManifestIdentity
             error_log('[GCS DEBUG][IDENTITY_INPUT] ' . json_encode([
                 'isPreview' => $isPreview,
-                'type'      => $entry['type']      ?? null,
-                'target'    => $entry['target']    ?? null,
+                'type'      => $finalType,
+                'target'    => $finalTarget,
                 'startDate' => $entry['startDate'] ?? null,
                 'endDate'   => $entry['endDate']   ?? null,
                 'startTime' => $entry['startTime'] ?? null,

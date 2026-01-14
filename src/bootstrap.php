@@ -27,6 +27,7 @@ declare(strict_types=1);
  */
 define('GCS_CONFIG_PATH', '/home/fpp/media/config/plugin.googleCalendarScheduler.json');
 define('GCS_LOG_PATH', '/home/fpp/media/logs/google-calendar-scheduler.log');
+define('GCS_DEBUG_HOLIDAYS', false);
 
 /*
  * ============================================================

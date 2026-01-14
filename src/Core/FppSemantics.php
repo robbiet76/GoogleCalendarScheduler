@@ -589,4 +589,47 @@ final class FPPSemantics
 
         return $payload;
     }
+    /* =====================================================================
+     * Type / target inference from FPP scheduler entries
+     * ===================================================================== */
+
+    /**
+     * Infer semantic type and target from a raw FPP schedule entry.
+     *
+     * This is used when planner intent is absent (adoption, identity refresh).
+     *
+     * @param array<string,mixed> $entry
+     * @return array{type:string,target:?string}
+     */
+    public static function inferTypeAndTargetFromScheduleEntry(array $entry): array
+    {
+        // Command entries
+        if (!empty($entry['command'])) {
+            return [
+                'type'   => self::TYPE_COMMAND,
+                'target' => is_string($entry['command']) ? $entry['command'] : null,
+            ];
+        }
+
+        // Playlist / sequence entries
+        if (!empty($entry['playlist'])) {
+            if (!empty($entry['sequence'])) {
+                return [
+                    'type'   => self::TYPE_SEQUENCE,
+                    'target' => is_string($entry['playlist']) ? $entry['playlist'] : null,
+                ];
+            }
+
+            return [
+                'type'   => self::TYPE_PLAYLIST,
+                'target' => is_string($entry['playlist']) ? $entry['playlist'] : null,
+            ];
+        }
+
+        // Fallback: treat as playlist with unknown target
+        return [
+            'type'   => self::TYPE_PLAYLIST,
+            'target' => null,
+        ];
+    }
 }
