@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+use Throwable;
+
 /**
  * DiffPreviewer
  *
@@ -36,10 +38,20 @@ final class DiffPreviewer
         $updates = [];
         $deletes = [];
 
+        // Accept both shapes:
+        // - wrapped: ['diff' => ['creates' => [], 'updates' => [], 'deletes' => []]]
+        // - direct:  ['creates' => [], 'updates' => [], 'deletes' => []]
+        $diff = null;
         if (isset($result['diff']) && is_array($result['diff'])) {
-            $creates = self::normalizeCreateRows($result['diff']['creates'] ?? []);
-            $updates = self::normalizeUpdateRows($result['diff']['updates'] ?? []);
-            $deletes = self::normalizeDeleteRows($result['diff']['deletes'] ?? []);
+            $diff = $result['diff'];
+        } elseif (isset($result['creates']) || isset($result['updates']) || isset($result['deletes'])) {
+            $diff = $result;
+        }
+
+        if (is_array($diff)) {
+            $creates = self::normalizeCreateRows($diff['creates'] ?? []);
+            $updates = self::normalizeUpdateRows($diff['updates'] ?? []);
+            $deletes = self::normalizeDeleteRows($diff['deletes'] ?? []);
         }
 
         // Summary-only fallback (legacy safety)
@@ -101,7 +113,18 @@ final class DiffPreviewer
         }
 
         // Execute the only permitted write boundary
-        $applyResult = SchedulerApply::applyFromConfig($config);
+        try {
+            $applyResult = SchedulerApply::applyFromConfig($config);
+        } catch (Throwable $e) {
+            return [
+                'ok'    => false,
+                'diff'  => $plan,
+                'error' => [
+                    'message' => $e->getMessage(),
+                    'type'    => get_class($e),
+                ],
+            ];
+        }
 
         return [
             'ok'    => true,
@@ -166,14 +189,27 @@ final class DiffPreviewer
      */
     private static function normalizeEntryRow(array $entry, string $type): array
     {
+        $when = (isset($entry['when']) && is_array($entry['when'])) ? $entry['when'] : [];
+
+        // Legacy FPP scheduler keys: 'command' or 'playlist'
+        if (!empty($entry['command']) || !empty($entry['playlist'])) {
+            $mode = !empty($entry['command']) ? 'command' : 'playlist';
+            $target = !empty($entry['command']) ? $entry['command'] : ($entry['playlist'] ?? null);
+        } else {
+            // Semantic planner keys: 'type' + 'target'
+            $mode = $entry['type'] ?? 'unknown';
+            $target = $entry['target'] ?? null;
+        }
+
         return [
             'type'      => $type,
-            'mode'      => !empty($entry['command']) ? 'command' : 'playlist',
-            'target'    => !empty($entry['command']) ? $entry['command'] : $entry['playlist'],
-            'startDate' => $entry['startDate'] ?? null,
-            'endDate'   => $entry['endDate'] ?? null,
-            'startTime' => $entry['startTime'] ?? null,
-            'endTime'   => $entry['endTime'] ?? null,
+            'mode'      => $mode,
+            'target'    => $target,
+            'startDate' => $entry['startDate'] ?? ($when['startDate'] ?? null),
+            'endDate'   => $entry['endDate'] ?? ($when['endDate'] ?? null),
+            'startTime' => $entry['startTime'] ?? ($when['startTime'] ?? null),
+            'endTime'   => $entry['endTime'] ?? ($when['endTime'] ?? null),
+            '_manifest' => (isset($entry['_manifest']) && is_array($entry['_manifest'])) ? $entry['_manifest'] : null,
         ];
     }
 }
