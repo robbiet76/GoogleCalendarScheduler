@@ -168,12 +168,28 @@ final class ManifestIdentity
             // Identity validation is authoritative only during diff/apply.
             // Planner, preview, and inventory paths legitimately operate on
             // partial structures and must not emit errors.
-            if (defined('GCS_STRICT_IDENTITY') && constant('GCS_STRICT_IDENTITY')) {
+            $strict = false;
+            if (defined('GCS_STRICT_IDENTITY')) {
+                $strict = (bool)constant('GCS_STRICT_IDENTITY');
+            }
+
+            if ($strict) {
                 error_log('[GCS][IDENTITY INVALID] ' . json_encode([
                     'summary' => $entry['summary'] ?? null,
                     'uid' => $entry['uid'] ?? null,
                     'missing' => $v['missing'],
                     'entry_keys' => array_keys($entry),
+                    // Include a few top-level fields that commonly drive identity.
+                    'entry_hint' => [
+                        'type' => $entry['type'] ?? null,
+                        'playlist' => $entry['playlist'] ?? null,
+                        'command' => $entry['command'] ?? null,
+                        'startDate' => $entry['startDate'] ?? ($entry['range']['start'] ?? null),
+                        'endDate' => $entry['endDate'] ?? ($entry['range']['end'] ?? null),
+                        'days' => $entry['days'] ?? ($entry['range']['days'] ?? ($entry['day'] ?? null)),
+                        'startTime' => $entry['startTime'] ?? null,
+                        'endTime' => $entry['endTime'] ?? null,
+                    ],
                     'identity' => $identity,
                 ], JSON_UNESCAPED_SLASHES));
             }
