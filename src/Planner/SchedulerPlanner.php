@@ -46,6 +46,11 @@ final class SchedulerPlanner
 
     public static function plan(array $config): array
     {
+        // ------------------------------------------------------------------
+        // Background adoption (identity refresh)
+        // Safe, idempotent, no scheduler mutation.
+        // ------------------------------------------------------------------
+        SchedulerAdopt::run();
         $debug = self::isDebugOrderingEnabled($config);
 
         // Adopt preview detection MUST be mechanical and controller-driven.
