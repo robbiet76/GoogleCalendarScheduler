@@ -261,9 +261,23 @@ final class SchedulerSync
         if ($type !== FPPSemantics::TYPE_PLAYLIST
             && $type !== FPPSemantics::TYPE_SEQUENCE
             && $type !== FPPSemantics::TYPE_COMMAND) {
+            if (self::isDebugEnabled()) {
+                error_log('[GCS DEBUG][SYNC INVALID TYPE] ' . json_encode([
+                    'typeRaw' => $typeRaw,
+                    'template_keys' => array_keys($tpl),
+                    'intent_keys' => array_keys($intent),
+                ]));
+            }
             return "Unable to determine schedule entry type (expected playlist, sequence, or command); got '{$typeRaw}'";
         }
         if ($target === '') {
+            if (self::isDebugEnabled()) {
+                error_log('[GCS DEBUG][SYNC MISSING TARGET] ' . json_encode([
+                    'type' => $type,
+                    'template_keys' => array_keys($tpl),
+                    'intent_keys' => array_keys($intent),
+                ]));
+            }
             return 'Missing target for intent (expected playlist/sequence name or command name)';
         }
 
@@ -409,6 +423,17 @@ final class SchedulerSync
         // Preserve manifest identity if present (opaque, planner-owned)
         if (isset($intent['_manifest']) && is_array($intent['_manifest'])) {
             $entry['_manifest'] = $intent['_manifest'];
+        }
+        if (self::isDebugEnabled()) {
+            error_log('[GCS DEBUG][SYNC ENTRY RETURN] ' . json_encode([
+                'uid'       => $entry['uid'] ?? null,
+                'playlist'  => $entry['playlist'] ?? null,
+                'command'   => $entry['command'] ?? null,
+                'sequence'  => $entry['sequence'] ?? null,
+                'startDate' => $entry['startDate'] ?? null,
+                'endDate'   => $entry['endDate'] ?? null,
+                'day'       => $entry['day'] ?? null,
+            ]));
         }
         return $entry;
     }
