@@ -44,24 +44,27 @@ final class SchedulerApply
             ? $plan['desiredEntries']
             : [];
 
+        $applyPlan = $plan['applyPlan'] ?? null;
+        if (!is_array($applyPlan)) {
+            $applyPlan = self::planApply($existing, $desired);
+        }
+
         $previewCounts = [
-            'creates' => isset($plan['creates']) && is_array($plan['creates']) ? count($plan['creates']) : 0,
-            'updates' => isset($plan['updates']) && is_array($plan['updates']) ? count($plan['updates']) : 0,
-            'deletes' => isset($plan['deletes']) && is_array($plan['deletes']) ? count($plan['deletes']) : 0,
+            'creates' => isset($applyPlan['creates']) && is_array($applyPlan['creates']) ? count($applyPlan['creates']) : 0,
+            'updates' => isset($applyPlan['updates']) && is_array($applyPlan['updates']) ? count($applyPlan['updates']) : 0,
+            'deletes' => isset($applyPlan['deletes']) && is_array($applyPlan['deletes']) ? count($applyPlan['deletes']) : 0,
         ];
 
         if ($dryRun) {
             $result = new ManifestResult(
-                $plan['creates'] ?? [],
-                $plan['updates'] ?? [],
-                $plan['deletes'] ?? [],
+                $applyPlan['creates'] ?? [],
+                $applyPlan['updates'] ?? [],
+                $applyPlan['deletes'] ?? [],
                 $plan['messages'] ?? []
             );
 
             return PreviewFormatter::format($result);
         }
-
-        $applyPlan = self::planApply($existing, $desired);
 
         if (
             count($applyPlan['creates']) === 0 &&
@@ -90,16 +93,16 @@ final class SchedulerApply
             $applyPlan['expectedDeletedKeys']
         );
 
-        // Commit manifest snapshot after successful apply
-        $manifest = $plan['manifest'] ?? null;
-        if (is_array($manifest)) {
-            $store = new ManifestStore();
-            $store->commitCurrent(
-                $manifest['calendarMeta'] ?? [],
-                $manifest['entries'] ?? [],
-                $manifest['order'] ?? []
-            );
-        }
+        // Commit manifest snapshot after successful apply (managed entries only)
+        $store = new ManifestStore();
+        $calendarMeta = [
+            'icsUrl' => $cfg['settings']['ics_url'] ?? null,
+        ];
+        $store->commitCurrent(
+            $calendarMeta,
+            $applyPlan['manifestEntries'] ?? [],
+            $applyPlan['manifestOrder'] ?? []
+        );
 
         return [
             'ok'     => true,
@@ -128,6 +131,9 @@ final class SchedulerApply
         $desiredByKey = [];
         $keysInOrder  = [];
 
+        // Keep original desired entries keyed by id for manifest payload extraction
+        $desiredOriginalByKey = [];
+
         foreach ($desired as $d) {
             if (!is_array($d)) {
                 continue;
@@ -144,6 +150,7 @@ final class SchedulerApply
             }
 
             $desiredByKey[$key] = self::normalizeForApply($d);
+            $desiredOriginalByKey[$key] = $d;
         }
 
         // Existing managed entries indexed by canonical key (manifest id)
@@ -208,6 +215,36 @@ final class SchedulerApply
             }
         }
 
+        // Build manifestEntries and manifestOrder per contract
+        $manifestEntries = [];
+        foreach ($keysInOrder as $key) {
+            if (!isset($desiredOriginalByKey[$key])) {
+                continue;
+            }
+            $dOriginal = $desiredOriginalByKey[$key];
+            $m = $dOriginal['_manifest'] ?? [];
+
+            $uid = isset($m['uid']) && is_string($m['uid']) ? $m['uid'] : '';
+            $id = isset($m['id']) && is_string($m['id']) ? $m['id'] : '';
+            $hash = isset($m['hash']) && is_string($m['hash']) ? $m['hash'] : '';
+            $identity = $m['identity'] ?? [];
+            $payload = $m['payload'] ?? [];
+
+            // Defensive rebuild of identity if possible
+            if (class_exists('ManifestIdentity') && method_exists('ManifestIdentity', 'fromScheduleEntry')) {
+                $identity = ManifestIdentity::fromScheduleEntry($payload);
+            }
+
+            // Ensure manifest entry shape
+            $manifestEntries[] = [
+                'uid' => (string)$uid,
+                'id' => (string)$id,
+                'hash' => (string)$hash,
+                'identity' => is_array($identity) ? $identity : [],
+                'payload' => is_array($payload) ? $payload : [],
+            ];
+        }
+
         return [
             'creates'             => $creates,
             'updates'             => $updates,
@@ -215,6 +252,8 @@ final class SchedulerApply
             'newSchedule'         => $newSchedule,
             'expectedManagedKeys' => array_keys($desiredByKey),
             'expectedDeletedKeys' => $deletes,
+            'manifestEntries'     => $manifestEntries,
+            'manifestOrder'       => $keysInOrder,
         ];
     }
 
@@ -241,10 +280,10 @@ final class SchedulerApply
     private static function normalizeForApply(array $entry): array
     {
         // Strip ONLY known GCS-internal metadata keys before writing to schedule.json.
-        // IMPORTANT: _manifest is canonical state and MUST persist.
+        // IMPORTANT: _manifest is canonical state and MUST NOT persist in schedule.json entries.
         // Do NOT remove arbitrary underscore-prefixed keys since FPP/other plugins may
         // legitimately use them.
-        foreach (['_gcs', '_payload'] as $k) {
+        foreach (['_manifest', '_gcs', '_payload'] as $k) {
             if (array_key_exists($k, $entry)) {
                 unset($entry[$k]);
             }
@@ -277,5 +316,11 @@ final class SchedulerApply
         ksort($a);
         ksort($b);
         return $a === $b;
+    }
+
+    public static function undoLastApply(): array
+    {
+        // TODO: Wire to endpoint. This will rollback manifest and restore schedule.json from backup.
+        return ['ok' => false, 'error' => 'Undo not implemented yet'];
     }
 }
