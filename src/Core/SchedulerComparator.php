@@ -48,8 +48,9 @@ final class SchedulerComparator
         }
 
         // Decide command vs non-command without relying on FPP state.
-        // Commands have a command-specific payload block; playlists/sequences do not.
-        $isCommand = (($desired['type'] ?? null) === 'command') || array_key_exists('payload', $desired);
+        // Commands are identified strictly by manifest identity.
+        // Planner-internal structures (e.g. payload presence) MUST NOT be used.
+        $isCommand = (($desired['type'] ?? null) === 'command');
 
         // Non-command (playlist/sequence): BASE_FIELDS are sufficient.
         if (!$isCommand) {

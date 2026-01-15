@@ -46,15 +46,6 @@ final class SchedulerPlanner
 
     public static function plan(array $config): array
     {
-        // Snapshot scheduler.json as-is (disk reality) before any adoption or planning
-        $existingRawDisk = SchedulerSync::readScheduleJsonStatic(
-            SchedulerSync::SCHEDULE_JSON_PATH
-        );
-        // ------------------------------------------------------------------
-        // Background adoption (identity refresh)
-        // Safe, idempotent, no scheduler mutation.
-        // ------------------------------------------------------------------
-        SchedulerAdopt::run();
         $debug = self::isDebugOrderingEnabled($config);
 
         // Adopt preview detection MUST be mechanical and controller-driven.
@@ -395,16 +386,17 @@ final class SchedulerPlanner
 
             // REPLACEMENT LOGIC:
             $entry = SchedulerSync::intentToScheduleEntryPublic($bundle['base']);
+            $entry = FPPSemantics::canonicalizeScheduleEntry($entry);
             // ------------------------------------------------------------------
-            // Establish semantic identity inputs (planner intent first, inference second)
+            // Establish semantic identity inputs (planner intent only)
             // ------------------------------------------------------------------
             $finalType   = $bundle['base']['template']['type']   ?? null;
             $finalTarget = $bundle['base']['template']['target'] ?? null;
 
             if ($finalType === null || $finalTarget === null) {
-                $inferred = FPPSemantics::inferTypeAndTargetFromScheduleEntry($entry);
-                $finalType   = $finalType   ?? $inferred['type'];
-                $finalTarget = $finalTarget ?? $inferred['target'];
+                throw new \RuntimeException(
+                    'Planner invariant violated: type/target missing from planner intent'
+                );
             }
             if (!$entry || !is_array($entry)) {
                 continue;
@@ -425,17 +417,19 @@ final class SchedulerPlanner
                     throw new \RuntimeException('Invariant violation: invalid semantic identity');
                 }
             } else {
-                $id   = ManifestIdentity::buildId($entry);
-                $hash = ManifestIdentity::buildHash($entry);
-
-                if ($id === '' || $hash === '') {
-                    throw new \RuntimeException('Invariant violation: failed to build manifest id/hash');
+                // Identity, id, and hash MUST come from the same canonical build step
+                if (
+                    empty($identityResult['id']) ||
+                    empty($identityResult['hash']) ||
+                    empty($identityResult['identity'])
+                ) {
+                    throw new \RuntimeException('Invariant violation: incomplete manifest identity');
                 }
 
                 $entry['_manifest'] = [
                     'uid'      => (string) ($bundle['base']['uid'] ?? ''),
-                    'id'       => $id,
-                    'hash'     => $hash,
+                    'id'       => (string) $identityResult['id'],
+                    'hash'     => (string) $identityResult['hash'],
                     'identity' => $identityResult['identity'],
                     'payload'  => $entry, // full semantic snapshot for undo/apply
                 ];
@@ -474,14 +468,7 @@ final class SchedulerPlanner
         /* -----------------------------------------------------------------
          * 6. Load existing scheduler state + diff
          * ----------------------------------------------------------------- */
-        $existingEntries = [];
-        foreach ($existingRawDisk as $row) {
-            if (is_array($row)) {
-                $existingEntries[] = $row;
-            }
-        }
-
-        $state = new SchedulerState($existingEntries);
+        $state = new SchedulerState([]);
         $diff  = (new SchedulerDiff($desiredEntries, $state))->compute();
 
         if ($debug) {
@@ -499,7 +486,6 @@ final class SchedulerPlanner
             'deletes'        => $diff->deletes(),
             'desiredEntries' => $desiredEntries,
             'desiredBundles' => $bundles,
-            'existingRaw'    => $existingRawDisk,
         ];
     }
 

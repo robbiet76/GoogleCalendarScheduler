@@ -8,10 +8,9 @@ declare(strict_types=1);
  * Computes differences between desired scheduler entries and existing scheduler state.
  *
  * Identity model:
- * - Desired entries MAY include a planner-attached `_manifest` array with a non-empty `id` string.
+ * - Desired entries MUST include a planner-attached `_manifest` array with a non-empty `id` string.
  * - Existing entries are considered plugin-managed ONLY if they include `_manifest.id`.
- * - Existing entries without `_manifest.id` are eligible for adoption via strict identity matching.
- * - Adoption uses strict ManifestIdentity-derived IDs for both desired and existing entries.
+ * - SchedulerDiff ONLY compares desired entries against manifest-managed entries supplied by SchedulerState.
  *
  * Notes:
  * - This file intentionally does NOT introduce new dependencies (no new methods
@@ -42,7 +41,6 @@ final class SchedulerDiff
 
         // Index existing managed scheduler entries by manifest id.
         $existingManagedById = [];
-        $existingUnmanaged = [];
         foreach ($this->state->getEntries() as $idx => $entry) {
             if (!is_array($entry)) {
                 continue;
@@ -60,8 +58,8 @@ final class SchedulerDiff
             }
             $id = self::extractManifestIdFromExisting($entry);
             if ($id === null) {
-                // Preserve original index so consumption tracking is stable.
-                $existingUnmanaged[$idx] = $entry;
+                // Ignore unmanaged entries entirely.
+                continue;
             } else {
                 if (!isset($existingManagedById[$id])) {
                     $existingManagedById[$id] = $entry;
@@ -72,7 +70,6 @@ final class SchedulerDiff
         $toCreate = [];
         $toUpdate = [];
         $seenIds  = [];
-        $consumedUnmanaged = [];
 
         // Process desired scheduler entries.
         foreach ($this->desired as $desiredEntry) {
@@ -90,134 +87,48 @@ final class SchedulerDiff
                 ]));
             }
 
-
-
             $id = self::extractManifestIdFromDesired($desiredEntry);
 
-            if ($id !== null) {
-                // Planner should not emit duplicates; if it does, keep first to avoid hard failure.
-                if (isset($seenIds[$id])) {
-                    continue;
-                }
-                $seenIds[$id] = true;
+            if ($id === null) {
+                error_log('[GCS ERROR][DIFF][MISSING_MANIFEST_ID] Missing manifest id in desired entry: ' . json_encode($desiredEntry));
+                continue;
+            }
 
-                if (!isset($existingManagedById[$id])) {
-                    $toCreate[] = $desiredEntry;
-                    continue;
-                }
+            // Planner should not emit duplicates; if it does, keep first to avoid hard failure.
+            if (isset($seenIds[$id])) {
+                continue;
+            }
+            $seenIds[$id] = true;
 
-                if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                    error_log('[GCS DEBUG][DIFF][MATCH][MANAGED] ' . $id);
-                }
+            if (!isset($existingManagedById[$id])) {
+                $toCreate[] = $desiredEntry;
+                continue;
+            }
 
-                $existing = $existingManagedById[$id];
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][DIFF][MATCH][MANAGED] ' . $id);
+            }
 
-                if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                    error_log('[GCS DEBUG][DIFF][COMPARE MANAGED] ' . json_encode([
-                        'id' => $id,
-                        'existing_keys' => array_keys($existing),
-                        'desired_keys' => array_keys($desiredEntry),
-                    ]));
-                }
+            $existing = $existingManagedById[$id];
 
-                // Managed entries are compared strictly by canonical fields;
-                // semantic matching MUST NOT be used once a manifest id exists.
-                if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
-                    $toUpdate[] = [
-                        'existing' => $existing,
-                        'desired'  => $desiredEntry,
-                    ];
-                }
-            } else {
-                // Adoption candidates are desired schedule entries that do NOT yet carry a manifest id.
-                // Adoption identity must be derived ONLY via ManifestIdentity.
-                // SchedulerDiff must never resolve/normalize semantics.
+            if (defined('GCS_DEBUG') && GCS_DEBUG) {
+                error_log('[GCS DEBUG][DIFF][COMPARE MANAGED] ' . json_encode([
+                    'id' => $id,
+                    'existing_keys' => array_keys($existing),
+                    'desired_keys' => array_keys($desiredEntry),
+                ]));
+            }
 
-                $matched = false;
-
-                $desiredId = ManifestIdentity::buildId($desiredEntry);
-                if ($desiredId === '') {
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID DESIRED ID] ' . json_encode([
-                            'desired_raw' => $desiredEntry,
-                        ]));
-                    }
-                    // Cannot safely adopt; treat as create.
-                    $toCreate[] = $desiredEntry;
-                    continue;
-                }
-
-                // Ensure adopted/created entries become plugin-managed going forward.
-                if (!isset($desiredEntry['_manifest']) || !is_array($desiredEntry['_manifest'])) {
-                    $desiredEntry['_manifest'] = [];
-                }
-                $desiredEntry['_manifest']['id'] = $desiredId;
-
-                foreach ($existingUnmanaged as $key => $existing) {
-                    if (isset($consumedUnmanaged[$key])) {
-                        continue;
-                    }
-
-
-                    $existingId = ManifestIdentity::buildId($existing);
-
-                    if ($existingId === '') {
-                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][ADOPT SKIP INVALID ID] ' . json_encode([
-                                // Only log raw entries, not normalized
-                                'existing_raw' => $existing,
-                                'desired_raw'  => $desiredEntry,
-                            ]));
-                        }
-                        continue;
-                    }
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][ADOPT][IDENTITY INPUT RAW] ' . json_encode([
-                            'existing_raw' => $existing,
-                            'desired_raw'  => $desiredEntry,
-                        ], JSON_PRETTY_PRINT));
-                    }
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][ADOPT ID COMPARE] ' . json_encode([
-                            'existingId' => $existingId,
-                            'desiredId'  => $desiredId,
-                        ]));
-                    }
-
-                    $matchResult = ($existingId === $desiredId);
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][ADOPT][IDENTITY RESULT] ' . json_encode([
-                            'result' => $matchResult,
-                        ]));
-                    }
-
-                    if ($matchResult) {
-                        $toUpdate[] = [
-                            'existing' => $existing,
-                            'desired'  => $desiredEntry,
-                        ];
-                        $consumedUnmanaged[$key] = true;
-                        $matched = true;
-
-                        if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                            error_log('[GCS DEBUG][DIFF][ADOPTED]');
-                        }
-
-                        break;
-                    }
-                }
-
-                if (!$matched) {
-                    // No identity match → new schedule entry
-                    $toCreate[] = $desiredEntry;
-
-                    if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                        error_log('[GCS DEBUG][DIFF][CREATE]');
-                    }
-                }
+            // Managed entries are compared strictly by canonical fields;
+            // semantic matching, symbolic resolution, or FPPSemantics-style
+            // normalization MUST NOT be used once a manifest id exists.
+            //
+            // Identity ownership is defined solely by _manifest.id.
+            if (!SchedulerComparator::isEquivalent($existing, $desiredEntry)) {
+                $toUpdate[] = [
+                    'existing' => $existing,
+                    'desired'  => $desiredEntry,
+                ];
             }
         }
 

@@ -176,9 +176,24 @@ final class ManifestIdentity
             $identity['days'] = self::normalizeDaysToken((string)$entry['range']['days']);
         }
 
-        // Times
-        $identity['startTime'] = trim((string)($entry['startTime'] ?? ''));
-        $identity['endTime']   = trim((string)($entry['endTime'] ?? ''));
+        // Times (identity-safe: store as array [token, offset])
+        $startTimeToken = isset($entry['startTime']) ? (string)$entry['startTime'] : '';
+        $startTimeOffset = isset($entry['startTimeOffset']) && is_numeric($entry['startTimeOffset'])
+            ? (int)$entry['startTimeOffset']
+            : 0;
+        $identity['startTime'] = [
+            'token' => $startTimeToken,
+            'offset' => $startTimeOffset,
+        ];
+
+        $endTimeToken = isset($entry['endTime']) ? (string)$entry['endTime'] : '';
+        $endTimeOffset = isset($entry['endTimeOffset']) && is_numeric($entry['endTimeOffset'])
+            ? (int)$entry['endTimeOffset']
+            : 0;
+        $identity['endTime'] = [
+            'token' => $endTimeToken,
+            'offset' => $endTimeOffset,
+        ];
 
         // Commands have no duration; force endTime = startTime for identity
         if ($identity['type'] === 'command' && isset($identity['startTime'])) {
@@ -301,11 +316,27 @@ final class ManifestIdentity
             'type' => $identity['type'] ?? '',
             'target' => $identity['target'] ?? '',
             'days' => $identity['days'] ?? '',
-            'startTime' => $identity['startTime'] ?? '',
-            'endTime' => $identity['endTime'] ?? '',
+            'startTime' => isset($identity['startTime']) ? self::stableTimeString($identity['startTime']) : '',
+            'endTime' => isset($identity['endTime']) ? self::stableTimeString($identity['endTime']) : '',
             'startDate' => isset($identity['startDate']) ? self::identityDateKey($identity['startDate']) : '',
             'endDate' => isset($identity['endDate']) ? self::identityDateKey($identity['endDate']) : '',
         ];
+    }
+
+    /**
+     * Serialize a time identity array as "token@offset" (offset omitted or 0 => "@0").
+     */
+    private static function stableTimeString($time): string
+    {
+        if (!is_array($time)) {
+            $token = (string)$time;
+            $offset = 0;
+        } else {
+            $token = isset($time['token']) ? (string)$time['token'] : '';
+            $offset = isset($time['offset']) ? (int)$time['offset'] : 0;
+        }
+        // Always include the offset for stability
+        return $token . '@' . $offset;
     }
 
     /**
@@ -358,13 +389,28 @@ final class ManifestIdentity
             'type' => $identity['type'] ?? '',
             'target' => $identity['target'] ?? '',
             'days' => $identity['days'] ?? '',
-            'startTime' => $identity['startTime'] ?? '',
-            'endTime' => $identity['endTime'] ?? '',
+            'startTime' => [
+                'token' => $identity['startTime']['token'] ?? '',
+                'offset' => $identity['startTime']['offset'] ?? 0,
+            ],
+            'endTime' => [
+                'token' => $identity['endTime']['token'] ?? '',
+                'offset' => $identity['endTime']['offset'] ?? 0,
+            ],
             'startDate' => $identity['startDate']['tokens'] ?? [],
             'endDate' => $identity['endDate']['tokens'] ?? [],
         ];
 
         $behavior = self::normalize($entry);
+
+        // Strip resolved/display-only artifacts so hash reflects intent, not presentation
+        unset(
+            $behavior['resolved'],
+            $behavior['resolvedStartTime'],
+            $behavior['resolvedEndTime'],
+            $behavior['displayStart'],
+            $behavior['displayEnd']
+        );
 
         // Ensure date fields in behavior do not accidentally override the contract representation.
         unset($behavior['startDate'], $behavior['endDate']);

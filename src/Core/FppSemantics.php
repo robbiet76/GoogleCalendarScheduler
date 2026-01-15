@@ -385,6 +385,119 @@ final class FPPSemantics
     }
 
     /**
+     * Canonicalize a time token for identity/comparison.
+     *
+     * CONTRACT:
+     * - MUST NOT resolve symbolic times to display times.
+     * - MUST preserve symbolic tokens (Dawn/Dusk/etc) exactly.
+     * - MUST only normalize whitespace and validate basic shape.
+     *
+     * @return string|null Canonical token or null if invalid/empty
+     */
+    public static function canonicalTimeToken(?string $raw): ?string
+    {
+        if (!is_string($raw)) {
+            return null;
+        }
+
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        // Preserve symbolic times exactly as-is.
+        if (self::isSymbolicTime($raw)) {
+            return $raw;
+        }
+
+        // Canonical absolute time.
+        if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $raw)) {
+            return $raw;
+        }
+
+        // Reject unknown formats (do not invent conversions).
+        return null;
+    }
+
+    /**
+     * Canonicalize a date token for identity/comparison.
+     *
+     * CONTRACT:
+     * - MUST NOT resolve holidays into hard dates.
+     * - MUST preserve holiday tokens exactly.
+     * - MUST normalize whitespace.
+     *
+     * @return string|null Canonical token or null if invalid/empty
+     */
+    public static function canonicalDateToken(?string $raw): ?string
+    {
+        if (!is_string($raw)) {
+            return null;
+        }
+
+        $raw = trim($raw);
+        if ($raw === '') {
+            return null;
+        }
+
+        // Hard date (including sentinel year 0000-..-..)
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw)) {
+            return $raw;
+        }
+
+        // Otherwise treat as symbolic holiday token; preserve verbatim.
+        return $raw;
+    }
+
+    /**
+     * Canonicalize a raw FPP schedule entry for identity/diff.
+     *
+     * CONTRACT:
+     * - MUST NOT perform any disk I/O.
+     * - MUST NOT resolve holidays or symbolic times.
+     * - MUST remove plugin-only metadata keys.
+     * - MUST NOT add new keys.
+     */
+    public static function canonicalizeScheduleEntry(array $entry): array
+    {
+        // Strip plugin-only keys if present.
+        unset(
+            $entry['uid'],
+            $entry['_manifest'],
+            $entry['identity'],
+            $entry['payload']
+        );
+
+        // Normalize scalar string fields we use for identity.
+        if (array_key_exists('startDate', $entry)) {
+            $cd = self::canonicalDateToken(is_string($entry['startDate']) ? $entry['startDate'] : null);
+            if ($cd !== null) {
+                $entry['startDate'] = $cd;
+            }
+        }
+        if (array_key_exists('endDate', $entry)) {
+            $cd = self::canonicalDateToken(is_string($entry['endDate']) ? $entry['endDate'] : null);
+            if ($cd !== null) {
+                $entry['endDate'] = $cd;
+            }
+        }
+        if (array_key_exists('startTime', $entry)) {
+            $ct = self::canonicalTimeToken(is_string($entry['startTime']) ? $entry['startTime'] : null);
+            if ($ct !== null) {
+                $entry['startTime'] = $ct;
+            }
+        }
+        if (array_key_exists('endTime', $entry)) {
+            $ct = self::canonicalTimeToken(is_string($entry['endTime']) ? $entry['endTime'] : null);
+            if ($ct !== null) {
+                $entry['endTime'] = $ct;
+            }
+        }
+
+        return $entry;
+    }
+
+    /**
      * Resolve symbolic time using runtime environment.
      */
     public static function resolveSymbolicTime(
