@@ -275,6 +275,22 @@ final class ManifestIdentity
                 $strict = (bool)constant('GCS_STRICT_IDENTITY');
             }
 
+            // Always log diagnostic info for missing fields, regardless of strictness
+            error_log('[GCS][IDENTITY DIAGNOSTIC][MISSING_FIELDS] ' . json_encode([
+                'missing' => $v['missing'],
+                'identity_snapshot' => array_intersect_key($identity, array_flip($v['missing'])), // show missing fields values
+                'identity_compact' => $identity,
+                'entry_hint' => [
+                    'playlist' => $entry['playlist'] ?? null,
+                    'command' => $entry['command'] ?? null,
+                    'startDate' => $entry['startDate'] ?? ($entry['range']['start'] ?? null),
+                    'endDate' => $entry['endDate'] ?? ($entry['range']['end'] ?? null),
+                    'days' => $entry['days'] ?? ($entry['range']['days'] ?? ($entry['day'] ?? null)),
+                    'startTime' => $entry['startTime'] ?? null,
+                    'endTime' => $entry['endTime'] ?? null,
+                ],
+            ], JSON_UNESCAPED_SLASHES));
+
             if ($strict) {
                 error_log('[GCS][IDENTITY INVALID] ' . json_encode([
                     'summary' => $entry['summary'] ?? null,
@@ -447,6 +463,14 @@ final class ManifestIdentity
         $hash = self::buildHash($entry);
 
         if ($id === '' || $hash === '') {
+            // Diagnostics for empty id or hash
+            $buildIdentityResult = self::buildIdentity($entry);
+            error_log('[GCS][IDENTITY][SCHEDULE_ENTRY_EMPTY_ID_OR_HASH] ' . json_encode([
+                'reason' => 'empty id or hash',
+                'entry_keys' => array_keys($entry),
+                'buildIdentity_ok' => $buildIdentityResult['ok'] ?? null,
+                'buildIdentity_missing' => $buildIdentityResult['missing'] ?? null,
+            ], JSON_UNESCAPED_SLASHES));
             return [
                 'ids' => [],
                 'hashes' => [],
