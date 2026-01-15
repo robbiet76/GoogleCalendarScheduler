@@ -154,9 +154,22 @@ final class SchedulerApply
             SchedulerSync::SCHEDULE_JSON_PATH
         );
 
+        $finalSchedule = FPPSemantics::sanitizeScheduleForDisk($applyPlan['newSchedule']);
+
+        // HARD RULE: schedule.json on disk must be FPP-native.
+        // Never write uid/_manifest (or any plugin keys) into schedule.json.
+        foreach ($finalSchedule as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if (array_key_exists('uid', $row) || array_key_exists('_manifest', $row)) {
+                return ['ok' => false, 'error' => 'Refusing to write non-FPP keys to schedule.json (uid/_manifest detected)'];
+            }
+        }
+
         SchedulerSync::writeScheduleJsonAtomicallyOrThrow(
             SchedulerSync::SCHEDULE_JSON_PATH,
-            $applyPlan['newSchedule']
+            $finalSchedule
         );
 
         $manifestEntriesForVerify = (isset($applyPlan['manifestEntries']) && is_array($applyPlan['manifestEntries']))
@@ -166,6 +179,7 @@ final class SchedulerApply
         $writtenSchedule = SchedulerSync::readScheduleJsonOrThrow(
             SchedulerSync::SCHEDULE_JSON_PATH
         );
+        $writtenSchedule = FPPSemantics::sanitizeScheduleForDisk($writtenSchedule);
 
         SchedulerSync::verifyScheduleJsonMatchesManifestOrThrow(
             $manifestEntriesForVerify,

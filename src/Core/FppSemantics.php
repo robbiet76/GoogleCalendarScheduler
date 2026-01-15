@@ -20,6 +20,89 @@ declare(strict_types=1);
  */
 final class FPPSemantics
 {
+    /**
+     * schedule.json MUST remain in FPP-native shape.
+     * No plugin metadata keys are allowed on disk.
+     *
+     * This method enforces an allowlist for known FPP schedule fields and
+     * removes schema-affecting empty keys (e.g. command:"" on playlist rows).
+     */
+    public static function sanitizeScheduleEntryForDisk(array $entry): array
+    {
+        // Strip all plugin-only keys unconditionally.
+        unset(
+            $entry['uid'],
+            $entry['_manifest'],
+            $entry['identity'],
+            $entry['payload']
+        );
+
+        // Normalize obvious empties that should not exist in FPP schedule.json.
+        if (array_key_exists('command', $entry) && (string)$entry['command'] === '') {
+            unset($entry['command']);
+        }
+        if (array_key_exists('playlist', $entry) && (string)$entry['playlist'] === '') {
+            unset($entry['playlist']);
+        }
+
+        // Determine whether this is a command schedule entry vs playlist/sequence entry.
+        $hasCommand = isset($entry['command']) && (string)$entry['command'] !== '';
+        $hasPlaylist = isset($entry['playlist']) && (string)$entry['playlist'] !== '';
+
+        // Base allowlist (common fields).
+        $base = [
+            'enabled','sequence','day',
+            'startTime','startTimeOffset',
+            'endTime','endTimeOffset',
+            'repeat','startDate','endDate','stopType',
+        ];
+
+        if ($hasCommand) {
+            // Command-style entry allowlist.
+            $allow = array_merge($base, [
+                'command','args',
+                'multisyncCommand','multisyncHosts',
+            ]);
+        } else {
+            // Playlist/sequence-style entry allowlist.
+            $allow = array_merge($base, [
+                'playlist',
+            ]);
+        }
+
+        // Never let command-only keys leak into playlist entries (and vice versa).
+        $out = [];
+        foreach ($allow as $k) {
+            if (array_key_exists($k, $entry)) {
+                $out[$k] = $entry[$k];
+            }
+        }
+
+        // If it's playlist/sequence, ensure we don't accidentally keep args/multisync.
+        if (!$hasCommand) {
+            unset($out['args'], $out['multisyncCommand'], $out['multisyncHosts']);
+        }
+
+        return $out;
+    }
+
+    /**
+     * Apply disk sanitization to a whole schedule list.
+     */
+    public static function sanitizeScheduleForDisk(array $schedule): array
+    {
+        $out = [];
+        foreach ($schedule as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $clean = self::sanitizeScheduleEntryForDisk($row);
+            if (!empty($clean)) {
+                $out[] = $clean;
+            }
+        }
+        return $out;
+    }
     /* =====================================================================
      * Canonical defaults (single source of truth)
      * ===================================================================== */

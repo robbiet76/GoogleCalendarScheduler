@@ -141,6 +141,10 @@ final class SchedulerSync
 
         $tmp = $path . '.tmp-' . getmypid();
 
+        // schedule.json MUST remain FPP-native on disk.
+        // All plugin metadata (uid/_manifest/etc) must be removed before writing.
+        $data = FPPSemantics::sanitizeScheduleForDisk($data);
+
         $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         if (!is_string($json) || $json === '') {
             throw new RuntimeException('Failed to encode schedule.json');
