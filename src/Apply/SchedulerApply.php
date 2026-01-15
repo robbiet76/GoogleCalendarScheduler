@@ -64,7 +64,53 @@ final class SchedulerApply
 
         $applyPlan = $plan['applyPlan'] ?? null;
         if (!is_array($applyPlan)) {
+            // Apply relies on the Planner to provide manifestEntries/manifestOrder.
+            // If Planner did not provide an applyPlan, we can still build a schedule merge plan,
+            // but we cannot fabricate manifest identity here.
             $applyPlan = self::planApply($existing, $desired);
+        }
+
+        // If Planner did not supply manifest data, derive it ONLY from Planner preview rows
+        // (which include _manifest) rather than from schedule payload.
+        if ((!isset($applyPlan['manifestEntries']) || !is_array($applyPlan['manifestEntries']))
+            && isset($plan['preview']) && is_array($plan['preview'])
+            && isset($plan['preview']['rows']) && is_array($plan['preview']['rows'])) {
+
+            $manifestEntries = [];
+            $manifestOrder   = [];
+
+            foreach ($plan['preview']['rows'] as $row) {
+                if (!is_array($row)) continue;
+                $m = $row['_manifest'] ?? null;
+                if (!is_array($m)) continue;
+
+                $uid = $m['uid'] ?? null;
+                $id  = $m['id'] ?? null;
+                $hash = $m['hash'] ?? null;
+                $identity = $m['identity'] ?? null;
+                $payload  = $m['payload'] ?? null;
+
+                if (!is_string($uid) || $uid == '') continue;
+                if (!is_string($id) || $id == '') continue;
+                if (!is_string($hash) || $hash == '') continue;
+                if (!is_array($identity)) continue;
+                if (!is_array($payload)) continue;
+
+                // Ensure payload uid matches
+                $payload['uid'] = $uid;
+
+                $manifestEntries[] = [
+                    'uid'      => $uid,
+                    'id'       => $id,
+                    'hash'     => $hash,
+                    'identity' => $identity,
+                    'payload'  => $payload,
+                ];
+                $manifestOrder[] = $id;
+            }
+
+            $applyPlan['manifestEntries'] = $manifestEntries;
+            $applyPlan['manifestOrder']   = $manifestOrder;
         }
 
         $previewCounts = [
@@ -253,51 +299,7 @@ final class SchedulerApply
             $newSchedule[] = $desiredByUid[$uid];
         }
 
-        // Build manifestEntries and manifestOrder per contract
-        $manifestEntries = [];
-        foreach ($uidsInOrder as $uid) {
-            if (!isset($desiredOriginalByUid[$uid])) {
-                continue;
-            }
-            $dOriginal = $desiredOriginalByUid[$uid];
-
-            // payload is the schedule.json entry that will be written (no manifest data)
-            $payload = is_array($dOriginal) ? $dOriginal : [];
-
-            // Ensure payload contains uid field (managed namespace)
-            if (!isset($payload['uid']) || !is_string($payload['uid']) || $payload['uid'] === '') {
-                $payload['uid'] = (string)$uid;
-            } elseif ($payload['uid'] !== (string)$uid) {
-                $payload['uid'] = (string)$uid;
-            }
-
-            // Build semantic identity from the schedule entry (contract)
-            if (class_exists('ManifestIdentity') && method_exists('ManifestIdentity', 'fromScheduleEntry')) {
-                $mi = ManifestIdentity::fromScheduleEntry($payload);
-                if (!is_object($mi)) {
-                    throw new RuntimeException("Failed to construct ManifestIdentity from schedule entry");
-                }
-                $manifestEntries[] = [
-                    'uid'      => (string)$uid,
-                    'id'       => $mi->getId(),
-                    'hash'     => $mi->getHash(),
-                    'identity' => $mi->toArray(),
-                    'payload'  => $payload,
-                ];
-            } else {
-                // Fallback in case ManifestIdentity class or method does not exist
-                $identity = [];
-                $id = '';
-                $hash = '';
-                $manifestEntries[] = [
-                    'uid' => (string)$uid,
-                    'id' => (string)$id,
-                    'hash' => (string)$hash,
-                    'identity' => is_array($identity) ? $identity : [],
-                    'payload' => is_array($payload) ? $payload : [],
-                ];
-            }
-        }
+        // NOTE: Apply never fabricates manifest identity. Planner must supply it.
 
         return [
             'creates'             => $creates,
@@ -306,17 +308,9 @@ final class SchedulerApply
             'newSchedule'         => $newSchedule,
             'expectedManagedUids' => array_keys($desiredByUid),
             'expectedDeletedUids' => $deletes,
-            'manifestEntries'     => $manifestEntries,
-            // Store order as managed ids when possible; fallback to uid when id is unavailable.
-            'manifestOrder'       => array_map(function (string $uid) use ($manifestEntries): string {
-                foreach ($manifestEntries as $me) {
-                    if (isset($me['uid']) && $me['uid'] === $uid) {
-                        $id = $me['id'] ?? '';
-                        return is_string($id) && $id !== '' ? $id : $uid;
-                    }
-                }
-                return $uid;
-            }, $uidsInOrder),
+            // NOTE: Apply never fabricates manifest identity. Planner must supply it.
+            'manifestEntries'     => [],
+            'manifestOrder'       => [],
         ];
     }
 
