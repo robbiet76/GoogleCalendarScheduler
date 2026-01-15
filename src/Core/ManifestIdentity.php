@@ -177,7 +177,8 @@ final class ManifestIdentity
         }
 
         // Times (identity-safe: store as array [token, offset])
-        $startTimeToken = isset($entry['startTime']) ? (string)$entry['startTime'] : '';
+        $startTimeTokenRaw = isset($entry['startTime']) ? (string)$entry['startTime'] : '';
+        $startTimeToken = FPPSemantics::canonicalTimeToken($startTimeTokenRaw);
         $startTimeOffset = isset($entry['startTimeOffset']) && is_numeric($entry['startTimeOffset'])
             ? (int)$entry['startTimeOffset']
             : 0;
@@ -186,7 +187,8 @@ final class ManifestIdentity
             'offset' => $startTimeOffset,
         ];
 
-        $endTimeToken = isset($entry['endTime']) ? (string)$entry['endTime'] : '';
+        $endTimeTokenRaw = isset($entry['endTime']) ? (string)$entry['endTime'] : '';
+        $endTimeToken = FPPSemantics::canonicalTimeToken($endTimeTokenRaw);
         $endTimeOffset = isset($entry['endTimeOffset']) && is_numeric($entry['endTimeOffset'])
             ? (int)$entry['endTimeOffset']
             : 0;

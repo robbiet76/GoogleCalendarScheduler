@@ -405,17 +405,22 @@ final class FPPSemantics
             return null;
         }
 
-        // Preserve symbolic times exactly as-is.
-        if (self::isSymbolicTime($raw)) {
-            return $raw;
+        // Preserve symbolic times with optional minute offsets (e.g. Dawn+15, Dusk-30)
+        if (preg_match('/^(Dawn|SunRise|SunSet|Dusk)([+-]\d+)?$/i', $raw, $m)) {
+            $base = ucfirst(strtolower($m[1]));
+            $offset = $m[2] ?? '';
+            return $base . $offset;
         }
 
-        // Canonical absolute time.
-        if (preg_match('/^\d{2}:\d{2}:\d{2}$/', $raw)) {
-            return $raw;
+        // Canonical absolute time HH:MM:SS
+        if (preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $raw)) {
+            $parts = explode(':', $raw);
+            $h = str_pad($parts[0], 2, '0', STR_PAD_LEFT);
+            $m = $parts[1];
+            $s = $parts[2] ?? '00';
+            return "$h:$m:$s";
         }
 
-        // Reject unknown formats (do not invent conversions).
         return null;
     }
 
