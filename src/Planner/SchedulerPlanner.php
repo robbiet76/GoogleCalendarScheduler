@@ -46,6 +46,10 @@ final class SchedulerPlanner
 
     public static function plan(array $config): array
     {
+        // Snapshot scheduler.json as-is (disk reality) before any adoption or planning
+        $existingRawDisk = SchedulerSync::readScheduleJsonStatic(
+            SchedulerSync::SCHEDULE_JSON_PATH
+        );
         // ------------------------------------------------------------------
         // Background adoption (identity refresh)
         // Safe, idempotent, no scheduler mutation.
@@ -470,12 +474,8 @@ final class SchedulerPlanner
         /* -----------------------------------------------------------------
          * 6. Load existing scheduler state + diff
          * ----------------------------------------------------------------- */
-        $existingRaw = SchedulerSync::readScheduleJsonStatic(
-            SchedulerSync::SCHEDULE_JSON_PATH
-        );
-
         $existingEntries = [];
-        foreach ($existingRaw as $row) {
+        foreach ($existingRawDisk as $row) {
             if (is_array($row)) {
                 $existingEntries[] = $row;
             }
@@ -499,7 +499,7 @@ final class SchedulerPlanner
             'deletes'        => $diff->deletes(),
             'desiredEntries' => $desiredEntries,
             'desiredBundles' => $bundles,
-            'existingRaw'    => $existingRaw,
+            'existingRaw'    => $existingRawDisk,
         ];
     }
 
