@@ -165,10 +165,10 @@ final class SchedulerSync
     /**
      * Post-write verification.
      *
-     * Ensures all expected managed entries exist and deleted entries are gone.
+     * Ensures all expected managed entries (by manifest id) exist and deleted entries are gone.
      *
-     * @param array<int,string> $expectedManagedKeys
-     * @param array<int,string> $expectedDeletedKeys
+     * @param array<int,string> $expectedManagedKeys Manifest IDs (not scheduler UIDs)
+     * @param array<int,string> $expectedDeletedKeys Manifest IDs (not scheduler UIDs)
      */
     public static function verifyScheduleJsonKeysOrThrow(
         array $expectedManagedKeys,
@@ -181,19 +181,17 @@ final class SchedulerSync
             if (!is_array($entry)) {
                 continue;
             }
-
-        // Verification is UID-only.
-        // UID is the sole authority for managed scheduler entries.
-        // Unmanaged entries may not have a UID and are intentionally ignored.
-            if (isset($entry['uid']) && is_string($entry['uid']) && $entry['uid'] !== '') {
-                $present[$entry['uid']] = true;
+            // Only consider managed entries with _manifest.id
+            if (isset($entry['_manifest']) && is_array($entry['_manifest']) && isset($entry['_manifest']['id']) && is_string($entry['_manifest']['id']) && $entry['_manifest']['id'] !== '') {
+                $present[$entry['_manifest']['id']] = true;
             }
+            // Intentionally ignore entries with no _manifest.id (unmanaged)
         }
 
         foreach ($expectedManagedKeys as $key) {
             if (!isset($present[$key])) {
                 throw new RuntimeException(
-                    "Post-write verification failed: expected managed key missing: {$key}"
+                    "Post-write verification failed: expected managed manifest id missing: {$key}"
                 );
             }
         }
@@ -201,7 +199,7 @@ final class SchedulerSync
         foreach ($expectedDeletedKeys as $key) {
             if (isset($present[$key])) {
                 throw new RuntimeException(
-                    "Post-write verification failed: expected deleted key still present: {$key}"
+                    "Post-write verification failed: expected deleted manifest id still present: {$key}"
                 );
             }
         }
@@ -211,11 +209,9 @@ final class SchedulerSync
      * Semantic post-write verification.
      *
      * Ensures that every managed manifest entry has a semantically equivalent
-     * scheduler entry present after apply.
+     * managed scheduler entry present after apply.
      *
-     * This verification is intentionally identity-free:
-     * - schedule.json must NOT contain manifest ids or hashes
-     * - equivalence is determined purely by FPP scheduler semantics
+     * Only managed entries (those with _manifest.id) are compared.
      *
      * @param array<int,array<string,mixed>> $manifestEntries
      * @param array<int,array<string,mixed>> $schedule
@@ -224,28 +220,36 @@ final class SchedulerSync
         array $manifestEntries,
         array $schedule
     ): void {
+        // Filter schedule to only managed entries (with _manifest.id)
+        $managedSchedule = [];
+        foreach ($schedule as $entry) {
+            if (
+                is_array($entry)
+                && isset($entry['_manifest'])
+                && is_array($entry['_manifest'])
+                && isset($entry['_manifest']['id'])
+                && is_string($entry['_manifest']['id'])
+                && $entry['_manifest']['id'] !== ''
+            ) {
+                $managedSchedule[] = $entry;
+            }
+        }
         foreach ($manifestEntries as $m) {
             if (!isset($m['payload']) || !is_array($m['payload'])) {
                 throw new RuntimeException('Manifest entry missing payload for verification');
             }
-
             $expected = $m['payload'];
+            $manifestId = isset($m['id']) && is_string($m['id']) ? $m['id'] : '(unknown)';
             $found = false;
-
-            foreach ($schedule as $entry) {
-                if (!is_array($entry)) {
-                    continue;
-                }
-
+            foreach ($managedSchedule as $entry) {
                 if (SchedulerComparator::isEquivalent($entry, $expected)) {
                     $found = true;
                     break;
                 }
             }
-
             if (!$found) {
                 throw new RuntimeException(
-                    'Post-write verification failed: managed entry missing from schedule.json'
+                    "Post-write verification failed: managed entry with manifest id '{$manifestId}' missing or mismatched in schedule.json"
                 );
             }
         }

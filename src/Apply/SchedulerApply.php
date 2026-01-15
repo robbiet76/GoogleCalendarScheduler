@@ -66,16 +66,23 @@ final class SchedulerApply
             return PreviewFormatter::format($result);
         }
 
-        if (
-            count($applyPlan['creates']) === 0 &&
-            count($applyPlan['updates']) === 0 &&
-            count($applyPlan['deletes']) === 0
-        ) {
+        $createsCount = isset($applyPlan['creates']) && is_array($applyPlan['creates']) ? count($applyPlan['creates']) : 0;
+        $updatesCount = isset($applyPlan['updates']) && is_array($applyPlan['updates']) ? count($applyPlan['updates']) : 0;
+        $deletesCount = isset($applyPlan['deletes']) && is_array($applyPlan['deletes']) ? count($applyPlan['deletes']) : 0;
+
+        if ($createsCount === 0 && $updatesCount === 0 && $deletesCount === 0) {
             return [
                 'ok'     => true,
                 'dryRun' => false,
                 'counts' => ['creates' => 0, 'updates' => 0, 'deletes' => 0],
                 'noop'   => true,
+            ];
+        }
+
+        if (!isset($applyPlan['newSchedule']) || !is_array($applyPlan['newSchedule'])) {
+            return [
+                'ok'    => false,
+                'error' => 'Apply plan missing newSchedule.',
             ];
         }
 
@@ -88,10 +95,13 @@ final class SchedulerApply
             $applyPlan['newSchedule']
         );
 
+        $manifestEntriesForVerify = (isset($applyPlan['manifestEntries']) && is_array($applyPlan['manifestEntries']))
+            ? $applyPlan['manifestEntries']
+            : [];
 
         SchedulerSync::verifyScheduleJsonMatchesManifestOrThrow(
-            $applyPlan['manifestEntries'] ?? [],
-            $applyPlan['newSchedule'] ?? []
+            $manifestEntriesForVerify,
+            $applyPlan['newSchedule']
         );
 
         // Commit manifest snapshot after successful apply (managed entries only)
@@ -193,27 +203,32 @@ final class SchedulerApply
 
         /*
          * Construct new schedule.json:
-         * 1) Preserve unmanaged entries in original order
-         * 2) Append managed entries in Planner order
+         * 1) Preserve UNMANAGED entries in original order
+         * 2) Rebuild MANAGED entries from Planner order (replacing any previously-managed entries)
+         *
+         * This guarantees idempotence and prevents duplication.
          */
         $newSchedule = [];
 
+        // Preserve only unmanaged entries (anything without a manifest id)
         foreach ($existing as $ex) {
             if (!is_array($ex)) {
+                // Defensive: keep non-array rows as-is
                 $newSchedule[] = $ex;
                 continue;
             }
 
-            // Unmanaged = no canonical managed key
             if (self::extractManagedKey($ex) === null) {
                 $newSchedule[] = $ex;
             }
         }
 
+        // Append managed entries in canonical Planner order
         foreach ($keysInOrder as $key) {
-            if (isset($desiredByKey[$key])) {
-                $newSchedule[] = $desiredByKey[$key];
+            if (!isset($desiredByKey[$key])) {
+                continue;
             }
+            $newSchedule[] = $desiredByKey[$key];
         }
 
         // Build manifestEntries and manifestOrder per contract
@@ -231,9 +246,14 @@ final class SchedulerApply
             $identity = $m['identity'] ?? [];
             $payload = $m['payload'] ?? [];
 
-            // Defensive rebuild of identity if possible
+            // Defensive rebuild of identity from the schedule entry if possible
             if (class_exists('ManifestIdentity') && method_exists('ManifestIdentity', 'fromScheduleEntry')) {
-                $identity = ManifestIdentity::fromScheduleEntry($payload);
+                // Prefer the actual schedule entry shape when available
+                $source = is_array($payload) && !empty($payload) ? $payload : $dOriginal;
+                $rebuilt = ManifestIdentity::fromScheduleEntry($source);
+                if (is_array($rebuilt)) {
+                    $identity = $rebuilt;
+                }
             }
 
             // Ensure manifest entry shape
