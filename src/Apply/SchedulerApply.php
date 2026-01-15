@@ -88,9 +88,10 @@ final class SchedulerApply
             $applyPlan['newSchedule']
         );
 
-        SchedulerSync::verifyScheduleJsonKeysOrThrow(
-            $applyPlan['expectedManagedKeys'],
-            $applyPlan['expectedDeletedKeys']
+
+        SchedulerSync::verifyScheduleJsonMatchesManifestOrThrow(
+            $applyPlan['manifestEntries'] ?? [],
+            $applyPlan['newSchedule'] ?? []
         );
 
         // Commit manifest snapshot after successful apply (managed entries only)

@@ -207,6 +207,50 @@ final class SchedulerSync
         }
     }
 
+    /**
+     * Semantic post-write verification.
+     *
+     * Ensures that every managed manifest entry has a semantically equivalent
+     * scheduler entry present after apply.
+     *
+     * This verification is intentionally identity-free:
+     * - schedule.json must NOT contain manifest ids or hashes
+     * - equivalence is determined purely by FPP scheduler semantics
+     *
+     * @param array<int,array<string,mixed>> $manifestEntries
+     * @param array<int,array<string,mixed>> $schedule
+     */
+    public static function verifyScheduleJsonMatchesManifestOrThrow(
+        array $manifestEntries,
+        array $schedule
+    ): void {
+        foreach ($manifestEntries as $m) {
+            if (!isset($m['payload']) || !is_array($m['payload'])) {
+                throw new RuntimeException('Manifest entry missing payload for verification');
+            }
+
+            $expected = $m['payload'];
+            $found = false;
+
+            foreach ($schedule as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                if (SchedulerComparator::isEquivalent($entry, $expected)) {
+                    $found = true;
+                    break;
+                }
+            }
+
+            if (!$found) {
+                throw new RuntimeException(
+                    'Post-write verification failed: managed entry missing from schedule.json'
+                );
+            }
+        }
+    }
+
 
 
     /* -------------------------------------------------------------------------
