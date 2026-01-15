@@ -36,13 +36,31 @@ final class SchedulerApply
         $plan   = SchedulerPlanner::plan($cfg);
         $dryRun = !empty($cfg['runtime']['dry_run']);
 
+        // Planner output normalization (canonical)
         $existing = (isset($plan['existingRaw']) && is_array($plan['existingRaw']))
             ? $plan['existingRaw']
             : [];
 
-        $desired = (isset($plan['desiredEntries']) && is_array($plan['desiredEntries']))
-            ? $plan['desiredEntries']
-            : [];
+        // Desired entries may arrive either as `desiredEntries` (schedule-entry arrays)
+        // or as `desiredBundles` (domain bundles containing `base.payload`).
+        $desired = [];
+        if (isset($plan['desiredEntries']) && is_array($plan['desiredEntries'])) {
+            $desired = $plan['desiredEntries'];
+        } elseif (isset($plan['desiredBundles']) && is_array($plan['desiredBundles'])) {
+            foreach ($plan['desiredBundles'] as $b) {
+                if (!is_array($b)) {
+                    continue;
+                }
+                $base = $b['base'] ?? null;
+                if (!is_array($base)) {
+                    continue;
+                }
+                $payload = $base['payload'] ?? null;
+                if (is_array($payload) && !empty($payload)) {
+                    $desired[] = $payload;
+                }
+            }
+        }
 
         $applyPlan = $plan['applyPlan'] ?? null;
         if (!is_array($applyPlan)) {
@@ -99,9 +117,13 @@ final class SchedulerApply
             ? $applyPlan['manifestEntries']
             : [];
 
+        $writtenSchedule = SchedulerSync::readScheduleJsonOrThrow(
+            SchedulerSync::SCHEDULE_JSON_PATH
+        );
+
         SchedulerSync::verifyScheduleJsonMatchesManifestOrThrow(
             $manifestEntriesForVerify,
-            $applyPlan['newSchedule']
+            $writtenSchedule
         );
 
         // Commit manifest snapshot after successful apply (managed entries only)
@@ -112,7 +134,7 @@ final class SchedulerApply
         $store->commitCurrent(
             $calendarMeta,
             $applyPlan['manifestEntries'] ?? [],
-            $applyPlan['manifestOrder'] ?? []
+            (isset($applyPlan['manifestOrder']) && is_array($applyPlan['manifestOrder'])) ? $applyPlan['manifestOrder'] : []
         );
 
         return [
@@ -238,41 +260,43 @@ final class SchedulerApply
                 continue;
             }
             $dOriginal = $desiredOriginalByUid[$uid];
-            $m = $dOriginal['_manifest'] ?? [];
 
-            $uidVal = isset($m['uid']) && is_string($m['uid']) && $m['uid'] !== '' ? $m['uid'] : $uid;
-            $id = isset($m['id']) && is_string($m['id']) ? $m['id'] : '';
-            $hash = isset($m['hash']) && is_string($m['hash']) ? $m['hash'] : '';
-            $identity = $m['identity'] ?? [];
-            $payload = $m['payload'] ?? [];
+            // payload is the schedule.json entry that will be written (no manifest data)
+            $payload = is_array($dOriginal) ? $dOriginal : [];
 
-            // Ensure payload contains uid field
-            if (is_array($payload)) {
-                if (!isset($payload['uid'])) {
-                    $payload['uid'] = (string)$uid;
-                } elseif ($payload['uid'] !== (string)$uid) {
-                    $payload['uid'] = (string)$uid;
-                }
+            // Ensure payload contains uid field (managed namespace)
+            if (!isset($payload['uid']) || !is_string($payload['uid']) || $payload['uid'] === '') {
+                $payload['uid'] = (string)$uid;
+            } elseif ($payload['uid'] !== (string)$uid) {
+                $payload['uid'] = (string)$uid;
             }
 
-            // Defensive rebuild of identity from the schedule entry if possible
+            // Build semantic identity from the schedule entry (contract)
             if (class_exists('ManifestIdentity') && method_exists('ManifestIdentity', 'fromScheduleEntry')) {
-                // Prefer the actual schedule entry shape when available
-                $source = is_array($payload) && !empty($payload) ? $payload : $dOriginal;
-                $rebuilt = ManifestIdentity::fromScheduleEntry($source);
-                if (is_array($rebuilt)) {
-                    $identity = $rebuilt;
+                $mi = ManifestIdentity::fromScheduleEntry($payload);
+                if (!is_object($mi)) {
+                    throw new RuntimeException("Failed to construct ManifestIdentity from schedule entry");
                 }
+                $manifestEntries[] = [
+                    'uid'      => (string)$uid,
+                    'id'       => $mi->getId(),
+                    'hash'     => $mi->getHash(),
+                    'identity' => $mi->toArray(),
+                    'payload'  => $payload,
+                ];
+            } else {
+                // Fallback in case ManifestIdentity class or method does not exist
+                $identity = [];
+                $id = '';
+                $hash = '';
+                $manifestEntries[] = [
+                    'uid' => (string)$uid,
+                    'id' => (string)$id,
+                    'hash' => (string)$hash,
+                    'identity' => is_array($identity) ? $identity : [],
+                    'payload' => is_array($payload) ? $payload : [],
+                ];
             }
-
-            // Ensure manifest entry shape
-            $manifestEntries[] = [
-                'uid' => (string)$uidVal,
-                'id' => (string)$id,
-                'hash' => (string)$hash,
-                'identity' => is_array($identity) ? $identity : [],
-                'payload' => is_array($payload) ? $payload : [],
-            ];
         }
 
         return [
@@ -283,26 +307,28 @@ final class SchedulerApply
             'expectedManagedUids' => array_keys($desiredByUid),
             'expectedDeletedUids' => $deletes,
             'manifestEntries'     => $manifestEntries,
-            'manifestOrder'       => $uidsInOrder,
+            // Store order as managed ids when possible; fallback to uid when id is unavailable.
+            'manifestOrder'       => array_map(function (string $uid) use ($manifestEntries): string {
+                foreach ($manifestEntries as $me) {
+                    if (isset($me['uid']) && $me['uid'] === $uid) {
+                        $id = $me['id'] ?? '';
+                        return is_string($id) && $id !== '' ? $id : $uid;
+                    }
+                }
+                return $uid;
+            }, $uidsInOrder),
         ];
     }
 
     /**
      * Extract the canonical "managed UID" for an entry.
      *
-     * Managed entries must have a manifest UID or a managed UID in the entry.
-     * Legacy FPP entries without manifest UID or managed UID are unmanaged by definition.
+     * Managed entries must have a managed UID in the entry (`uid` in the gcs- namespace).
+     * schedule.json never stores manifest data; manifest is stored separately.
+     * Legacy FPP entries without a managed UID are unmanaged by definition.
      */
     private static function extractManagedUid(array $entry): ?string
     {
-        // Preferred: manifest uid
-        if (isset($entry['_manifest']) && is_array($entry['_manifest'])) {
-            $uid = $entry['_manifest']['uid'] ?? null;
-            if (is_string($uid) && $uid !== '') {
-                return $uid;
-            }
-        }
-
         // Fallback: entry uid prefixed with 'gcs-' (managed namespace)
         if (isset($entry['uid']) && is_string($entry['uid']) && $entry['uid'] !== '' && str_starts_with($entry['uid'], 'gcs-')) {
             return $entry['uid'];
@@ -314,10 +340,9 @@ final class SchedulerApply
 
     private static function normalizeForApply(array $entry): array
     {
-        // Strip ONLY known GCS-internal metadata keys before writing to schedule.json.
-        // IMPORTANT: _manifest is canonical state and MUST NOT persist in schedule.json entries.
-        // Do NOT remove arbitrary underscore-prefixed keys since FPP/other plugins may
-        // legitimately use them.
+        // Strip only GCS-internal metadata keys before writing to schedule.json.
+        // IMPORTANT: schedule.json must remain valid FPP schema; manifest data is never stored here.
+        // Do NOT remove arbitrary underscore-prefixed keys since FPP/other plugins may legitimately use them.
         foreach (['_manifest', '_gcs', '_payload'] as $k) {
             if (array_key_exists($k, $entry)) {
                 unset($entry[$k]);

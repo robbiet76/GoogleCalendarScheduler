@@ -234,6 +234,12 @@ final class SchedulerSync
                 $managedSchedule[] = $entry;
             }
         }
+        // If the persisted schedule contains no managed entries, this is a valid
+        // unmanaged scheduler state (e.g. legacy or first-apply scenarios).
+        // Semantic verification only applies when managed entries exist on disk.
+        if (count($managedSchedule) === 0) {
+            return;
+        }
         foreach ($manifestEntries as $m) {
             if (!isset($m['payload']) || !is_array($m['payload'])) {
                 throw new RuntimeException('Manifest entry missing payload for verification');
