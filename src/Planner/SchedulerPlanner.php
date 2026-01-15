@@ -30,7 +30,7 @@ declare(strict_types=1);
  *   (or export GCS_DEBUG_ORDERING=1)
  *
  * CONTRACT (Identity):
- * - Desired entries emitted by this planner ALWAYS have uid + _manifest.
+ * - Desired entries emitted by this planner ALWAYS have uid + _manifest + semantic identity.
  * - Existing FPP schedule entries MAY NOT have uid or manifest.
  * - SchedulerDiff is responsible for reconciling that asymmetry.
  */
@@ -402,44 +402,48 @@ final class SchedulerPlanner
                 $finalType   = $finalType   ?? $inferred['type'];
                 $finalTarget = $finalTarget ?? $inferred['target'];
             }
-            // DEBUG: capture exact identity input before ManifestIdentity
-            error_log('[GCS DEBUG][IDENTITY_INPUT] ' . json_encode([
-                'isPreview' => $isPreview,
-                'type'      => $finalType,
-                'target'    => $finalTarget,
-                'startDate' => $entry['startDate'] ?? null,
-                'endDate'   => $entry['endDate']   ?? null,
-                'startTime' => $entry['startTime'] ?? null,
-                'endTime'   => $entry['endTime']   ?? null,
-                'yaml'      => $entry['yaml']      ?? null,
-            ], JSON_UNESCAPED_SLASHES));
             if (!$entry || !is_array($entry)) {
                 continue;
             }
 
-            $manifest = ManifestIdentity::fromScheduleEntry($entry);
-
-            $primaryId   = ManifestIdentity::primaryId($manifest);
-            $primaryHash = ManifestIdentity::primaryHash($manifest);
-
-            $hasIdentity =
-                is_string($primaryId)   && $primaryId   !== '' &&
-                is_string($primaryHash) && $primaryHash !== '';
-
-            if (!$hasIdentity) {
+            $identityResult = ManifestIdentity::buildIdentity($entry);
+            if (!$identityResult['ok']) {
                 if ($isPreview) {
-                    $primaryId   = null;
-                    $primaryHash = null;
+                    // Preview may surface incomplete identities but must not persist them
+                    $entry['_manifest'] = [
+                        'uid'      => (string) ($bundle['base']['uid'] ?? ''),
+                        'id'       => null,
+                        'hash'     => null,
+                        'identity' => null,
+                        'payload'  => null,
+                    ];
                 } else {
-                    throw new \RuntimeException('Invariant violation: invalid manifest identity');
+                    throw new \RuntimeException('Invariant violation: invalid semantic identity');
                 }
+            } else {
+                $id   = ManifestIdentity::buildId($entry);
+                $hash = ManifestIdentity::buildHash($entry);
+
+                if ($id === '' || $hash === '') {
+                    throw new \RuntimeException('Invariant violation: failed to build manifest id/hash');
+                }
+
+                $entry['_manifest'] = [
+                    'uid'      => (string) ($bundle['base']['uid'] ?? ''),
+                    'id'       => $id,
+                    'hash'     => $hash,
+                    'identity' => $identityResult['identity'],
+                    'payload'  => $entry, // full semantic snapshot for undo/apply
+                ];
             }
 
-            $entry['_manifest'] = [
-                'uid'  => (string) ($bundle['base']['uid'] ?? ''),
-                'id'   => $primaryId,
-                'hash' => $primaryHash,
-            ];
+            if (!isset($entry['_manifest']['identity']) && !$isPreview) {
+                throw new \RuntimeException('Planner invariant violated: missing semantic identity on desired entry');
+            }
+
+            // Planner must never leak internal manifest fields into scheduler diff logic
+            unset($entry['identity']);
+            unset($entry['payload']);
 
             $guarded = self::applyGuardRulesToEntry($entry, $guardDate);
             if ($guarded !== null) {

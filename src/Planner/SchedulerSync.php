@@ -182,8 +182,9 @@ final class SchedulerSync
                 continue;
             }
 
-            // Verification is UID-only.
-            // Existing unmanaged entries may not have a UID and are ignored.
+        // Verification is UID-only.
+        // UID is the sole authority for managed scheduler entries.
+        // Unmanaged entries may not have a UID and are intentionally ignored.
             if (isset($entry['uid']) && is_string($entry['uid']) && $entry['uid'] !== '') {
                 $present[$entry['uid']] = true;
             }
@@ -397,10 +398,14 @@ final class SchedulerSync
         if (!empty($payload)) {
             $entry['_payload'] = $payload;
         }
+        // IMPORTANT:
+        // _manifest and _payload are planner-owned metadata.
+        // They must never be used as part of scheduler state identity or hashing.
 
         // NOTE:
         // Manifest identity is NOT generated here.
-        // Identity is assigned in SchedulerPlanner after full normalization.
+        // SchedulerSync produces scheduler.json-compatible payloads only.
+        // Identity assignment and snapshotting are planner responsibilities.
 
         // DEBUG: log final scheduler entry shape before returning
         if (self::isDebugEnabled()) {

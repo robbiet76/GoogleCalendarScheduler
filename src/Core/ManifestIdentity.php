@@ -14,8 +14,6 @@ declare(strict_types=1);
  */
 final class ManifestIdentity
 {
-    /** @var array<string,string> */
-    private static array $identityCache = [];
 
     /** Normalize a days token into a stable comma-separated string. */
     private static function normalizeDaysToken(string $days): string
@@ -41,6 +39,97 @@ final class ManifestIdentity
         return implode(',', $out);
     }
 
+    /** True if token looks like a hard date YYYY-MM-DD. */
+    private static function isHardDateToken(string $token): bool
+    {
+        return (bool)preg_match('/^\d{4}-\d{2}-\d{2}$/', $token);
+    }
+
+    /**
+     * Build a dual-date token representation from an entry token.
+     *
+     * Contract rules:
+     * - Symbolic holiday input -> tokens={Holiday} (no hard back-fill)
+     * - Hard date input -> tokens include hard date; if it maps to a holiday, also include that holiday token
+     * - Keep both hard + symbolic when available (for hashing + persistence)
+     *
+     * Return shape:
+     *   [
+     *     'tokens'   => string[],      // unique, stable order
+     *     'hard'     => string|null,   // YYYY-MM-DD if present
+     *     'symbolic' => string|null,   // Holiday token if present/derivable
+     *   ]
+     */
+    private static function buildDualDate(string $raw, array &$warnings, string $context): array
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return ['tokens' => [], 'hard' => null, 'symbolic' => null];
+        }
+
+        // FPPSemantics::interpretDateToken is authoritative for deriving holiday tokens from hard dates.
+        // It MUST NOT create hard dates from symbolic-only inputs.
+        $parsed = FPPSemantics::interpretDateToken($raw, null, $warnings, $context);
+
+        $hard = null;
+        $symbolic = null;
+
+        if (is_array($parsed)) {
+            if (!empty($parsed['hard'])) {
+                $hard = (string)$parsed['hard'];
+            }
+            if (!empty($parsed['symbolic'])) {
+                $symbolic = (string)$parsed['symbolic'];
+            }
+        }
+
+        // Fallback if interpretDateToken returned a plain string (defensive, but no "legacy" behavior introduced)
+        if ($hard === null && $symbolic === null) {
+            if (self::isHardDateToken($raw)) {
+                $hard = $raw;
+            } else {
+                $symbolic = $raw;
+            }
+        }
+
+        $tokens = [];
+        if ($hard !== null && $hard !== '') {
+            $tokens[] = $hard;
+        }
+        if ($symbolic !== null && $symbolic !== '') {
+            $tokens[] = $symbolic;
+        }
+
+        // Unique + stable sort for deterministic JSON/hashing.
+        $tokens = array_values(array_unique($tokens));
+        sort($tokens, SORT_STRING);
+
+        return [
+            'tokens' => $tokens,
+            'hard' => $hard,
+            'symbolic' => $symbolic,
+        ];
+    }
+
+    /**
+     * For identity KEY construction only:
+     * prefer symbolic holiday token when available, else use hard date.
+     *
+     * This makes:
+     *   Christmas  -> key=Christmas
+     *   2025-12-25 -> key=Christmas (if mapped), else key=2025-12-25
+     */
+    private static function identityDateKey(array $dualDate): string
+    {
+        if (!empty($dualDate['symbolic'])) {
+            return (string)$dualDate['symbolic'];
+        }
+        if (!empty($dualDate['hard'])) {
+            return (string)$dualDate['hard'];
+        }
+        return '';
+    }
+
     /**
      * Extract canonical identity fields from an entry.
      *
@@ -58,23 +147,21 @@ final class ManifestIdentity
             ? (string)$entry['command']
             : (string)($entry['playlist'] ?? '');
 
-        // Dates: derive identity-safe dual dates via FPPSemantics
+        // Dates: dual-date token sets (symbolic + hard when derivable from hard date)
         $startDateRaw = $entry['startDate'] ?? ($entry['range']['start'] ?? null);
         $endDateRaw   = $entry['endDate']   ?? ($entry['range']['end']   ?? null);
 
         if ($startDateRaw !== null && $startDateRaw !== '') {
-            $identity['startDate'] = FPPSemantics::interpretDateToken(
+            $identity['startDate'] = self::buildDualDate(
                 (string)$startDateRaw,
-                null,
                 $warnings,
                 'manifest.startDate'
             );
         }
 
         if ($endDateRaw !== null && $endDateRaw !== '') {
-            $identity['endDate'] = FPPSemantics::interpretDateToken(
+            $identity['endDate'] = self::buildDualDate(
                 (string)$endDateRaw,
-                null,
                 $warnings,
                 'manifest.endDate'
             );
@@ -136,10 +223,8 @@ final class ManifestIdentity
             if (
                 !isset($identity[$dateKey]) ||
                 !is_array($identity[$dateKey]) ||
-                (
-                    empty($identity[$dateKey]['symbolic']) &&
-                    empty($identity[$dateKey]['hard'])
-                )
+                empty($identity[$dateKey]['tokens']) ||
+                !is_array($identity[$dateKey]['tokens'])
             ) {
                 $missing[] = $dateKey;
             }
@@ -203,10 +288,33 @@ final class ManifestIdentity
     }
 
     /**
+     * Canonical identity key fields (used for stable ID).
+     *
+     * Contract: identity matching is symbolic-first for dates.
+     * We encode dates using identityDateKey() so that:
+     * - Symbolic-only matches hard+symbolic representations
+     * - Cross-year holiday hard dates map to the same identity
+     */
+    private static function canonicalIdentityKey(array $identity): array
+    {
+        return [
+            'type' => $identity['type'] ?? '',
+            'target' => $identity['target'] ?? '',
+            'days' => $identity['days'] ?? '',
+            'startTime' => $identity['startTime'] ?? '',
+            'endTime' => $identity['endTime'] ?? '',
+            'startDate' => isset($identity['startDate']) ? self::identityDateKey($identity['startDate']) : '',
+            'endDate' => isset($identity['endDate']) ? self::identityDateKey($identity['endDate']) : '',
+        ];
+    }
+
+    /**
      * Build a stable manifest ID for an entry.
      *
      * This ID represents the schedule identity:
      * type + target + time window + date range + days.
+     *
+     * NOTE: This ID must remain stable even when non-identity behavior changes.
      */
     public static function buildId(array $entry): string
     {
@@ -215,51 +323,75 @@ final class ManifestIdentity
             return '';
         }
 
-        return hash(
-            'sha256',
-            json_encode($res['identity'], JSON_UNESCAPED_SLASHES)
-        );
+        $key = self::canonicalIdentityKey($res['identity']);
+        $json = json_encode($key, JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return '';
+        }
+
+        if (defined('GCS_DEBUG') && GCS_DEBUG) {
+            error_log('[GCS DEBUG][IDENTITY_ID_INPUT] ' . $json);
+        }
+
+        return hash('sha256', $json);
     }
 
     /**
      * Build a hash representing the full behavioral intent of the entry.
      *
-     * This is used for change detection.
+     * This is used for change detection. Unlike buildId(), this includes
+     * non-identity fields like enabled/repeat/offsets/stopType, etc.
      */
     public static function buildHash(array $entry): string
     {
+        // Identity must be complete; otherwise the entry is not managed/diffable.
         $res = self::buildIdentity($entry);
         if (!$res['ok']) {
             return '';
         }
 
-        $cacheKey = json_encode($res['identity'], JSON_UNESCAPED_SLASHES);
+        // Contract: hash input includes canonical identity fields PLUS behavioral parameters,
+        // and MUST include BOTH hard+symbolic components when present on the entry.
+        $identity = $res['identity'];
 
-        if (isset(self::$identityCache[$cacheKey])) {
-            return self::$identityCache[$cacheKey];
+        $hashIdentity = [
+            'type' => $identity['type'] ?? '',
+            'target' => $identity['target'] ?? '',
+            'days' => $identity['days'] ?? '',
+            'startTime' => $identity['startTime'] ?? '',
+            'endTime' => $identity['endTime'] ?? '',
+            'startDate' => $identity['startDate']['tokens'] ?? [],
+            'endDate' => $identity['endDate']['tokens'] ?? [],
+        ];
+
+        $behavior = self::normalize($entry);
+
+        // Ensure date fields in behavior do not accidentally override the contract representation.
+        unset($behavior['startDate'], $behavior['endDate']);
+
+        $payload = [
+            'identity' => $hashIdentity,
+            'behavior' => $behavior,
+        ];
+
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            return '';
         }
 
-        // DEBUG: log normalized identity input before hashing
         if (defined('GCS_DEBUG') && GCS_DEBUG) {
-            error_log(
-                '[GCS DEBUG][IDENTITY HASH INPUT] ' . $cacheKey
-            );
+            error_log('[GCS DEBUG][PAYLOAD_HASH_INPUT] ' . $json);
         }
 
-        $hash = hash('sha256', $cacheKey);
-        self::$identityCache[$cacheKey] = $hash;
-
-        return $hash;
+        return hash('sha256', $json);
     }
 
     /**
-     * Build a ManifestIdentity from a single schedule entry.
+     * Build manifest identity fields from a single schedule entry.
      *
-     * This is a compatibility adapter for callers that operate
-     * on concrete scheduler entries instead of planner intents.
-     *
-     * @param array $entry
-     * @return array{ids: string[], hashes: string[]}
+     * Returns array-form fields used throughout the codebase:
+     * - ids[0]    => stable identity id (symbolic-first date keys)
+     * - hashes[0] => behavioral payload hash (includes dual-date tokens when present)
      */
     public static function fromScheduleEntry(array $entry): array
     {
@@ -310,7 +442,7 @@ final class ManifestIdentity
 
             if ($id === '' || $hash === '') {
                 if (defined('GCS_DEBUG') && GCS_DEBUG) {
-                    error_log('[GCS DEBUG][IDENTITY][DROP SERIES ENTRY] ' . json_encode([
+                    error_log('[GCS DEBUG][IDENTITY][DROP_ENTRY_MISSING_FIELDS] ' . json_encode([
                         'entry_keys' => is_array($entry) ? array_keys($entry) : null,
                     ], JSON_UNESCAPED_SLASHES));
                 }
@@ -402,13 +534,16 @@ final class ManifestIdentity
         unset(
             $normalized['_manifest'],
             $normalized['uid'],
+            $normalized['identity'],
             $normalized['summary'],
             $normalized['description'],
             $normalized['range'],
             $normalized['template'],
             $normalized['resolved'],
             $normalized['yaml'],
-            $normalized['gcs']
+            $normalized['gcs'],
+            $normalized['order'],
+            $normalized['appliedAt']
         );
 
         // Normalize numeric fields

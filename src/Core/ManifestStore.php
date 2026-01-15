@@ -8,7 +8,8 @@ declare(strict_types=1);
  *
  * Responsibilities:
  * - Load and save manifest.json
- * - Maintain current and previous snapshots
+ * - Persist semantic scheduler identity snapshots
+ * - Maintain current and previous applied states (single-level undo)
  * - Provide atomic rollback support
  *
  * Notes:
@@ -68,6 +69,8 @@ final class ManifestStore
      */
     public function commitCurrent(array $calendar, array $entries, array $order): void
     {
+        // Commit represents an APPLY boundary.
+        // Previous snapshot is retained for single-level undo.
         $manifest = $this->load();
 
         if (!empty($manifest['current'])) {
@@ -111,7 +114,11 @@ final class ManifestStore
         return [
             'schemaVersion' => self::SCHEMA_VERSION,
             'calendar'      => null,
-            'current'       => null,
+            'current'       => [
+                'appliedAt' => null,
+                'entries'   => [],
+                'order'     => [],
+            ],
             'previous'      => null,
         ];
     }
@@ -123,12 +130,123 @@ final class ManifestStore
     {
         $manifest['schemaVersion'] = self::SCHEMA_VERSION;
 
-        foreach (['calendar', 'current', 'previous'] as $key) {
-            if (!array_key_exists($key, $manifest)) {
-                $manifest[$key] = null;
+        // Manifest is always normalized to a single-calendar, single-snapshot model.
+
+        // calendar
+        if (!array_key_exists('calendar', $manifest)) {
+            $manifest['calendar'] = null;
+        }
+
+        // current snapshot (required)
+        if (!isset($manifest['current']) || !is_array($manifest['current'])) {
+            $manifest['current'] = [
+                'appliedAt' => null,
+                'entries'   => [],
+                'order'     => [],
+            ];
+        }
+
+        if (!array_key_exists('appliedAt', $manifest['current'])) {
+            $manifest['current']['appliedAt'] = null;
+        }
+        if (!isset($manifest['current']['entries']) || !is_array($manifest['current']['entries'])) {
+            $manifest['current']['entries'] = [];
+        }
+        if (!isset($manifest['current']['order']) || !is_array($manifest['current']['order'])) {
+            $manifest['current']['order'] = [];
+        }
+
+        // previous snapshot (optional, but must match shape if present)
+        if (!array_key_exists('previous', $manifest)) {
+            $manifest['previous'] = null;
+        }
+
+        if ($manifest['previous'] !== null) {
+            if (!is_array($manifest['previous'])) {
+                $manifest['previous'] = null;
+            } else {
+                if (!array_key_exists('appliedAt', $manifest['previous'])) {
+                    $manifest['previous']['appliedAt'] = null;
+                }
+                if (!isset($manifest['previous']['entries']) || !is_array($manifest['previous']['entries'])) {
+                    $manifest['previous']['entries'] = [];
+                }
+                if (!isset($manifest['previous']['order']) || !is_array($manifest['previous']['order'])) {
+                    $manifest['previous']['order'] = [];
+                }
             }
         }
 
+        // sanitize entries
+        $manifest['current']['entries'] = $this->sanitizeEntries($manifest['current']['entries']);
+        if (is_array($manifest['previous'] ?? null)) {
+            $manifest['previous']['entries'] = $this->sanitizeEntries($manifest['previous']['entries']);
+        }
+
         return $manifest;
+    }
+
+    /**
+     * Validate and sanitize manifest entries to keep schema clean.
+     *
+     * @param array<int,mixed> $entries
+     * @return array<int,array<string,mixed>>
+     */
+    private function sanitizeEntries(array $entries): array
+    {
+        $out = [];
+
+        foreach ($entries as $e) {
+            if (!is_array($e)) {
+                continue;
+            }
+
+            // Required top-level keys
+            foreach (['uid', 'id', 'hash', 'identity', 'payload'] as $k) {
+                if (!array_key_exists($k, $e)) {
+                    continue 2;
+                }
+            }
+
+            if (!is_string($e['uid']) || $e['uid'] === '') {
+                continue;
+            }
+            if (!is_string($e['id']) || $e['id'] === '') {
+                continue;
+            }
+            if (!is_string($e['hash']) || $e['hash'] === '') {
+                continue;
+            }
+            if (!is_array($e['payload'])) {
+                continue;
+            }
+
+            // Identity must contain ids[] and hashes[]
+            if (!is_array($e['identity'])) {
+                continue;
+            }
+
+            // Semantic identity must include canonical fields
+            foreach (['type', 'target', 'days', 'startTime', 'endTime', 'startDate', 'endDate'] as $k) {
+                if (!array_key_exists($k, $e['identity'])) {
+                    continue 2;
+                }
+            }
+
+            // startDate / endDate must be dual-date token structures
+            foreach (['startDate', 'endDate'] as $dk) {
+                if (
+                    !is_array($e['identity'][$dk]) ||
+                    empty($e['identity'][$dk]['tokens']) ||
+                    !is_array($e['identity'][$dk]['tokens'])
+                ) {
+                    continue 2;
+                }
+            }
+
+            $out[] = $e;
+        }
+
+        return $out;
     }
 }
