@@ -1,3 +1,7 @@
+> **Status:** STABLE  
+> **Change Policy:** Intentional, versioned revisions only  
+> **Authority:** Behavioral Specification v2
+
 # 15 — Error Handling & Invariants
 
 ## Purpose

@@ -1,3 +1,7 @@
+> **Status:** STABLE  
+> **Change Policy:** Intentional, versioned revisions only  
+> **Authority:** Behavioral Specification v2
+
 # 02 — System Architecture Overview
 
 This section describes the high-level architecture of the scheduler system, its major components, and how responsibilities are cleanly separated. This document is intentionally conceptual and technology-agnostic, focusing on behavior and data flow rather than implementation details.
