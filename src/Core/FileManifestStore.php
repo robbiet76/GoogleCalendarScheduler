@@ -57,6 +57,7 @@ final class FileManifestStore implements ManifestStore
     {
         $this->assertEventHasIdentity($event);
         $this->assertIdentityComplete($event);
+        $this->assertIdentityHashValid($event);
         $this->assertSubEventIdentityRules($event);
 
         $identityHash = $this->extractIdentityHash($event);
@@ -149,6 +150,7 @@ final class FileManifestStore implements ManifestStore
             $this->assertSubEventIdentityRules($event);
 
             $hash = $this->extractIdentityHash($event);
+            $this->assertIdentityHashValid($event);
 
             if (isset($seen[$hash])) {
                 throw new ManifestInvariantViolation(
@@ -182,6 +184,16 @@ final class FileManifestStore implements ManifestStore
                     ManifestInvariantViolation::IDENTITY_INCOMPLETE
                 );
             }
+        }
+    }
+
+    private function assertIdentityHashValid(array $event): void
+    {
+        if (!isset($event['identity_hash']) || !is_string($event['identity_hash']) || trim($event['identity_hash']) === '') {
+            throw new ManifestInvariantViolation(
+                'Invalid identity hash',
+                ManifestInvariantViolation::IDENTITY_HASH_INVALID
+            );
         }
     }
 
